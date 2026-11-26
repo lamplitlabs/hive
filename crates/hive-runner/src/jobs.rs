@@ -84,6 +84,11 @@ pub(crate) struct LeaseOpts {
     /// not carried on, the hand's connect was refused, and the second try
     /// on the hub started from nothing.
     pub executor: String,
+    /// The slot is the last one free on this machine: the owner's work job
+    /// past its project's share does not take it, so a lead's sitting for
+    /// the owner's message, an answer, a review or another project's owner
+    /// task does not wait for one of the owner's tasks to end.
+    pub keep_slot: bool,
 }
 
 pub(crate) fn queue_onboarding_job(
@@ -344,7 +349,10 @@ pub(crate) struct Lanes {
 /// `parallel_per_project`), with the check's own run time from the last landings
 /// (`verify_seconds` on `land.landed`, and on `land.batch`, whose one check of
 /// several branches merged runs as long as any). A project with no lock, no
-/// recorded landing, or a quick check keeps every lane.
+/// recorded landing, or a quick check keeps every lane. A share of one lane
+/// has nothing to narrow but still carries the check's run time: the owner's
+/// work runs past the share ([`owner_work_bound`]) and its runs' commit caps
+/// are widened by it ([`commit_cap_over_lanes`]).
 pub(crate) fn project_lanes(s: &hive_store::Store, slug: &str) -> Lanes {
     let base = parallel_per_project(s);
     let open = Lanes {
@@ -353,7 +361,7 @@ pub(crate) fn project_lanes(s: &hive_store::Store, slug: &str) -> Lanes {
         verify_seconds: None,
         reason: String::new(),
     };
-    if base <= 1 || crate::verify_lock::lock_name(s, slug).is_none() {
+    if crate::verify_lock::lock_name(s, slug).is_none() {
         return open;
     }
     let step = i64::from(crate::util::setting_int(s, "harness.step_timeout"));
@@ -446,6 +454,20 @@ pub(crate) fn narrowed_lanes(s: &hive_store::Store) -> Vec<(String, Lanes)> {
         (lanes.lanes < lanes.base).then_some((slug, lanes))
     })
     .collect()
+}
+
+/// How many work jobs ([`WORK_KINDS`]) may be in flight in a project before
+/// the owner's work job there waits, or None while it takes any free slot.
+/// With `verify.lock` on, the project's checks take turns, and a run's commit
+/// cap is fixed when it starts ([`commit_cap_over_lanes`]): a run that started
+/// first was given a cap for the checks in flight then, so more of the
+/// owner's runs past the share would queue their checks in front of it. The
+/// share plus one bounds that queue; without the lock nothing waits.
+/// `verify.lock` is one setting for every project (per project or one lock
+/// for the machine), so the bound is too.
+pub(crate) fn owner_work_bound(s: &hive_store::Store) -> Option<i32> {
+    crate::verify_lock::lock_name(s, "")?;
+    Some(parallel_per_project(s).saturating_add(1))
 }
 
 /// How many of `project`'s work jobs ([`WORK_KINDS`]) are leased or running:
@@ -567,10 +589,12 @@ pub(crate) fn lease_job(
         // one lane of five: on 2026-11-26 the brain ran eight owner tasks at
         // priority 80 one at a time, some 105 minutes "lanes full", while
         // the other slots ran lead sittings and a ballot elsewhere (TASK-136).
-        // The bound that remains is the slots themselves: the daemon leases
+        // The bounds that remain are the slots themselves (the daemon leases
         // only into a free one, the owner's work first (ORDER BY below), the
-        // project that waited longest first among owners. The share still
-        // spreads the fleet's work, plans it (plan.rs) and gates research.
+        // project that waited longest first among owners), the last free slot
+        // kept back (keep_slot) and the verify lock's bound
+        // (owner_work_bound), both below. The share still spreads the fleet's
+        // work, plans it (plan.rs) and gates research.
         let mut sql = format!(
             "SELECT j.* FROM jobs j JOIN projects p ON p.slug = j.project WHERE j.status = 'queued' AND p.status = 'active' AND ({OWNER_DRIVEN_SQL} OR (SELECT COUNT(*) FROM jobs k WHERE k.project = j.project AND {OCCUPIED_JOB_SQL}) < ?)"
         );
@@ -590,6 +614,28 @@ pub(crate) fn lease_job(
             ));
             vals.push(Box::new(slug.clone()));
             vals.push(Box::new(lanes.lanes));
+        }
+        // With the checks taking turns the owner's work is bounded too
+        // (owner_work_bound): each of its runs past the share gets a commit
+        // cap for the checks in flight when it starts, and a run started
+        // later would queue one more check in front of an earlier run's
+        // commit. At a share of one, eight owner tasks of the brain leasing
+        // at once would each wait out the others' 23-minute checks.
+        if let Some(bound) = owner_work_bound(s) {
+            sql.push_str(&format!(
+                " AND NOT (j.kind IN ({work_kinds}) AND {OWNER_DRIVEN_SQL} AND (SELECT COUNT(*) FROM jobs k WHERE k.project = j.project AND k.kind IN ({work_kinds}) AND {OCCUPIED_JOB_SQL}) >= ?)"
+            ));
+            vals.push(Box::new(bound));
+        }
+        // One slot is kept back from the owner's work past its share
+        // (LeaseOpts::keep_slot): eight owner tasks once took every slot
+        // they could, and the lead's sitting for the owner's next message
+        // would have waited one out.
+        if o.keep_slot {
+            sql.push_str(&format!(
+                " AND NOT (j.kind IN ({work_kinds}) AND {OWNER_DRIVEN_SQL} AND (SELECT COUNT(*) FROM jobs k WHERE k.project = j.project AND {OCCUPIED_JOB_SQL}) >= ?)"
+            ));
+            vals.push(Box::new(limit));
         }
         // The owner's work goes first in its project: while an owner-driven
         // work job is queued there, the fleet's work jobs of that project
@@ -1347,6 +1393,133 @@ mod tests {
         assert_eq!(super::commit_cap_over_lanes(&s, "proj"), None);
     }
 
+    #[test]
+    fn the_owners_work_at_a_share_of_one_widens_its_commit_cap_and_stops_at_the_lock_bound() {
+        // Review of PR 276: eight busy projects make the share 1, and the
+        // owner's tasks of one project lease past it. With the verify lock
+        // on (the brain: a ~23-minute check, a 40-minute commit cap) the
+        // second run's commit queues behind the first one's check, so its
+        // cap must cover it; a share of one once returned before reading
+        // the check's time, and no cap was widened.
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        assert_eq!(super::parallel_per_project(&s), 1);
+        s.set_setting(hive_store::HUMAN_AGENT, "harness.step_timeout", "900")
+            .unwrap();
+        s.set_setting(hive_store::HUMAN_AGENT, "harness.commit_timeout", "2400")
+            .unwrap();
+        s.set_setting(
+            hive_store::HUMAN_AGENT,
+            crate::verify_lock::SETTING,
+            crate::verify_lock::PROJECT,
+        )
+        .unwrap();
+        record_landing_verify(&s, "proj", "2026-09-01T00:00:00Z", 1380);
+        let lanes = super::project_lanes(&s, "proj");
+        assert_eq!(
+            (lanes.lanes, lanes.base, lanes.verify_seconds),
+            (1, 1, Some(1380)),
+            "{lanes:?}"
+        );
+        assert_eq!(super::owner_work_bound(&s), Some(2));
+        for name in ["aurora", "borealis", "cinder"] {
+            join(&s, name);
+        }
+        let lease = |agent: &str| {
+            super::lease_job(
+                &s,
+                agent.into(),
+                crate::test_helpers::TEST_NOW.into(),
+                super::LeaseOpts {
+                    any_proj: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        let first = queue(&s, "proj", "task", "task:TASK-001", 80);
+        let second = queue(&s, "proj", "task", "task:TASK-002", 80);
+        let third = queue(&s, "proj", "task", "task:TASK-003", 80);
+        // The first run alone: the harness's own cap does.
+        assert_eq!(lease("aurora").str("id"), first);
+        assert_eq!(super::commit_cap_over_lanes(&s, "proj"), None);
+        // The second, past the share: its commit may wait for the first's
+        // check before its own, two checks and a step's grace.
+        assert_eq!(lease("borealis").str("id"), second);
+        let cap = super::commit_cap_over_lanes(&s, "proj");
+        assert_eq!(cap, Some(2 * 1380 + 900));
+        // A third would queue its check in front of the second's commit,
+        // whose cap was fixed when it started: it waits.
+        let none = lease("cinder");
+        assert!(
+            none.0.is_empty(),
+            "a third owner run leased past the lock's bound: {none:?}"
+        );
+        assert_eq!(
+            super::job_row(&s.conn().unwrap(), third.clone()).str("status"),
+            "queued"
+        );
+        // Without the lock nothing queues behind another's check, and the
+        // owner's work takes the free slot.
+        s.set_setting(
+            hive_store::HUMAN_AGENT,
+            crate::verify_lock::SETTING,
+            crate::verify_lock::OFF,
+        )
+        .unwrap();
+        assert_eq!(super::owner_work_bound(&s), None);
+        assert_eq!(lease("cinder").str("id"), third);
+    }
+
+    #[test]
+    fn the_last_free_slot_is_kept_from_the_owners_work_past_its_share() {
+        // Review of PR 276: with every slot on the owner's tasks, a lead's
+        // sitting for the owner's message, an answer, a review or another
+        // project's owner task waits for a task to end. The machine's last
+        // free slot (LeaseOpts::keep_slot) takes none of the owner's work
+        // past its project's share; within the share it still does.
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        add_second_project(&s, "other");
+        assert_eq!(super::parallel_per_project(&s), 1);
+        for name in ["aurora", "borealis", "cinder", "dusk"] {
+            join(&s, name);
+        }
+        let lease = |agent: &str, keep_slot: bool| {
+            super::lease_job(
+                &s,
+                agent.into(),
+                crate::test_helpers::TEST_NOW.into(),
+                super::LeaseOpts {
+                    any_proj: true,
+                    keep_slot,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        let first = queue(&s, "proj", "task", "task:TASK-001", 80);
+        let second = queue(&s, "proj", "task", "task:TASK-002", 80);
+        assert_eq!(lease("aurora", false).str("id"), first);
+        // The last free slot: the second task of `proj` is past the share
+        // and does not take it.
+        let none = lease("borealis", true);
+        assert!(
+            none.0.is_empty(),
+            "the owner's task past its share took the kept slot: {none:?}"
+        );
+        // Another project's owner task is within its share and does.
+        let elsewhere = queue(&s, "other", "task", "task:TASK-009", 80);
+        assert_eq!(lease("borealis", true).str("id"), elsewhere);
+        // So does the owner's answer in the busy project.
+        let answer = queue(&s, "proj", "answer", "question:abc", 80);
+        assert_eq!(lease("cinder", true).str("id"), answer);
+        // Any slot but the last still takes the task past the share.
+        assert_eq!(lease("dusk", false).str("id"), second);
+    }
+
     /// A held harness session of `job` by `agent`: what a run leaves when
     /// the runner's restart asked it to hold.
     fn hold_session(s: &hive_store::Store, id: &str, job: &str, agent: &str) {
@@ -1664,17 +1837,103 @@ mod tests {
             "the owner's tasks ran one at a time"
         );
         assert_eq!(leased[4], idle[0], "{leased:?}");
+        // The owner's project runs four at once against a share of one: the
+        // owner's work is not held to the share (review of PR 276).
+        assert_eq!(super::occupied_work_jobs(&s, "proj"), 4);
+        assert!(
+            super::occupied_work_jobs(&s, "proj") > i64::from(super::parallel_per_project(&s)),
+            "the owner's work was held to its project's share"
+        );
         // The daemon leases only into a free slot, so past the five nothing
-        // more starts; asked for one more anyway, the fleet's work keeps its
-        // share: p1, already running one job, does not get its second.
-        join(&s, "fjord");
+        // more starts; asked for more anyway, the fleet's work keeps its
+        // share: every idle project gets its one job, and p1, already
+        // running one, never gets its second.
+        let more = [
+            "fjord", "glade", "heath", "inlet", "jetty", "knoll", "lagoon",
+        ];
+        for name in more {
+            join(&s, name);
+        }
+        let leased_more = more.iter().map(|a| lease(a)).collect::<Vec<_>>();
         assert_eq!(
-            lease("fjord"),
-            idle[1],
+            leased_more[..6],
+            idle[1..],
+            "the idle projects each take their one lane"
+        );
+        assert_eq!(
+            leased_more[6], "",
             "fleet work leased past its project's share"
         );
         let conn = s.conn().unwrap();
         assert_eq!(super::job_row(&conn, idle_2).str("status"), "queued");
+    }
+
+    #[test]
+    fn two_owner_projects_share_the_free_slots_turn_about() {
+        // Review of PR 276: the owner's work leases past its project's
+        // share, so with the owner's tasks queued in two projects one of
+        // them could take every slot while the other's waited. The slots go
+        // turn about instead: the project that leased longest ago first.
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        add_second_project(&s, "other");
+        s.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO projects (slug, name, path, remote, brain, verify_cmd, default_branch, status, added_at, added_by, last_seen) VALUES ('idle', 'idle', '/nowhere/idle', '', 0, '', 'main', 'active', ?1, ?2, ?1)",
+                rusqlite::params![s.now(), hive_store::HUMAN_AGENT],
+            )
+            .unwrap();
+        crate::capacity::unpin_per_project(&s);
+        s.set_setting(hive_store::HUMAN_AGENT, "capacity", "5")
+            .unwrap();
+        let mine = (1..=4)
+            .map(|n| queue(&s, "proj", "task", &format!("task:TASK-10{n}"), 80))
+            .collect::<Vec<_>>();
+        let theirs = (1..=4)
+            .map(|n| queue(&s, "other", "task", &format!("task:TASK-20{n}"), 80))
+            .collect::<Vec<_>>();
+        let fleet = queue(&s, "idle", "improve", "lead-idle:idle:1", 1);
+        assert_eq!(
+            super::parallel_per_project(&s),
+            2,
+            "five slots, three projects with work"
+        );
+        let agents = ["aurora", "borealis", "cinder", "dusk", "ember"];
+        for name in agents {
+            join(&s, name);
+        }
+        // One lease a minute, as the daemon's ticks would: the fairness
+        // between projects reads when each project last leased.
+        let leased = agents
+            .iter()
+            .enumerate()
+            .map(|(i, agent)| {
+                super::lease_job(
+                    &s,
+                    (*agent).into(),
+                    format!("2026-09-06T10:0{i}:00Z"),
+                    super::LeaseOpts {
+                        any_proj: true,
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+                .str("id")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            leased,
+            [&mine[0], &theirs[0], &mine[1], &theirs[1], &mine[2]].map(String::clone),
+            "the owner's two projects take the slots turn about"
+        );
+        // Past the share of two in one project, and in neither all five.
+        assert_eq!(super::occupied_work_jobs(&s, "proj"), 3);
+        assert_eq!(super::occupied_work_jobs(&s, "other"), 2);
+        // The fleet's job waits behind both projects' owner work.
+        let conn = s.conn().unwrap();
+        assert_eq!(super::job_row(&conn, fleet).str("status"), "queued");
     }
 
     #[test]
