@@ -7,7 +7,8 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardKind, ItemCardMeta, ItemCardTitle } from "./item-card";
-import { DecideButtons } from "./decide-buttons";
+import { AnswerPicker } from "./decide-buttons";
+import { questionAnswers } from "@/lib/owner-questions";
 import { HeldoutButton } from "./heldout";
 import { evolvePlanningView } from "./evolve-planning";
 import { RECORD_WORD, baselineRetry, gateStep, noneStep, type GateStep } from "./evolve-gate";
@@ -413,7 +414,7 @@ export function SelfImprovementPanel({ gates, error, fixtures, docs, className, 
                 {sentence(openQuestion.summary)}{" "}
                 <Link href={hrefs.post(gates.project, openQuestion.id)} className="text-muted-foreground underline underline-offset-2 hover:text-foreground">Read the post</Link>
               </span>
-              <DecideButtons id={openQuestion.id} summary={openQuestion.summary} stop={openQuestion.stop} canDecide={canDecide} yesLabel={openQuestion.stop ? "Yes, continue" : "Yes"} noLabel={openQuestion.stop ? "No, keep it stopped" : "No"} />
+              <AnswerPicker id={openQuestion.id} summary={openQuestion.summary} stop={openQuestion.stop} canDecide={canDecide} answers={questionAnswers(openQuestion, openQuestion.stop, { yes: "Yes, continue", no: "No, keep it stopped" })} />
             </div>
           ) : null}
           {waits && step ? <StepBlock step={step} /> : null}

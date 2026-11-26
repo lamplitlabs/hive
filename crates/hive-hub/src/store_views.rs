@@ -213,7 +213,24 @@ impl Handler {
             .unwrap_or("")
             .trim()
             .to_string();
-        match hive_board::decide(store, &id, &answer, &words, hive_store::HUMAN_AGENT) {
+        // TASK-129: the console sends the label of the answer the owner
+        // picked; the store reads what it means from the ask itself.
+        let option = payload
+            .get("option")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let decided = if option.is_empty() {
+            hive_board::decide(store, &id, &answer, &words, hive_store::HUMAN_AGENT)
+        } else {
+            hive_board::decide_option(store, &id, &option, &words, hive_store::HUMAN_AGENT)
+        };
+        let answer = match &decided {
+            Ok(d) if !option.is_empty() => d.answer.clone(),
+            _ => answer,
+        };
+        match decided {
             Ok(decision) => crate::server::write_json(
                 w,
                 200,

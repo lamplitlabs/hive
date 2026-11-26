@@ -967,6 +967,65 @@ pub fn decide_with(
     Ok(out)
 }
 
+/// The owner's pick of one of the answers an ask names (`ask_options`):
+/// a `Yes:` / `No:` answer records that yes or no; an `Option:` answer records
+/// the owner's yes with the label as the answer. The picked option is the
+/// reason (TASK-129: "the picked option carries the reason"); a note is
+/// optional and follows it.
+pub fn decide_option(
+    s: &hive_store::Store,
+    post_id: &str,
+    option: &str,
+    note: &str,
+    decided_by: &str,
+) -> Result<Decision> {
+    let target = crate::posts::post_by_id(s, post_id)?
+        .ok_or_else(|| refuse(2, format!("No post {}", py_repr(post_id))))?;
+    let options = crate::ask_options::ask_options(&target.body);
+    let Some(picked) = options.find(option).cloned() else {
+        let names = options
+            .options
+            .iter()
+            .map(|o| py_repr(&o.label))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(refuse(
+            2,
+            if names.is_empty() {
+                format!("Post {post_id} names no answers to pick; answer yes or no")
+            } else {
+                format!(
+                    "Post {post_id} has no answer {}; pick one of {names}",
+                    py_repr(option)
+                )
+            },
+        ));
+    };
+    let answer = if picked.answer.is_empty() {
+        "yes"
+    } else {
+        picked.answer.as_str()
+    };
+    decide(s, post_id, answer, &option_words(&picked, note), decided_by)
+}
+
+/// The words a pick records: the picked answer (and what it does), then
+/// the owner's optional note.
+pub fn option_words(picked: &crate::ask_options::AskOption, note: &str) -> String {
+    let mut words = format!("Picked: {}", picked.label);
+    if !picked.effect.is_empty() {
+        words.push_str(&format!(" ({})", picked.effect));
+    }
+    if picked.recommended {
+        words.push_str(" - the recommended answer");
+    }
+    let note = note.trim();
+    if !note.is_empty() {
+        words.push_str(&format!(". {note}"));
+    }
+    words
+}
+
 #[allow(clippy::too_many_arguments)]
 fn create_decision_result_conn(
     s: &hive_store::Store,
@@ -2284,6 +2343,67 @@ mod tests {
             .contains("does not authorize")
         );
         assert_eq!(agent_gate(&s, "pair: other", "", "").unwrap(), "");
+    }
+
+    #[test]
+    fn decide_option_records_the_pick_and_refuses_unknown_answers() {
+        let _serial = crate::test_helpers::serial();
+        let (_dir, s, p) = fixture();
+        join_alice(&s);
+        let ask = |body: &str, thread: &str| {
+            crate::posts::create_post(
+                &s,
+                crate::posts::PostInput {
+                    kind: "question".into(),
+                    project: p.slug.clone(),
+                    area: "api".into(),
+                    thread: thread.into(),
+                    summary: "Which provider pays?".into(),
+                    body: body.into(),
+                    agent: "alice".into(),
+                    for_owner: true,
+                    date: "2026-09-06T09:10:00Z".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        let q = ask(
+            "Option: Stripe - cards\nOption: Paddle - merchant of record\nRecommended: Stripe - fewer moving parts",
+            "pay",
+        );
+        assert_eq!(
+            err_what(decide_option(&s, &q.id, "Square", "", "")),
+            "Post ".to_string() + &q.id + " has no answer 'Square'; pick one of 'Stripe', 'Paddle'"
+        );
+        let d = decide_option(&s, &q.id, "stripe", "", "").unwrap();
+        assert!(
+            d.result
+                .body
+                .contains("Picked: Stripe (cards) - the recommended answer"),
+            "{}",
+            d.result.body
+        );
+
+        let yn = ask(
+            "Yes: Upgrade it\nNo: Keep watching\nRecommended: No - a fix is near",
+            "yn",
+        );
+        let d = decide_option(&s, &yn.id, "No", "later", "").unwrap();
+        assert_eq!(d.result.resolution, "declined");
+        assert!(
+            d.result
+                .body
+                .contains("Picked: Keep watching - the recommended answer. later"),
+            "{}",
+            d.result.body
+        );
+
+        let bare = ask("Pick one.", "bare");
+        assert_eq!(
+            err_what(decide_option(&s, &bare.id, "Stripe", "", "")),
+            "Post ".to_string() + &bare.id + " names no answers to pick; answer yes or no"
+        );
     }
 
     #[test]

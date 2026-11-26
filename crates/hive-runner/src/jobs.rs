@@ -7946,7 +7946,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         let s = crate::test_helpers::new_store();
         crate::test_helpers::new_bare_repo(&s);
         join(&s, "borealis");
-        let ask = |thread: &str, summary: &str| {
+        let ask = |thread: &str, summary: &str, body: &str| {
             crate::board::create_post(
                 &s,
                 crate::test_helpers::TEST_NOW.into(),
@@ -7957,6 +7957,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
                     thread: thread.into(),
                     agent: crate::board::actor_agent(&s, "borealis".into()),
                     summary: summary.into(),
+                    body: body.into(),
                     for_owner: true,
                     ..Default::default()
                 },
@@ -7964,8 +7965,13 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             .unwrap()
         };
         // A hard stop alone never wakes the lead, here or away: it waits
-        // for the owner on the Sessions strip.
-        ask("budget", "for the owner: raise the budget?");
+        // for the owner on the Sessions strip, with its answers and the
+        // Recommended one (TASK-129).
+        ask(
+            "budget",
+            "for the owner: raise the budget?",
+            "Option: 50 a month - the current cap\nOption: 100 a month - room for the evolve loop\nRecommended: 50 a month - spend has stayed under it",
+        );
         let lead_jobs = || test_rows(&s, "SELECT * FROM jobs WHERE kind = 'lead'", &[]);
         let lines = crate::lead::tend_lead(
             &s,
@@ -7977,7 +7983,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
 
         // A routine ask wakes the lead with the owner present (the default):
         // nothing waits on the owner by default (TASK-129).
-        ask("naming", "for the owner: rename the parser module?");
+        ask("naming", "for the owner: rename the parser module?", "");
         let lines = crate::lead::tend_lead(
             &s,
             "proj".into(),
@@ -9005,13 +9011,15 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         join(&s, "aurora");
         crate::lead::ensure_lead(&s, "proj".into()).unwrap();
         assert!(!s.owner_away(), "the fixture is about a present owner");
-        // A hard stop alone never wakes the lead.
+        // A hard stop alone, with its answers and the Recommended one, never
+        // wakes the lead (one without them does: TASK-129, the lead writes
+        // them out).
         let stop = owner_ask(
             &s,
             "handoff",
             "publish-site",
             "Publish the new wording on hivefleet.dev",
-            "Yes: Deploy it to production\nNo: Hold it\n",
+            "Yes: Deploy it to production\nNo: Hold it\nRecommended: No - the wording is not reviewed yet\n",
             true,
         );
         let lines = crate::lead::tend_lead(
@@ -9034,7 +9042,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             "finding",
             "dependabot",
             "Dependabot #30 (low): no patched version of hono exists yet",
-            "Yes: Look for a way around it\nNo: Keep watching\n",
+            "Yes: Look for a way around it\nNo: Keep watching\nRecommended: No - a patch is likely soon\n",
             true,
         );
         let lines = crate::lead::tend_lead(

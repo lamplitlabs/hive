@@ -58,7 +58,7 @@ you** tab holds these kinds of row:
 
 | Kind | What waits | Buttons on the row |
 | --- | --- | --- |
-| **Questions** | An agent or the runner asked you something, or put a finding to you for a call. | **Yes** and **No**, or **Answer** |
+| **Questions** | An agent or the runner asked you something, or put a finding to you for a call. | One button per answer, the **Recommended** one first ([section 3](#3-answer-a-question-or-a-proposal)) |
 | **Decisions** | A decision record (a written decision the agents wait on) that an agent proposed. | **Decline**, **Defer**, **Accept** |
 | **Proposals** | A change the agents agreed on that needs your yes or no. | **Decline**, **Accept** |
 | **Compute requests** | An agent asked for one more machine, which costs money while it runs, so it is always on the Sessions strip too. | **Deny**, **Approve** |
@@ -73,14 +73,22 @@ nothing on it waits for you.
 
 ## 3. Answer a question or a proposal
 
-In the console the answer is on the row:
+Every question that reaches you carries its answers: two or more to pick
+from, each with a line that says what picking it does, and one marked
+**Recommended**, first, with a line of why. You answer with one pick and
+never have to type. A question an agent sent without answers, or with none
+recommended, does not reach you: it goes back to the project's lead, which
+writes the answers or decides it.
 
-- A yes-or-no question has **Yes** and **No**. Some posts name their own
-  words for the two, such as **Upgrade it** and **Leave it to me**. A
-  dialog takes an optional note for the agents.
-- A question that starts with a word like which, what or how has
-  **Answer**. It opens a box under the row: write under **Your answer**
-  and press **Send answer**.
+In the console the answers are on the row:
+
+- A yes-or-no question has **Yes** and **No**, or the post's own words for
+  the two, such as **Upgrade it** and **Leave it to me**.
+- A question with more than two answers, such as *which provider pays?*,
+  has one button per answer.
+- The recommended answer comes first and carries **Recommended**. Pressing
+  an answer opens a dialog that says what it does; a note for the agents
+  is optional.
 - *Self-improvement stopped. May it carry on?* has **Carry on** and **Keep
   paused**. When the stop followed a failed experiment, either answer lets
   the loop plan again: to keep it stopped,
@@ -92,11 +100,13 @@ agents read it. A yes also queues one job (one run of an agent) to act on
 it, except on the self-improvement question and on a post Hive acts on
 itself, such as a proposed goal. In a terminal, `hive proposals` names each
 waiting proposal and `hive queue` lists the questions that wait for the
-owner. Read the post, then decide it:
+owner. Read the post, then decide it with `yes`, `no` or the label of one
+of its answers:
 
 ```bash
 hive show 20261123T042647Z-quartz-14
 hive decide 20261123T042647Z-quartz-14 yes --words 'Yes, and cap the total wait at ten seconds.'
+hive decide 20261123T042647Z-cinder-3 'A local fake'
 ```
 
 ```text
@@ -104,8 +114,8 @@ recorded yes as 20261123T042652Z-human
 queued job-20261123T042652Z-85dbad: Act on the human's yes: Retry upstream calls five times
 ```
 
-An open question is answered the same way: `yes`, with the answer in
-`--words`.
+A pick records the answer, what it does and whether it was the
+recommended one; `--words` adds your note.
 
 ## 4. Answer a lead on a task
 
@@ -116,7 +126,9 @@ lead asks *is it what you wanted?*
 
 Open the task. The lead's message says why and carries answers to press,
 such as **Use your judgement**, **Good enough, close it** and **Change
-what I asked**. Press one, or write your own words. An answer that says
+what I asked**, with the one the lead recommends marked and first. A lead
+cannot send you a question without them. Press one; writing your own words
+stays possible for steering, never required. An answer that says
 *close it* ends the task, and **Change what I asked** opens **Edit the
 task**. Any other answer goes to the lead and puts the task back to **In
 progress**.
@@ -134,7 +146,7 @@ MSG-20261123T040046Z-1 sent on TASK-001
 
 | What waits | In the console | In a terminal |
 | --- | --- | --- |
-| A decision record | The project's **For you** tab (and the Sessions strip when it is a hard stop), or **Records** under **Waiting on you**. Read it, then **Accept**, **Defer** or **Decline**. Each needs a few words. | `hive record accept ADR-001 --words '...'` or `hive record status ADR-001 Rejected` |
+| A decision record | The project's **For you** tab (and the Sessions strip when it is a hard stop), or **Records** under **Waiting on you**. Read it, then **Accept**, **Defer** or **Decline**. Each comes with a reason already written, which you may change. | `hive record accept ADR-001 --words '...'` or `hive record status ADR-001 Rejected` |
 | A request for a machine | **Approve** or **Deny** on the row. A denial needs a reason. | `hive compute list`, then `hive compute approve CR-001` or `hive compute deny CR-001 --words '...'` |
 | Suggested work | **Accept** makes the task, **Decline** drops it ([Give a task and steer it](tasks.md)). | `hive task suggestions --status owner`, then `hive task review SUG-001 accept --reason '...'` |
 | A drafted constitution or evaluators | **Read & adopt** or **Discard** ([Set the rules agents work under](rules.md)). | `hive record drafts`, then `hive record adopt EVO-constitution-my-app` or `hive record discard EVO-constitution-my-app` |

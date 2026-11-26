@@ -62,6 +62,21 @@ pub(crate) struct OwnerQuestion {
     /// Why only the owner can decide it (`hive_board::hard_stop_ask`);
     /// empty for a routine ask the lead decides (TASK-129).
     pub hard_stop: String,
+    /// What the ask still lacks before the owner may be asked (TASK-129):
+    /// empty when it names two answers or more and one recommended, else
+    /// [`hive_board::AskOptions::missing`]. Such an ask is the lead's.
+    pub needs_options: String,
+}
+
+/// What an ask's body still lacks before it may reach the owner (TASK-129);
+/// empty when it is ready.
+pub(crate) fn ask_needs_options(body: &str) -> String {
+    let o = hive_board::ask_options(body);
+    if o.ready() {
+        String::new()
+    } else {
+        o.missing()
+    }
 }
 
 /// The post kinds, besides a question, that wait for the owner when marked
@@ -250,10 +265,10 @@ pub(crate) fn lead_brief(
     let (rules, next) = away_lead_rules(slug.clone(), away, 7);
     b.push_str(&format!("## What to do\n\n\
 1. For each task: read `hive task show <id>` (brief, revisions, messages, jobs so far) and the owner's messages above.\n\
-2. Reply to the owner with `hive msg send --project {slug} --task <id> \"...\"` (or `hive task reply <id> \"...\"`; `hive msg send --project {slug} \"...\"` for the project as a whole): what you understood, what you will do, and any question only the owner can answer. Short and concrete. When the owner has to decide, offer two to four answers to tap instead of a blank to fill: `--choice \"<your recommendation>\" --choice \"<the alternative>\"` (a plain label is sent back as the owner's reply; `LABEL=done` closes the task, `LABEL=amend` opens the brief); ask for written words only when no short list of answers exists. Never repeat a question the owner has not answered yet.\n\
+2. Reply to the owner with `hive msg send --project {slug} --task <id> \"...\"` (or `hive task reply <id> \"...\"`; `hive msg send --project {slug} \"...\"` for the project as a whole): what you understood, what you will do, and any question only the owner can answer. Short and concrete. When the owner has to decide, offer two to four answers to tap - the owner never types an answer, so a question without them is refused: `--choice \"<your recommendation> - what it does\" --choice \"<the alternative> - what it does\" --recommend \"<your recommendation>\"` (exactly one recommended; a plain label is sent back as the owner's reply; `LABEL=done` closes the task, `LABEL=amend` opens the brief). When you cannot name the answers, the question is not ready for the owner: find out more, or decide it yourself. Never repeat a question the owner has not answered yet.\n\
 3. Break each task into jobs a worker can finish in one run and verify with the project's own checks: `hive job add --project {slug} --kind task --source task:<id> --title \"...\" --brief \"...\" [--tier 0|1] --priority <the task's priority>`. Few, whole jobs: one task is one or two jobs that each finish a whole slice with its tests, not a chain of five - every job lands separately and each landing runs the project's verify. When one task needs several jobs, the first takes `--source task:<id>` and the rest `--source task:<id>:<label>` (`hive job add` keeps one open job per source); all of them count as the task's jobs. Every task gets its own job: never fold two tasks into one job - a task is known to be planned only by a job whose source names it (or whose brief names it on a `Covers: <id>, <id>` line), so the task a merged job does not name sits planned with nothing behind it; when one change truly does two tasks, queue it under the first task's source and write `Covers: <the other task ids>` on a line of its brief so every task it covers moves with it and closes when it lands; when two tasks touch the same code, queue one job per task and keep the second waiting on the first (or say in the second's brief what the first lands). The brief says exactly what to change, where, and how the worker proves it; the task's priority is the jobs' priority, so urgent work runs first. Queue independent, non-overlapping changes together; keep dependent changes in one job or wait for the prerequisite to land. Slice vertically, never by layer: the first job makes the thinnest path work end to end (the control, its route, the store call, what the model or the user sees) with a test that walks the whole path, and the next jobs widen it; a UI job, a store job and one job per provider each pass their own tests and leave the join to nobody - six such slices once landed with the owner's picture never reaching the model. Once every job of a split task has landed, the daemon queues one more (`task:<id>:accept`) that checks the whole against the ask on the default branch before the owner is asked; when it ends `blocked: missing ...`, that comes back to you as a failed job to plan. Reuse active jobs and claims instead of asking two workers to repair the same cause. Do not create jobs for a task whose open questions the owner has not answered - ask instead (once). A missing tool, dependency or fixture in a worker clone is not a reason to park a task: queue the job with the gap written into its brief and let the worker report what it could not verify - the owner asked that nothing wait on a human that agents can do.\n\
 4. Set `hive task status <id> planned` once its jobs exist, and only then: the daemon sends a planned task that no job names back to you (`unplanned`), and to the owner in review when it happens again. Tell the owner \"queued\" only for jobs you queued.\n\
-5. A parked task (open, no jobs since your last run): re-check the blocker yourself now - environments change (`hive env show --project {slug}`, the clone in front of you) - and plan the jobs when it is gone. When the only blocker is an answer the owner alone can give, queue nothing and end with `SUMMARY: waiting on the owner: <the question>`; the daemon wakes you again on the owner's next message or amendment, and on a schedule that doubles each time. A blocker you can check yourself - a decision record not yet merged or accepted, a branch not yet landed, an environment still missing - is never a reason to put a task in review: review is for a decision the owner alone can take, and the hub shows every review as *waits for your decision*. A task you did send to review (`held` below) comes back to you on the same doubling schedule: re-check the blocker, and when it is gone put the task back with `hive task status <id> in_progress` and plan it; when it stands, say so in one message with `--choice` answers the owner can tap.\n\
+5. A parked task (open, no jobs since your last run): re-check the blocker yourself now - environments change (`hive env show --project {slug}`, the clone in front of you) - and plan the jobs when it is gone. When the only blocker is an answer the owner alone can give, queue nothing and end with `SUMMARY: waiting on the owner: <the question>`; the daemon wakes you again on the owner's next message or amendment, and on a schedule that doubles each time. A blocker you can check yourself - a decision record not yet merged or accepted, a branch not yet landed, an environment still missing - is never a reason to put a task in review: review is for a decision the owner alone can take, and the hub shows every review as *waits for your decision*. A task you did send to review (`held` below) comes back to you on the same doubling schedule: re-check the blocker, and when it is gone put the task back with `hive task status <id> in_progress` and plan it; when it stands, say so in one message with `--choice` answers the owner can tap, one of them `--recommend`ed.\n\
 6. A task whose jobs failed and none runs: read each failure (`hive task show <id>` lists the results), then queue a corrected job - smaller, or another approach. Inspect the evidence and try to resolve an ordinary blocker yourself; ask a relevant peer for a focused diagnosis when useful. Fix a shared prerequisite once before retrying its dependents, and do not duplicate a recovery already queued by the daemon. When the failure is a decision only the owner can take, `hive task status <id> review` and tell the owner why in one message that carries the answers to pick (`--choice`) - a review without answers to pick gets them from the daemon in your name, so write them yourself; a task with three failed jobs goes to review by itself, with the choices to carry on, close, or change it. The owner's next message on a task in review puts it back in progress and wakes you: act on the answer. When the owner's task has landed, the daemon asks the owner in the chat whether it is what they wanted; an answer of \"Not what I meant\" (or words to that effect) means: read the brief against what landed, say in one message what you will change, and queue it - when you cannot tell what is missing, ask one question that carries the answers to pick.\n"));
     b.push_str(&rules);
     b.push_str(&format!("{next}. With the owner answered and every task planned, spend what is left of this run as the maintainer: a flaky test, doc drift, a failing scheduled check, a watcher or monitor the project lacks (`hive schedule add --project {slug} --title \"...\" --every 1d --kind check|watch --script .hive/automations/<name>.sh` once the script is landed under .hive/) - fix it here, commit with a message that names the cause, and the runner lands it. Leave anything larger to a job. Do not commit while the default branch is red (its fix job owns that).\n\
@@ -386,6 +401,7 @@ pub(crate) fn write_lead_owner_questions_section(
     let (routine, hard_stops): (Vec<_>, Vec<_>) =
         questions.into_iter().partition(|q| q.hard_stop.is_empty());
     let mut asks = 0;
+    let mut bare = 0;
     if routine.is_empty() {
         b.push_str("No open routine questions addressed to the owner.\n");
     }
@@ -441,8 +457,19 @@ pub(crate) fn write_lead_owner_questions_section(
                 "- {}{} {}/{} by {}: {} - {}",
                 q.id, kind, q.area, q.thread, q.agent, q.summary, q.hard_stop
             );
+            // The loop's stop carries its own answers in the console.
+            if !q.needs_options.is_empty() && q.summary != hive_evolve::STOP_SUMMARY {
+                bare += 1;
+                let _ = writeln!(b, "  not shown to the owner: {}", q.needs_options);
+            }
         }
         b.push_str("\nThese wait for the owner; do not answer them, but say in the task thread when one blocks a task.\n\n");
+    }
+    if bare > 0 {
+        let _ = write!(
+            b,
+            "An ask marked \"not shown to the owner\" names no answers to pick or no recommended one, so the console does not put it in front of the owner (TASK-129: the owner answers with one pick, never by typing): it is yours to fix. Only the owner can decide it (`hive decide` refuses it to you), so ask again with the answers written out and answer the bare ask with a pointer to the new one: a post body with `Option: <label> - <what it does>` lines (or `Yes:` and `No:`) and one `Recommended: <label> - <why>` line, or `hive task reply TASK-ID '<question>' --choice '<label> - <what it does>' --choice ... --recommend '<label>'`.\n\n"
+        );
     }
 }
 
@@ -828,7 +855,7 @@ pub(crate) fn lead_due(
         if now < follow_up_due(t.clone(), since) {
             continue;
         }
-        due.push(DueTask { detail: format!("held: you sent it to review at {held_at} and the owner has not answered. Re-check the blocker you named: when it is gone (a record merged or accepted, a branch landed, an environment ready), `hive task status {} in_progress` and plan the jobs; when only the owner can decide, say so in one message with `--choice` answers to pick.", t.id), why: HELD_WHY.into(), task: t });
+        due.push(DueTask { detail: format!("held: you sent it to review at {held_at} and the owner has not answered. Re-check the blocker you named: when it is gone (a record merged or accepted, a branch landed, an environment ready), `hive task status {} in_progress` and plan the jobs; when only the owner can decide, say so in one message with `--choice` answers to pick and `--recommend` the one you would take.", t.id), why: HELD_WHY.into(), task: t });
     }
     for t in hive_tasks::list(s, &slug, "in_progress")? {
         let jobs = task_jobs(s, &t)?;
@@ -1037,6 +1064,7 @@ pub(crate) fn owner_addressed_questions(
             yes: String::new(),
             no: String::new(),
             hard_stop: hive_board::hard_stop_ask("question", &q.str("summary"), &q.str("body")),
+            needs_options: ask_needs_options(&q.str("body")),
         })
         .collect()
 }
@@ -1129,6 +1157,7 @@ pub(crate) fn owner_addressed_asks(s: &hive_store::Store, slug: String) -> Vec<O
             agent: r.str("agent"),
             summary: r.str("summary"),
             kind: r.str("kind"),
+            needs_options: ask_needs_options(&r.str("body")),
             yes,
             no,
             hard_stop: hive_board::hard_stop_ask(&r.str("kind"), &r.str("summary"), &r.str("body")),
@@ -1382,7 +1411,11 @@ pub(crate) fn tend_lead(
         // A question the daemon asked (a restart drain, a login gate, a
         // lead seat) the daemon answers itself: it never wakes the lead.
         // Its findings (the security watcher's) are the lead's to decide.
-        if q.hard_stop.is_empty()
+        // A hard stop that names no answers to pick wakes the lead too: it
+        // never reaches the owner until the lead asks again with them.
+        let routine = q.hard_stop.is_empty();
+        let bare_hard_stop = !q.needs_options.is_empty() && q.summary != hive_evolve::STOP_SUMMARY;
+        if (routine || bare_hard_stop)
             && !(q.kind == "question" && q.agent == "daemon")
             && !recently_presented_to_lead(s, slug.clone(), now.clone(), q.id.clone())
         {
@@ -2094,7 +2127,7 @@ fn lead_spoke(
 /// itself ends the review.
 pub(crate) fn review_choices() -> Vec<hive_tasks::Choice> {
     vec![
-        hive_tasks::Choice::reply("Try again another way"),
+        hive_tasks::Choice::reply("Try again another way").recommended(),
         hive_tasks::Choice::with_action("Good enough, close it", "done"),
         hive_tasks::Choice::with_action("Change what I asked", "amend"),
     ]
@@ -2105,7 +2138,7 @@ pub(crate) fn review_choices() -> Vec<hive_tasks::Choice> {
 /// with a plain reply, closes the task, or changes the ask.
 pub(crate) fn hold_choices() -> Vec<hive_tasks::Choice> {
     vec![
-        hive_tasks::Choice::reply("Use your judgement"),
+        hive_tasks::Choice::reply("Use your judgement").recommended(),
         hive_tasks::Choice::with_action("Good enough, close it", "done"),
         hive_tasks::Choice::with_action("Change what I asked", "amend"),
     ]
@@ -2238,7 +2271,7 @@ pub(crate) const LANDED_CLOSE: &str = "Yes, close it";
 /// reply the lead reads against the brief), or change the ask.
 pub(crate) fn landed_choices() -> Vec<hive_tasks::Choice> {
     vec![
-        hive_tasks::Choice::with_action(LANDED_CLOSE, "done"),
+        hive_tasks::Choice::with_action(LANDED_CLOSE, "done").recommended(),
         hive_tasks::Choice::reply("Not what I meant"),
         hive_tasks::Choice::with_action("Change what I asked", "amend"),
     ]
@@ -3071,7 +3104,7 @@ mod tests {
             "proj-lead",
             "Red or blue?",
             &[
-                hive_tasks::Choice::reply("Red"),
+                hive_tasks::Choice::reply("Red").recommended(),
                 hive_tasks::Choice::reply("Blue"),
             ],
         )

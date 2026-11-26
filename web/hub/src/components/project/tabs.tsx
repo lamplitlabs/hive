@@ -2,8 +2,8 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import { ActivityIcon, ArrowRightIcon, BarChart3Icon, BellIcon, CheckCircle2Icon, FileDiffIcon, FolderGit2Icon, FolderIcon, FunnelIcon, LayoutGridIcon, ListIcon, MessageCircleQuestionIcon, MessageSquareIcon, MessagesSquareIcon, PencilIcon, RadioIcon, ReplyIcon, ScaleIcon, SearchIcon, ServerIcon, SettingsIcon, TargetIcon, VoteIcon } from "lucide-react";
-import { Button, buttonVariants } from "@/components/ui/button";
+import { ActivityIcon, ArrowRightIcon, BarChart3Icon, BellIcon, CheckCircle2Icon, FileDiffIcon, FolderGit2Icon, FolderIcon, FunnelIcon, LayoutGridIcon, ListIcon, MessageCircleQuestionIcon, MessageSquareIcon, MessagesSquareIcon, PencilIcon, RadioIcon, ScaleIcon, SearchIcon, ServerIcon, SettingsIcon, TargetIcon, VoteIcon } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -13,11 +13,11 @@ import { AmendmentCard, SuggestionCard } from "@/components/board/vote-cards";
 import { HygienePanel } from "@/components/hive/hygiene";
 import { Clamp } from "@/components/hive/clamp";
 import { DataTable } from "@/components/hive/data-table";
-import { DecideButtons } from "@/components/hive/decide-buttons";
+import { AnswerPicker, DecideButtons } from "@/components/hive/decide-buttons";
 import { DocRev, GateCard, SelfImprovementPanel } from "@/components/hive/evolve";
 import { useInbox } from "@/components/hive/inbox";
 import { KindTile } from "@/components/hive/kind-tile";
-import { ListItem, ListRow, ListRows, RowCue } from "@/components/hive/list-row";
+import { ListItem, ListRow, ListRows } from "@/components/hive/list-row";
 import { ComputeDecide, ComputeInboxCard } from "@/components/compute/compute";
 import { ProposedRecordCard } from "@/components/records/decide-record";
 import { DraftCard, RecordDraftPanel } from "@/components/records/draft-panel";
@@ -42,7 +42,7 @@ import { SuggestedWorkPanel, WorkSuggestionCard } from "@/components/tasks/sugge
 import { TASK_COLUMNS } from "@/components/tasks/task-columns";
 import { kindLabel, RECORD_COLUMNS, RecordCards, RecordSheet } from "@/components/records/records";
 import { hrefs } from "@/lib/nav";
-import { askTitle, decisionLabels, isOpenQuestion } from "@/lib/owner-questions";
+import { askTitle, questionAnswers } from "@/lib/owner-questions";
 import { cn } from "@/lib/utils";
 import { num, plural, rel, sentence } from "@/lib/format";
 import { agentName, statusWord, threadName } from "@/lib/words";
@@ -219,14 +219,6 @@ const inSentence = (who: string) => (who === "The runner" || who === "You" ? who
 
 // The cue on a row that leads to an answer box: drawn as a button, but a
 // span, since the row's title is the link or the opener.
-function AnswerCue() {
-  return (
-    <RowCue className={buttonVariants({ size: "xs" })}>
-      <ReplyIcon aria-hidden /> Answer
-    </RowCue>
-  );
-}
-
 function inboxRows(slug: string, mine: Omit<ReturnType<ReturnType<typeof useInbox>["forProject"]>, "total" | "agentsDeciding" | "machine" | "provider">, canDecide: boolean, openRecord: (r: RecordRow) => void, expand?: Expand): InboxRow[] {
   const rows: InboxRow[] = [];
   const opener = (key: string, href: string) => (expand ? { onOpen: () => expand.onExpand(expand.expanded === key ? null : key), selected: expand.expanded === key } : { href });
@@ -272,8 +264,7 @@ function inboxRows(slug: string, mine: Omit<ReturnType<ReturnType<typeof useInbo
     const key = "q" + q.id;
     const stop = q.stop === true;
     const who = q.agent || q.name || q.session || "";
-    const openQ = !stop && isOpenQuestion(q.summary, q.body);
-    const labels = decisionLabels(q.body, stop ? { yes: "Carry on", no: "Keep paused" } : { yes: "Yes", no: "No" });
+    const answers = questionAnswers(q, stop);
     const title = stop ? "Self-improvement stopped. May it carry on?" : q.summary;
     const what = stop ? "Self-improvement paused" : askTitle(q.kind, who ? inSentence(agentName(who)) : "an agent");
     rows.push({
@@ -284,8 +275,8 @@ function inboxRows(slug: string, mine: Omit<ReturnType<ReturnType<typeof useInbo
           lead={<KindTile kind="question" waiting title={stop ? "Self-improvement paused" : "Question for you"} />}
           title={title}
           actionsVisible
-          actions={canDecide ? openQ ? <AnswerCue /> : <DecideButtons id={q.id} summary={title} stop={stop} canDecide={canDecide} size="xs" yesLabel={labels.yes} noLabel={labels.no} className="w-auto justify-end" /> : undefined}
-          {...(openQ && !expand ? { href: hrefs.project(q.slug || slug, "for-you") } : opener(key, hrefs.post(q.slug || slug, q.id)))}
+          actions={canDecide ? <AnswerPicker id={q.id} summary={title} answers={answers} stop={stop} canDecide={canDecide} size="xs" className="w-auto justify-end" /> : undefined}
+          {...opener(key, hrefs.post(q.slug || slug, q.id))}
           ariaLabel={(stop ? "Self-improvement paused: " : "Question for you: ") + title}
         >
           <SecondLine who={q.stale ? what + " · older thread" : what} at={q.date} text={firstLine(q.body)} />

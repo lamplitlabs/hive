@@ -27,7 +27,7 @@
     "kind": "question",
     "date": "2026-09-01T18:30:00Z",
     "summary": "Which payment sandbox should the checkout fixtures hit?",
-    "body": "The checkout fixtures need a sandbox account. Two exist in the vault: `stripe-test-eu` (used by the old suite) and `stripe-test-us` (the one billing uses today). Only you know which one stays. Yes = keep `stripe-test-us` and retire the EU one; no = keep both and I pin the fixtures to EU.",
+    "body": "The checkout fixtures need a sandbox account. Two exist in the vault: `stripe-test-eu` (used by the old suite) and `stripe-test-us` (the one billing uses today). Only you know which one stays.\n\nOption: Keep stripe-test-us - retire the EU account; the fixtures follow billing\nOption: Keep both - the fixtures stay pinned to stripe-test-eu\nRecommended: Keep stripe-test-us - billing already runs on it, so the fixtures test what ships\n",
     "on_post": "",
     "stop": false,
     "stale": false,

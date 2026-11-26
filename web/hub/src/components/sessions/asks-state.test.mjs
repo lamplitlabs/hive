@@ -226,3 +226,22 @@ test("only the hard stops reach the strip: money, what can't be undone, credenti
   assert.equal(hardStopWords(1), "1 decision only you can make");
   assert.equal(hardStopWords(3), "3 decisions only you can make");
 });
+
+test("a question the hub marks hard_stop reaches the strip whatever its words (TASK-129)", () => {
+  const rows = forYouRows({
+    ...empty,
+    questions: [
+      { id: "Q-1", slug: "web", summary: "Ship the rename?", date: "2026-11-01T00:00:00Z", hard_stop: "is about publication" },
+      { id: "Q-2", slug: "web", summary: "Accept the new record?", date: "2026-11-02T00:00:00Z", hard_stop: "names ADR-072" },
+      { id: "Q-3", slug: "web", summary: "Evolution stopped; owner review needed", date: "2026-11-03T00:00:00Z", stop: true, hard_stop: "the evolution loop stopped (ADR-043)" },
+      { id: "Q-4", slug: "web", summary: "Keep the old API?", date: "2026-11-04T00:00:00Z", hard_stop: "" },
+    ],
+  });
+  const strip = hardStopRows(rows);
+  assert.deepEqual(strip.map((r) => [r.key, r.stopKind]), [
+    ["question:Q-1", "publication"],
+    ["question:Q-3", "owner"],
+    ["question:Q-2", "owner"],
+  ]);
+  assert.equal(HARD_STOP_LABEL.owner, "Only you");
+});

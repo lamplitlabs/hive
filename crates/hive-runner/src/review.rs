@@ -2051,7 +2051,13 @@ pub(crate) fn hand_to_owner(
         body.push_str(&format!("The review:\n\n{}\n\n", note.trim()));
     }
     body.push_str(&format!(
-        "Merge it from the task's sheet or the pull request's card in the hub, or with `hive review merge {n} --by owner --project {slug}`; close it on GitHub to drop it."
+        "Merge it from the task's sheet or the pull request's card in the hub, or with `hive review merge {n} --by owner --project {slug}`; close it on GitHub to drop it.\n\n{}",
+        hive_board::yes_no_lines(
+            ("Merge it", "your go-ahead is recorded; the merge itself is the Merge button on the pull request's card"),
+            ("Not yet", "it stays open; close it on GitHub to drop it"),
+            false,
+            "read the reasons above first; a merge is yours alone and cannot be undone by Hive",
+        )
     ));
     let post = crate::board::create_post(
         s,

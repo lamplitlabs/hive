@@ -2954,7 +2954,10 @@ pub(crate) fn run_job(
         {
             failures.note("answer", &e);
         }
-        for q in &parsed.questions {
+        for line in &parsed.questions {
+            // TASK-129: the answers ride on the line (`question | recommended
+            // | alternative`); a question without them goes to the lead.
+            let (q, answers) = hive_board::split_question_line(line);
             if let Err(e) = crate::board::create_post(
                 s,
                 now.to_string(),
@@ -2964,7 +2967,14 @@ pub(crate) fn run_job(
                     area: "jobs".into(),
                     thread: job.str("id"),
                     summary: q.clone(),
-                    body: format!("{}\n\n{q}\n", hive_board::WORKER_QUESTION_PREAMBLE),
+                    body: format!(
+                        "{}
+
+{q}
+
+{answers}",
+                        hive_board::WORKER_QUESTION_PREAMBLE
+                    ),
                     agent: arow.clone(),
                     session: run_id.clone(),
                     for_owner: true,
