@@ -381,6 +381,8 @@ The [guides](how-to/README.md) take one job each from start to finish:
 setting up a first project, giving a task, merging the work, turning on
 the loop, adding a machine.
 [Questions people ask](faq.md) has short answers to the first questions.
+[The AI-native SDLC](sdlc.md) follows work through Hive phase by phase,
+from an idea to running software and back.
 [Commands](commands.md) and [Settings](settings.md) are the reference. The
 other pages go deeper, one part each: [the console](console.md),
 [the runner](runner.md), [recovery and hygiene](recovery.md) and the

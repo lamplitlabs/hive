@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Before a build, two things of the repository are copied into public/, both
-// build products (git-ignored):
+// Before a build, three things of the repository go into public/, all build
+// products (git-ignored):
 //
 // - the installer the site serves at /install.sh is the repository's own
 //   scripts/install.sh, copied as it is, so the line on the front page and
@@ -9,10 +9,17 @@
 // - the pictures of the docs: every raster picture under docs/ goes to
 //   public/docs-media/ with its path, so a docs page shows a picture from
 //   this site and needs nothing from GitHub (src/lib/markdown.ts writes the
-//   address, scripts/check-out.mjs fails on one that is missing).
+//   address, scripts/check-out.mjs fails on one that is missing);
+// - the commit this build is made from, as public/commit.txt, so that anyone
+//   can ask the public address which commit it shows, and the check
+//   .hive/automations/site-shows-main.sh can tell when the site is behind
+//   main. A tree with changed or untracked files, or one that is no git
+//   checkout of its own, gets none: what it builds is not what a commit
+//   holds (scripts/commit-stamp.mjs).
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { commitStamp } from "./commit-stamp.mjs";
 
 const site = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const source = path.resolve(site, "../../scripts/install.sh");
@@ -25,6 +32,16 @@ if (size > 0) {
 } else {
   fs.rmSync(target, { force: true });
   console.log("prebuild: scripts/install.sh is not in this checkout (or is empty), so this build serves no /install.sh. The build goes on.");
+}
+
+const commitFile = path.join(site, "public", "commit.txt");
+const stamp = commitStamp(site);
+if (stamp.commit) {
+  fs.writeFileSync(commitFile, `${stamp.commit}\n`);
+  console.log(`prebuild: wrote public/commit.txt (${stamp.commit.slice(0, 12)}); the site serves it at /commit.txt.`);
+} else {
+  fs.rmSync(commitFile, { force: true });
+  console.log(`prebuild: ${stamp.reason}, so this build serves no /commit.txt. The build goes on.`);
 }
 
 // The same extensions as isDocPicture in src/lib/markdown.ts: raster pictures only. An SVG can carry script and

@@ -203,7 +203,12 @@ failure leaves no event and the next pass tries again. The merge below
 keeps its branch on the upstream while a pull request is based on it
 (`review.merged` names them in `branch_kept_for`): GitHub closes, and never
 reopens, the pull requests whose base branch an API merge with
-`--delete-branch` deletes - #170 was lost that way when #168 merged. Once
+`--delete-branch` deletes - #170 was lost that way when #168 merged. Every
+pull request the forge still has open counts, whatever its review said: one
+under a "changes" verdict whose fix job is running, one whose approved
+merge waits, one handed to you - only a merge or a close takes it off the
+list (#267 was closed for good when #266 merged while its fix job ran).
+Once
 the pass has moved every pull request off it, it deletes that branch,
 leased on the merged head (`<head> deleted on origin` in the log).
 A pull request below that is closed unmerged leaves its commits in the one
@@ -222,7 +227,14 @@ is rebuilt the same way on its new tip, so the whole stack above loses the
 commits. A replay that conflicts changes nothing: the pull request keeps
 its base and head, a `land.pr-held` hold names the closed pull request and
 the files, the origin is told what to do by hand, and the pull requests
-above it are left alone. A merge conflict with the pull request
+above it are left alone. The rebuild moves the pull request's branch only;
+a job branch that held the replayed commits stays where it was. A later
+build of the task - a follow-up job cut from the rebuilt head - does not
+merge such a branch again: a job branch whose own commits past the base
+(merges left out) are all in another side of the build already, by
+ancestry or as the same patch (`git cherry`), is passed over. Merged again,
+the old copies conflicted with the follow-up's edits of them, and #268 was
+held for you so. A merge conflict with the pull request
 below - rather than with the default branch - goes where a conflict went
 before: a task's branch to a rebase job whose brief names the pull request
 it must go onto, a job's branch to a `land.pr-held` hold that names the
@@ -479,7 +491,7 @@ them at `GET /api/v1/events?project=X&action=land.*`.
 | `land.pr-rebuilt` | a pull request stacked on one closed unmerged was rebuilt on the new base without the closed one's commits, force-pushed and retargeted | `project`, `kind`, `number`, `url`, `head`, `old_base`, `base` (the new one), `from` (the head before), `to` (the new head), `commits` (its own), `dropped` (`number` of the closed pull request, `commits` it took with it); the matching `land.pr` carries `rebuilt` true and `retargeted_from`. A rebuild that conflicts is a `land.pr-held` with `closed`, `base` and `files` instead |
 | `land.pr-held` | a branch could not be delivered this pass; written again each time a push or forge call that is tried again fails | `project`, `task`, `job` or `head` (with `conversation`, `experiment`, `archive` when they apply), `work` (the branch and commit it tried; a task's branches each with its commit, and the pull request they would stack on), `note` (why); `tries` on a hold for a failure on the way to the forge (how many such holds this work has had in a row, which sets the wait before the next try); `pushed` on a task's hold whose try pushed the branch before a later step failed (the commit it pushed, by which the next try knows the branch on the upstream as Hive's own) |
 | `land.merge-broken` | a task's job branches merged onto its base without a conflict, but the merged tree does not compile (`landing.merge_check`), and a job was queued to make them compile together | `project`, `task`, `tip` (the merged commit that failed), `base`, `jobs`, `branches` (the job branches merged this pass), `errors` (cargo's error lines, at most 20), `follow_up` (the fix job) |
-| `land.rebase` | a task's job branch conflicted with the task's base and a job was queued to bring it over | `project`, `task`, `job`, `branch`, `sha`, `files` (the paths left unmerged), `follow_up` (the rebase job), `base` (the default branch, or the branch of the pull request the task's stacks on) |
+| `land.rebase` | a task's job branch conflicted with the task's base and a job was queued to merge it over; or, with `join` true, the task's own branches conflicted with each other and one job was queued to merge them all | `project`, `task`, `job`, `branch`, `sha`, `files` (the paths left unmerged), `follow_up` (the rebase or join job), `base` (the default branch, or the branch of the pull request the task's stacks on); a join adds `join` true, `jobs`, `branches` and `shas` (every branch of the task it merges) |
 | `land.fast-forward` | the local default branch moved to the upstream, or could not | `project`, `branch`, `upstream`, `behind`, `ok`; `from`, `to`, `how` (`checkout`, `ref`) when it moved; `why` when it could not; a diverged branch is recorded once for each pair of tips, with `why`, `from`, `to` and `ahead` |
 | `land.realigned` | the local default branch held no work of its own and was moved to an upstream whose history was rewritten | `project`, `branch`, `upstream`, `from`, `to` (the full commit ids), `backup` (the ref that keeps the old tip), `ahead`, `behind` |
 | `land.sync-skipped` | the local default branch was left behind the upstream because the checkout is dirty and `landing.auto_stash` is off | `project`, `branch`, `upstream`, `behind`, `why`; at most once an hour per project |
@@ -505,9 +517,11 @@ each failure sets going:
 
 ```text
 ┌──────────────────┐ no ┌───────────────────┐ no, again ┌──────────────┐
-│ the job branches │ ─→ │ rebase job        │ ────────→ │ held until   │
-│ merge cleanly?   │    │ land.rebase       │           │ the work     │
-└────────┬─────────┘    └───────────────────┘           │ changes      │
+│ the job branches │ ─→ │ rebase job, or a  │ ────────→ │ held until   │
+│ merge cleanly?   │    │ join job when they│           │ the work     │
+│                  │    │ conflict with each│           │ changes      │
+│                  │    │ other; land.rebase│           │              │
+└────────┬─────────┘    └───────────────────┘           │              │
          │ yes                                          │              │
          ↓                                              │ land.pr-held │
 ┌──────────────────┐ no ┌───────────────────┐ no, again │              │
@@ -691,16 +705,35 @@ The same push or call would get the same answer four times a day for ever.
 The reasons, one by one:
 
 - **A task's branch does not merge onto the default branch**: the branch was
-  cut before something else landed on the same lines, or two jobs of one task
-  changed them. The first time, the pass does not hold the task: it queues a
-  `task` job on the same task - "Rebase `<branch>` onto `<default>`: `<task
-  title>`", with the conflicting files and the job's own account of its work
-  in the brief - records `land.rebase`, tells the task's conversation, and the
-  conflicting job keeps its result but loses the branch, so the task's pull
-  request opens from the rebased one once that job finishes. A second
+  cut before something else landed on the same lines. The first time, the
+  pass does not hold the task: it queues a `task` job on the same task -
+  "Rebase `<branch>` onto `<default>`: `<task title>`", with the conflicting
+  files and the job's own account of its work in the brief - records
+  `land.rebase`, tells the task's conversation, and the conflicting job
+  keeps its result but loses the branch, so the task's pull request opens
+  from the rebased one once that job finishes. The brief says merge, not
+  copy: `git merge --no-ff <commit>` from the base, the conflicts resolved
+  in the merge commit. The landing accepts another agent's commits as they
+  are when a merge reaches them and answers only for the worker's own; a
+  `git cherry-pick` or `git rebase` writes them anew under the worker's
+  name, and the landing refuses them (TASK-128's were refused so). A second
   conflict on the same task is held with the note naming the branch, the
   files and the rebase job that already ran: the work itself is at odds with
   what landed, and that is yours to settle.
+- **A task's branches conflict with each other**: two jobs of one task
+  changed the same lines, and each branch merges onto the base alone. That
+  is one job's work, not a rebase of the branch that came last: the pass
+  queues "Join the branches of `<task>` onto `<default>`: `<task title>`",
+  whose brief lists every branch of the task with the `git merge --no-ff
+  <commit>` that takes it in, records `land.rebase` with `join` true (and
+  `jobs`, `branches`, `shas`) and tells the task's conversation. The branches
+  stay with their jobs: once the join finishes, its branch carries them, so
+  the build passes them over (see the rebuild above) and merges the join
+  alone, and the pull request opens. Joins are counted apart from rebases: a
+  rebase that ran for a conflict with the base does not use up the join
+  (TASK-129 was held for you at once so, with three done jobs and eleven
+  conflicting files). A second conflict among the branches after a join is
+  held, naming the join that ran.
 - **A task's branches merge but do not compile together**: each job's
   branch passed its own check in its own clone, yet one of them changed a
   signature or moved a name the other still uses, and git merges the two

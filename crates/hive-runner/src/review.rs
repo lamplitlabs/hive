@@ -139,6 +139,16 @@ pub(crate) fn stacked_on(pr: &OpenPr, def: &str) -> Option<String> {
 /// The open Hive pull requests of a project, oldest number first: every
 /// number whose newest state event is a `land.pr`.
 pub(crate) fn open_prs(q: &(impl crate::util::Querier + ?Sized), slug: &str) -> Vec<OpenPr> {
+    pr_states(q, slug)
+        .into_iter()
+        .filter(|(action, _)| opens_review(action))
+        .map(|(_, pr)| pr)
+        .collect()
+}
+
+/// Every Hive pull request of a project with a `land.pr`, oldest number
+/// first, with the newest state event that stands for it.
+fn pr_states(q: &(impl crate::util::Querier + ?Sized), slug: &str) -> Vec<(String, OpenPr)> {
     let rows = crate::util::query_rows(
         q,
         &format!(
@@ -160,8 +170,26 @@ pub(crate) fn open_prs(q: &(impl crate::util::Querier + ?Sized), slug: &str) -> 
     }
     latest
         .into_values()
-        .filter(|(action, _)| opens_review(action))
-        .filter_map(|(_, pr)| pr)
+        .filter_map(|(action, pr)| Some((action, pr?)))
+        .collect()
+}
+
+/// The Hive pull requests of a project that are still open on the forge,
+/// oldest number first: every number whose newest state event neither
+/// merged nor closed it. Unlike [`open_prs`] (the ones open for review),
+/// a pull request under a "changes" verdict, a waiting merge or a hand-off
+/// to the owner is here too: its branch and its base are still the
+/// forge's.
+pub(crate) fn forge_open_prs(q: &(impl crate::util::Querier + ?Sized), slug: &str) -> Vec<OpenPr> {
+    pr_states(q, slug)
+        .into_iter()
+        .filter(|(action, _)| {
+            !matches!(
+                action.as_str(),
+                "land.merged" | "land.pr-closed" | "review.merged"
+            )
+        })
+        .map(|(_, pr)| pr)
         .collect()
 }
 
@@ -865,7 +893,8 @@ pub(crate) fn tend_reviews(s: &hive_store::Store, projects: &[Row], now: &str) -
 
 /// The owner clicked Merge in the hub: the newest `review.ask` of a number
 /// with no `review.merged` or `review.failed` after it is merged as the
-/// owner, whatever the complexity rule says.
+/// owner, whatever the complexity rule says - at the head Hive held when
+/// it was pressed: an ask a newer head outran ([`ask_outrun`]) lapses.
 fn honour_asks(s: &hive_store::Store, project: &Row, now: &str) -> Vec<String> {
     let slug = project.str("slug");
     let Ok(conn) = s.conn() else {
@@ -908,6 +937,22 @@ fn honour_asks(s: &hive_store::Store, project: &Row, now: &str) -> Vec<String> {
         ) {
             continue;
         }
+        // The click was for the head the hub showed then. A newer head
+        // Hive recorded since (pushed, found moved while a merge waited,
+        // queued for review) is reviewed on its own; the click does not
+        // merge it, even when its checks are green before its verdict.
+        if let Some((was, head)) = ask_outrun(&conn, &slug, number, seq) {
+            let key = format!("review-ask-lapsed:{slug}:{number}");
+            if s.meta(&key).map(|m| m.0).unwrap_or_default() != seq.to_string() {
+                let _ = s.set_meta(&key, &seq.to_string());
+                lines.push(format!(
+                    "review {slug}: #{number} not merged for the owner: Merge was pressed at {}, the pull request is at {} now; it is reviewed again",
+                    crate::recipe::short(&was, 12),
+                    crate::recipe::short(&head, 12),
+                ));
+            }
+            continue;
+        }
         match merge_as_owner(s, project, number, now) {
             Ok(url) => lines.push(format!(
                 "review {slug}: #{number} merged for the owner {url}"
@@ -933,6 +978,57 @@ pub(crate) fn merge_as_owner(
     now: &str,
 ) -> Result<String, String> {
     merge(s, project, number, "owner", ACTOR, now)
+}
+
+/// The head an event of a pull request records: the commit `land.pr`
+/// pushed (`to`), the one a waiting merge found on the forge
+/// (`review.again`, `head_sha`), or the one a review was queued at
+/// (`review.queued`, `sha`).
+const HEAD_ACTIONS: &str = "('land.pr', 'review.again', 'review.queued')";
+
+fn head_of_event(action: &str, detail: &Value) -> String {
+    let key = match action {
+        "land.pr" => "to",
+        AGAIN_ACTION => "head_sha",
+        _ => "sha",
+    };
+    detail[key].as_str().unwrap_or_default().to_string()
+}
+
+/// Whether the owner's Merge (the `review.ask` at `seq`) was outrun: the
+/// head Hive held when it was pressed (the newest head an event recorded
+/// before it), and the different head an event recorded after it. None
+/// when nothing moved, or when no head was known at the click (an older
+/// ask is honoured as before, behind the forge's gate).
+fn ask_outrun(
+    q: &(impl crate::util::Querier + ?Sized),
+    slug: &str,
+    number: i64,
+    seq: i64,
+) -> Option<(String, String)> {
+    let rows = crate::util::query_rows(
+        q,
+        &format!(
+            "SELECT seq, action, detail FROM events WHERE subject = ? AND action IN {HEAD_ACTIONS}
+             AND json_extract(detail, '$.number') = ? ORDER BY seq"
+        ),
+        &[&slug, &number],
+    )
+    .unwrap_or_default();
+    let mut was = String::new();
+    for r in rows {
+        let detail: Value = serde_json::from_str(&r.str("detail")).unwrap_or(Value::Null);
+        let head = head_of_event(&r.str("action"), &detail);
+        if head.is_empty() {
+            continue;
+        }
+        if (r.int("seq") as i64) < seq {
+            was = head;
+        } else if !was.is_empty() && head != was {
+            return Some((was, head));
+        }
+    }
+    None
 }
 
 /// The head of a pull request as Hive last saw it: the sha its newest
@@ -1198,27 +1294,16 @@ fn try_merge(
     } else {
         view.head.clone()
     };
-    // A pull request whose approved merge waits is still open on the forge.
+    // Every pull request the forge still has open counts, whatever its
+    // review said: one under a "changes" verdict (its fix job is running),
+    // one whose approved merge waits, one handed to the owner (#267 closed
+    // when #266 merged while its fix job ran).
     let stacked_above: Vec<i64> = match s.conn() {
-        Ok(c) if !head.is_empty() => {
-            let waiting: Vec<i64> = waiting_merges(&c, &slug)
-                .into_iter()
-                .map(|(_, w)| w.number)
-                .collect();
-            let mut above: Vec<i64> = open_prs(&c, &slug)
-                .into_iter()
-                .chain(
-                    waiting
-                        .iter()
-                        .filter_map(|n| pr_state(&c, &slug, *n).map(|(p, _)| p)),
-                )
-                .filter(|p| p.number != number && p.base == head)
-                .map(|p| p.number)
-                .collect();
-            above.sort_unstable();
-            above.dedup();
-            above
-        }
+        Ok(c) if !head.is_empty() => forge_open_prs(&c, &slug)
+            .into_iter()
+            .filter(|p| p.number != number && p.base == head)
+            .map(|p| p.number)
+            .collect(),
         _ => Vec::new(),
     };
     let number_arg = number.to_string();
@@ -1268,7 +1353,8 @@ pub(crate) enum Verdict {
 /// Whether a failed `gh pr merge` (or `gh pr view`) failed for a reason
 /// that passes on its own: GitHub answered 5xx or an internal error, a
 /// rate limit (429, or a 403 that says so), the call timed out or lost its
-/// connection, or the base moved under the merge. A conflict, a red check,
+/// connection (reset, refused, the network unreachable, no route to the
+/// host, a broken pipe), or the base moved under the merge. A conflict, a red check,
 /// a rule of the repository, a refused credential (401, 403) or a pull
 /// request the forge does not know (404) does not.
 pub(crate) fn passing_forge_error(error: &str) -> bool {
@@ -1296,6 +1382,9 @@ pub(crate) fn passing_forge_error(error: &str) -> bool {
             "connection reset",
             "connection refused",
             "error connecting",
+            "network is unreachable",
+            "no route to host",
+            "broken pipe",
             "i/o timeout",
             "tls handshake timeout",
             "rate limit",
@@ -1613,7 +1702,8 @@ fn wait_logged_key(slug: &str, number: i64) -> String {
 /// is bounded: after `review.merge_wait_tries` failures of the forge, or
 /// `review.merge_wait_hours` since it began, it ends ([`give_up_wait`]):
 /// the pull request goes to the owner and the project's lead is told once,
-/// with the forge's last answer. A head that moved on the forge ends the
+/// with the forge's last answer; a forge wait first found past its hours
+/// with tries left makes one last try before it ends. A head that moved on the forge ends the
 /// wait with `review.again` and a new review, no merge. A gate that turned
 /// (a failed check, a conflict, a rule of the repository), a merge or read
 /// error that does not pass, or a rule of the owner hands the pull request
@@ -1630,15 +1720,22 @@ fn retry_merges(s: &hive_store::Store, project: &Row, now: &str) -> Vec<String> 
     for (_, w) in waiting_merges(&conn, &slug) {
         let n = w.number;
         // A forge wait with tries left is read when due; one already past
-        // its bounds (the verdict spent the last try, or the bounds were
-        // lowered meanwhile) is read now, to end it. A checks wait is read
-        // on every pass and ends at its bound while a check still runs.
-        let spent_already = if w.waiting == "forge" {
+        // its bounds is read now. Out of tries (the verdict spent the last
+        // one, or the bound was lowered meanwhile) it ends without a merge.
+        // Past only its hours (the machine slept, the daemon was down) it
+        // makes one last try first, as a checks wait at its bound merges
+        // when the checks passed: a failure then ends it ([`wait_spent`]
+        // still says so). A checks wait is read on every pass and ends at
+        // its bound while a check still runs.
+        let spent = if w.waiting == "forge" {
             wait_spent(&w, w.attempt, tries, hours, now)
         } else {
             None
         };
+        let last_try = spent.is_some() && w.attempt < tries;
+        let spent_already = if last_try { None } else { spent };
         if spent_already.is_none()
+            && !last_try
             && !w.due.is_empty()
             && crate::util::must_iso(&w.due) > crate::util::must_iso(now)
         {
@@ -2870,6 +2967,81 @@ mod tests {
         assert!(merged[1].get("branch_kept_for").is_none(), "{}", merged[1]);
     }
 
+    /// A pull request stacked on the one that merges keeps that branch
+    /// whatever its own review said: under a "changes" verdict (its fix job
+    /// running) or handed to the owner it is out of the review queue but
+    /// still open on the forge, and `--delete-branch` would close it for
+    /// good (#267 closed so when #266 merged on 26 November).
+    #[test]
+    fn a_merge_keeps_its_branch_for_a_stacked_pull_request_under_changes_or_with_the_owner() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let (_bin, _path, log, view) = fake_gh();
+        let s = new_store();
+        let (proj, _repo, _bare) = push_fixture(&s);
+        let merge_lines = |log: &str| -> Vec<String> {
+            std::fs::read_to_string(log)
+                .unwrap_or_default()
+                .lines()
+                .filter(|l| l.starts_with("pr merge"))
+                .map(str::to_string)
+                .collect()
+        };
+        for (i, verdict) in ["review.changes", "review.owner"].into_iter().enumerate() {
+            let below = 7 + 10 * i as i64;
+            let above = below + 1;
+            land_pr(&s, below, "task", "TASK-001", "JOB-a");
+            view_with(&view, |v| {
+                v["number"] = json!(below);
+                v["url"] = json!(format!("https://github.com/o/r/pull/{below}"));
+            });
+            event(
+                &s,
+                TEST_NOW,
+                "daemon",
+                "land.pr",
+                "proj",
+                json!({"project": "proj", "kind": "task", "task": "TASK-002", "number": above,
+                    "url": format!("https://github.com/o/r/pull/{above}"), "head": "hive/task/TASK-002",
+                    "base": "hive/task/TASK-001", "stack_on": below, "to": "def456", "opened": true,
+                    "title": "stacked"}),
+            );
+            event(
+                &s,
+                TEST_NOW,
+                "reviewer-1",
+                verdict,
+                "proj",
+                json!({"project": "proj", "number": above, "note": "fix it"}),
+            );
+            assert!(
+                open_prs(&s.conn().unwrap(), "proj")
+                    .iter()
+                    .all(|p| p.number != above),
+                "out of the review queue under {verdict}"
+            );
+
+            merge(&s, &proj, below, "owner", "owner", TEST_NOW).unwrap();
+            let merges = merge_lines(&log);
+            assert_eq!(merges.len(), i + 1, "{merges:?}");
+            assert!(
+                !merges[i].contains("--delete-branch"),
+                "{verdict}: {merges:?}"
+            );
+            let merged = events(&s, "review.merged");
+            assert_eq!(merged[i]["branch_kept_for"], json!([above]), "{verdict}");
+            // The one below is merged now; the next round starts afresh.
+            event(
+                &s,
+                TEST_NOW,
+                "daemon",
+                "land.merged",
+                "proj",
+                json!({"project": "proj", "number": above}),
+            );
+        }
+    }
+
     /// The owner's click, like the reviewer's verdict, goes through the
     /// forge's gate: a red or running check, a draft, a blocked merge state
     /// or a head that moved is refused without a `review.failed`, and the
@@ -3773,6 +3945,141 @@ mod tests {
         assert_eq!(merges(&log), 1);
     }
 
+    /// A forge wait found past its hour bound with tries left (the machine
+    /// slept, the daemon was down) tries the merge once more before it
+    /// goes to the owner: merged when the forge takes it, handed over with
+    /// the hour bound and the forge's answer when it fails again.
+    #[test]
+    fn a_forge_wait_past_its_hours_tries_the_merge_once_more() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let late = crate::util::plus_minutes(TEST_NOW, 7 * 60);
+        for forge_fails in [false, true] {
+            let (bin, _path, log, _view) = fake_gh();
+            let s = new_store();
+            let (proj, _repo, _bare) = push_fixture(&s);
+            land_pr(&s, 7, "task", "TASK-001", "JOB-a");
+            reviewed(&s, &proj);
+            waiting_for_forge(&s, &proj, bin.path());
+            if forge_fails {
+                std::fs::write(bin.path().join("fail"), "merge\n").unwrap();
+            }
+            let lines = tend_reviews(&s, std::slice::from_ref(&proj), &late);
+            assert_eq!(merges(&log), 2, "one last try ({forge_fails}): {lines:?}");
+            if forge_fails {
+                assert!(
+                    lines.iter().any(|l| l.contains(
+                        "#7 handed to the owner, the lead told: the approved merge waited since"
+                    ) && l.contains("(review.merge_wait_hours = 6)")
+                        && l.contains("HTTP 502: Bad Gateway")),
+                    "{lines:?}"
+                );
+                assert_eq!(events(&s, "review.owner").len(), 1);
+                assert!(events(&s, "review.merged").is_empty());
+            } else {
+                assert!(
+                    lines
+                        .iter()
+                        .any(|l| l.contains("#7 merged after waiting (1 refused merges)")),
+                    "{lines:?}"
+                );
+                assert_eq!(events(&s, "review.merged").len(), 1);
+                assert!(events(&s, "review.owner").is_empty());
+            }
+            // Settled either way: no third try.
+            assert!(
+                tend_reviews(
+                    &s,
+                    std::slice::from_ref(&proj),
+                    &crate::util::plus_minutes(&late, 600)
+                )
+                .is_empty()
+            );
+            assert_eq!(merges(&log), 2);
+        }
+    }
+
+    /// The owner's Merge is for the head the hub showed: pressed while the
+    /// approved merge waits for its checks, then a new commit lands on the
+    /// forge. The wait is reviewed again, and the click does not merge the
+    /// new head when its checks go green before its review gives a verdict.
+    #[test]
+    fn the_owners_merge_beside_a_wait_does_not_merge_a_head_that_moved() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let (_bin, _path, log, view) = fake_gh();
+        let s = new_store();
+        let (proj, _repo, _bare) = push_fixture(&s);
+        land_pr(&s, 7, "task", "TASK-001", "JOB-a");
+        reviewed(&s, &proj);
+        waiting_for_checks(&s, &proj, &view);
+        event(
+            &s,
+            TEST_NOW,
+            "human",
+            "review.ask",
+            "proj",
+            json!({"project": "proj", "number": 7, "action": "merge", "task": "TASK-001"}),
+        );
+        // A new commit on the forge, its checks green.
+        view_with(&view, |v| v["headRefOid"] = json!("def456def456def456"));
+        let tend = |minutes: i32| {
+            tend_reviews(
+                &s,
+                std::slice::from_ref(&proj),
+                &crate::util::plus_minutes(TEST_NOW, minutes),
+            )
+        };
+        let lines = tend(1);
+        assert!(
+            lines.iter().any(|l| l.contains("#7 not merged")),
+            "{lines:?}"
+        );
+        assert_eq!(events(&s, "review.again").len(), 1);
+        // The next passes queue the new head's review and leave the click
+        // alone: it was for abc123.
+        let mut said = Vec::new();
+        for minutes in [2, 3, 4] {
+            said.extend(tend(minutes));
+        }
+        assert_eq!(merges(&log), 0, "{said:?}");
+        assert!(events(&s, "review.merged").is_empty());
+        assert!(events(&s, "review.failed").is_empty());
+        let queued = events(&s, "review.queued");
+        assert_eq!(queued.last().unwrap()["sha"], "def456def456def456");
+        assert_eq!(
+            said.iter()
+                .filter(|l| l.contains(
+                    "#7 not merged for the owner: Merge was pressed at abc123, the pull request is at def456def456 now"
+                ))
+                .count(),
+            1,
+            "said once: {said:?}"
+        );
+        let pr = hive_tasks::pr_states_for(&s, "proj")
+            .unwrap()
+            .into_iter()
+            .find(|p| p.number == 7)
+            .unwrap();
+        assert_ne!(pr.state, "merge_asked");
+
+        // Pressed again at the new head, it merges.
+        event(
+            &s,
+            TEST_NOW,
+            "human",
+            "review.ask",
+            "proj",
+            json!({"project": "proj", "number": 7, "action": "merge", "task": "TASK-001"}),
+        );
+        let lines = tend(5);
+        assert!(
+            lines.iter().any(|l| l.contains("#7 merged for the owner")),
+            "{lines:?}"
+        );
+        assert_eq!(merges(&log), 1);
+    }
+
     #[test]
     fn a_check_that_stays_queued_ends_the_wait_at_the_time_bound() {
         let _serial = crate::test_helpers::serial();
@@ -3849,6 +4156,9 @@ mod tests {
             "gh pr view failed: Post \"https://api.github.com/graphql\": dial tcp: connect: connection refused",
             "gh pr view failed: Post \"https://api.github.com/graphql\": EOF",
             "gh pr view failed: Post \"https://api.github.com/graphql\": unexpected EOF",
+            "gh pr view failed: Post \"https://api.github.com/graphql\": dial tcp 140.82.121.6:443: connect: network is unreachable",
+            "gh pr merge failed: Post \"https://api.github.com/graphql\": dial tcp 140.82.121.6:443: connect: no route to host",
+            "gh pr merge failed: Post \"https://api.github.com/graphql\": write tcp 192.168.1.5:50122->140.82.121.6:443: write: broken pipe",
         ] {
             assert!(passing_forge_error(e), "{e}");
         }

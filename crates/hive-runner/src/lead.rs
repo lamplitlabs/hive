@@ -1405,7 +1405,14 @@ pub(crate) fn tend_lead(
     // money, credentials, publication ...) are listed as context but never
     // wake the lead: they wait for the owner on the Sessions strip.
     let mut owner_questions = owner_addressed_questions(s, slug.clone(), now.clone());
-    owner_questions.extend(owner_addressed_asks(s, slug.clone()));
+    // Less the ones the decide role (ADR-072) still holds: while it is on
+    // and not in an outage, an ask costs one small call, not also a lead
+    // run. What the role may not answer (a hard stop, an owner-only
+    // proposal) is never held; what it passes or fails on comes back here
+    // on a later pass.
+    let asks = owner_addressed_asks(s, slug.clone());
+    let held = crate::decide::held_by_role(s, &slug, &asks, &now);
+    owner_questions.extend(asks.into_iter().filter(|q| !held.contains(&q.id)));
     let mut away_question_count = 0;
     for q in &owner_questions {
         // A question the daemon asked (a restart drain, a login gate, a

@@ -340,6 +340,9 @@ export function eventVerb(e: Pick<StoreEvent, "action" | "subject" | "detail">):
   if (a === "job.recover") return RECOVERED[str(d?.outcome)] ?? VERB[a];
   if (a === "daemon.slept" && typeof d?.seconds === "number" && d.seconds > 0) return "noticed the computer was asleep for about " + durationWords(d.seconds * 1000);
   if (a === "land.pr") return namePr(d ? landPr(d) : VERB[a], d);
+  // delivery.rs: a task's own branches conflict with each other, so one
+  // worker merges them all (`join` true) instead of redoing the last one.
+  if (a === "land.rebase" && d?.join === true) return "asked a worker to merge a task\u2019s finished pieces that clash with each other";
   if (a === "land.measured" && d?.regressed === true) return "measured a merged change and found the work after it got slower";
   if (a === "suggestion.review") return REVIEWED[str(d?.status)] ?? VERB[a];
   if (a === "evolution.archived") return ARCHIVED[str(d?.outcome)] ?? VERB[a];
