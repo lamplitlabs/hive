@@ -332,9 +332,14 @@ export interface OwnerQuestion extends Who {
   stop: boolean;
   stale: boolean;
   thread_last: string;
-  // Who alone can answer: `owner`, `lead` (owner away), or `setting` (a
+  // Who answers: `owner` (a hard stop: money, a destructive act,
+  // credentials, publication, Tier 2 - the Sessions strip lists these),
+  // `lead` (a routine ask, whatever owner.presence says), or `setting` (a
   // policy answers it). Older hubs omit it - treat a missing value as owner.
   decider?: "owner" | "lead" | "setting";
+  // Why only the owner can decide it ("is about publication"); empty for a
+  // routine ask. Older hubs omit it.
+  hard_stop?: string;
   slug?: string;
   base?: string;
 }

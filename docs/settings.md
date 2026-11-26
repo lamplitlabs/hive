@@ -320,7 +320,7 @@ Each section below is one family: the settings that share the part of their name
 | Setting | Default | What it does |
 | --- | --- | --- |
 | `owner.name` | empty | what the console calls you: the greeting on Home and the owner row of the sidebar use it; one line of at most 64 characters, trimmed; empty means the console says you |
-| `owner.presence` | `present` | present: proposals, compute requests and owner questions wait for you, and hive asks before it adds a tool, a skill or a lead seat; away: each project's lead decides the board's proposals on your behalf with its best judgement, recorded as the lead's decision and never as yours, hive adds the toolkit a project's shape asks for on its own (a drafted skill, a tool that needs no secret) and says so on the board, and lead seats are not asked about (the hub's Leads gallery shows them) - hard stops, money (compute), Tier 2 decisions (ADRs), the constitution's protected sections and the kill switch still wait for you |
+| `owner.presence` | `present` | either way each project's lead decides the routine asks addressed to you (proposals, questions, findings, handoffs, suggestions) on your behalf with its best judgement, recorded as the lead's decision and never as yours - only hard stops wait for you: money (compute), destructive or irreversible acts, credentials, publication, Tier 2 decisions (ADRs), the constitution's protected sections and the kill switch; present: hive asks before it adds a tool, a skill or a lead seat; away: hive adds the toolkit a project's shape asks for on its own (a drafted skill, a tool that needs no secret) and says so on the board, and lead seats are not asked about (the hub's Leads gallery shows them) |
 
 ## pipeline
 

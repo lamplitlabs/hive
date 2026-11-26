@@ -7634,7 +7634,22 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
                 area: "owner".into(),
                 thread: "budget".into(),
                 agent: crate::board::actor_agent(&s, "borealis".into()),
-                summary: "for the owner: budget?".into(),
+                summary: "for the owner: raise the budget?".into(),
+                for_owner: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let routine = crate::board::create_post(
+            &s,
+            crate::test_helpers::TEST_NOW.into(),
+            crate::board::PostOpts {
+                kind: "question".into(),
+                project: "proj".into(),
+                area: "owner".into(),
+                thread: "naming".into(),
+                agent: crate::board::actor_agent(&s, "borealis".into()),
+                summary: "for the owner: rename the parser module?".into(),
                 for_owner: true,
                 ..Default::default()
             },
@@ -7655,35 +7670,32 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             ..Default::default()
         };
 
-        let present =
-            crate::lead::lead_brief("proj".into(), vec![], vec![], None, vec![extra.clone()]);
-        for want in [
-            "## Your project's agents now".to_string(),
-            format!("- borealis: {} (task) \"Build thing\"", other.str("id")),
-            format!(
-                "- {} owner/budget by borealis: for the owner: budget?",
-                q.str("id")
-            ),
-            "These wait for the owner; do not answer them".to_string(),
-        ] {
-            assert!(
-                present.contains(&want),
-                "present lead brief lacks {want:?}:\n{present}"
-            );
+        // Whatever owner.presence says (TASK-129): the routine ask is the
+        // lead's to answer, the money question (a hard stop) the owner's.
+        for away in [None, Some(crate::lead::AwayBrief::default())] {
+            let brief =
+                crate::lead::lead_brief("proj".into(), vec![], vec![], away, vec![extra.clone()]);
+            for want in [
+                "## Your project's agents now".to_string(),
+                format!("- borealis: {} (task) \"Build thing\"", other.str("id")),
+                format!(
+                    "- {} owner/naming by borealis: for the owner: rename the parser module?",
+                    routine.str("id")
+                ),
+                "Nothing waits on the owner by default: these are routine asks, and you decide them whether the owner is here or away. Answer each question with hive post answer --project proj".to_string(),
+                "### At a hard stop: the owner's".to_string(),
+                format!(
+                    "- {} owner/budget by borealis: for the owner: raise the budget? - is about money",
+                    q.str("id")
+                ),
+                "These wait for the owner; do not answer them".to_string(),
+            ] {
+                assert!(brief.contains(&want), "lead brief lacks {want:?}:\n{brief}");
+            }
+            let routine_at = brief.find(&routine.str("id")).unwrap();
+            let stop_at = brief.find("### At a hard stop").unwrap();
+            assert!(routine_at < stop_at, "{brief}");
         }
-        let away = crate::lead::lead_brief(
-            "proj".into(),
-            vec![],
-            vec![],
-            Some(crate::lead::AwayBrief::default()),
-            vec![extra],
-        );
-        assert!(
-            away.contains(
-                "The owner is away: answer what you can with hive post answer --project proj"
-            ),
-            "away owner question guidance missing:\n{away}"
-        );
     }
     #[test]
     fn lead_brief_agents_empty() {
@@ -7695,53 +7707,58 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         );
     }
     #[test]
-    fn away_owner_question_queues_lead_only_while_away() {
+    fn routine_owner_question_queues_lead_whatever_presence_says() {
         let _serial = crate::test_helpers::serial();
         let s = crate::test_helpers::new_store();
         crate::test_helpers::new_bare_repo(&s);
         join(&s, "borealis");
-        crate::board::create_post(
-            &s,
-            crate::test_helpers::TEST_NOW.into(),
-            crate::board::PostOpts {
-                kind: "question".into(),
-                project: "proj".into(),
-                area: "owner".into(),
-                thread: "budget".into(),
-                agent: crate::board::actor_agent(&s, "borealis".into()),
-                summary: "for the owner: budget?".into(),
-                for_owner: true,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-
+        let ask = |thread: &str, summary: &str| {
+            crate::board::create_post(
+                &s,
+                crate::test_helpers::TEST_NOW.into(),
+                crate::board::PostOpts {
+                    kind: "question".into(),
+                    project: "proj".into(),
+                    area: "owner".into(),
+                    thread: thread.into(),
+                    agent: crate::board::actor_agent(&s, "borealis".into()),
+                    summary: summary.into(),
+                    for_owner: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        // A hard stop alone never wakes the lead, here or away: it waits
+        // for the owner on the Sessions strip.
+        ask("budget", "for the owner: raise the budget?");
+        let lead_jobs = || test_rows(&s, "SELECT * FROM jobs WHERE kind = 'lead'", &[]);
         let lines = crate::lead::tend_lead(
             &s,
             "proj".into(),
             crate::test_helpers::TEST_NOW.into(),
             "daemon".into(),
         );
-        assert_eq!(
-            test_rows(&s, "SELECT * FROM jobs WHERE kind = 'lead'", &[]).len(),
-            0,
-            "present owner question queued a lead job: {lines:?}"
-        );
-        set_owner_away(&s);
+        assert_eq!(lead_jobs().len(), 0, "a hard stop woke the lead: {lines:?}");
+
+        // A routine ask wakes the lead with the owner present (the default):
+        // nothing waits on the owner by default (TASK-129).
+        ask("naming", "for the owner: rename the parser module?");
         let lines = crate::lead::tend_lead(
             &s,
             "proj".into(),
             crate::util::plus_minutes(crate::test_helpers::TEST_NOW, 1.0),
             "daemon".into(),
         );
-        let jobs = test_rows(&s, "SELECT * FROM jobs WHERE kind = 'lead'", &[]);
+        let jobs = lead_jobs();
         assert!(
             jobs.len() == 1
                 && jobs[0]
                     .str("brief")
-                    .contains("The owner is away: answer what you can")
+                    .contains("Nothing waits on the owner by default")
+                && jobs[0].str("title").contains("answer 1 owner question(s)")
                 && lines.join("\n").contains("queued"),
-            "away owner question did not queue lead job: jobs={jobs:?} lines={lines:?}"
+            "present routine owner question did not queue a lead job: jobs={jobs:?} lines={lines:?}"
         );
     }
     #[test]
@@ -7973,11 +7990,13 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
                 setup: None,
                 want: 1,
             },
+            // Nothing waits on the owner by default (TASK-129): with the
+            // owner present the lead decides the routine proposal too.
             Case {
                 name: "present",
                 away: false,
                 setup: None,
-                want: 0,
+                want: 1,
             },
             Case {
                 name: "compute",
@@ -8028,7 +8047,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
                 crate::test_helpers::TEST_NOW.into(),
             )
             .unwrap();
-            assert_eq!(away.is_some(), tt.away, "{}: away brief present", tt.name);
+            assert!(away.is_some(), "{}: routine brief present", tt.name);
             let got = away.as_ref().map(|a| a.proposals.len()).unwrap_or(0);
             assert_eq!(
                 got, tt.want,
@@ -8063,7 +8082,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         );
         let brief = jobs[0].str("brief");
         assert!(
-            brief.contains("## The owner is away")
+            brief.contains("## Routine asks are yours")
                 && brief.contains(&format!("`{}`", p.str("id")))
                 && brief.contains("DECIDE: <post-id> yes|no <reason>"),
             "away brief:\n{brief}"
@@ -8125,7 +8144,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             "\n7. For each proposal listed above",
             "\n8. Never decide hard stops",
             "\n9. Do not park tasks on the owner",
-            "\n10. Do not post questions addressed to the owner while away",
+            "\n10. Do not post questions addressed to the owner unless they are at a hard stop",
             "\n11. For each eligible suggestion addressed to the owner",
             "--source suggestion:<id>",
             "--resolution declined",
@@ -8159,14 +8178,6 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         let _serial = crate::test_helpers::serial();
         let s = crate::test_helpers::new_store();
         crate::test_helpers::new_bare_repo(&s);
-        let brief = crate::lead::lead_idle_brief(&s, "proj".into(), vec![], vec![], 1);
-        assert!(
-            !brief.contains("## The owner is away")
-                && brief.contains("\n6. Send the owner ONE short message")
-                && brief.contains("\n7. Finish with `SUMMARY:`"),
-            "present idle brief:\n{brief}"
-        );
-        set_owner_away(&s);
         let card = hive_tally::WorkItem {
             kind: hive_tally::WORK_ELIGIBLE.into(),
             id: "P-owner".into(),
@@ -8177,23 +8188,31 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             blocked: hive_tally::GATE_OWNER.into(),
             ..Default::default()
         };
-        let brief = crate::lead::lead_idle_brief(&s, "proj".into(), vec![card], vec![], 1);
-        for want in [
-            "## The owner is away",
-            "### Awaiting proposals (0)",
-            "(none)",
-            "### Eligible suggestions addressed to the owner (1)",
-            "\n5. Keep the project watched",
-            "\n6. Send the owner ONE short message",
-            "\n7. For each proposal listed above",
-            "\n10. Do not post questions addressed to the owner while away",
-            "\n11. For each eligible suggestion addressed to the owner",
-            "\n12. Finish with `SUMMARY:`",
-        ] {
-            assert!(
-                brief.contains(want),
-                "away idle brief lacks {want:?}:\n{brief}"
-            );
+        // Present (the default) or away, the idle lead decides the routine
+        // asks (TASK-129).
+        for away in [false, true] {
+            if away {
+                set_owner_away(&s);
+            }
+            let brief =
+                crate::lead::lead_idle_brief(&s, "proj".into(), vec![card.clone()], vec![], 1);
+            for want in [
+                "## Routine asks are yours",
+                "### Awaiting proposals (0)",
+                "(none)",
+                "### Eligible suggestions addressed to the owner (1)",
+                "\n5. Keep the project watched",
+                "\n6. Send the owner ONE short message",
+                "\n7. For each proposal listed above",
+                "\n10. Do not post questions addressed to the owner unless they are at a hard stop",
+                "\n11. For each eligible suggestion addressed to the owner",
+                "\n12. Finish with `SUMMARY:`",
+            ] {
+                assert!(
+                    brief.contains(want),
+                    "away={away}: idle brief lacks {want:?}:\n{brief}"
+                );
+            }
         }
     }
     #[test]
@@ -8377,14 +8396,16 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
                 tier2: false,
                 want_record: 0,
             },
+            // Nothing waits on the owner by default (TASK-129): the lead's
+            // DECIDE on a routine proposal counts with the owner present.
             Case {
-                name: "owner present ignored",
+                name: "owner present records",
                 owner_away: false,
                 job_kind: crate::lead::LEAD_KIND,
                 project: "proj",
                 setup: None,
                 tier2: false,
-                want_record: 0,
+                want_record: 1,
             },
             Case {
                 name: "other project skipped",
@@ -8422,14 +8443,17 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
                 tier2: true,
                 want_record: 0,
             },
+            // Presence no longer gates the lead, so an agent that writes
+            // `away` changes nothing: the routine decision counts as it
+            // would anyway.
             Case {
-                name: "agent-written away ignored",
+                name: "agent-written away changes nothing",
                 owner_away: false,
                 job_kind: crate::lead::LEAD_KIND,
                 project: "proj",
                 setup: Some(agent_written_away),
                 tier2: false,
-                want_record: 0,
+                want_record: 1,
             },
         ];
         for tt in tests {
@@ -8740,12 +8764,37 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
     }
 
     #[test]
-    fn while_the_owner_is_present_the_asks_stay_the_owners() {
+    fn with_the_owner_present_the_lead_decides_routine_asks_and_leaves_hard_stops() {
         let _serial = crate::test_helpers::serial();
         let s = crate::test_helpers::new_store();
         crate::test_helpers::new_bare_repo(&s);
         join(&s, "aurora");
         crate::lead::ensure_lead(&s, "proj".into()).unwrap();
+        assert!(!s.owner_away(), "the fixture is about a present owner");
+        // A hard stop alone never wakes the lead.
+        let stop = owner_ask(
+            &s,
+            "handoff",
+            "publish-site",
+            "Publish the new wording on hivefleet.dev",
+            "Yes: Deploy it to production\nNo: Hold it\n",
+            true,
+        );
+        let lines = crate::lead::tend_lead(
+            &s,
+            "proj".into(),
+            crate::test_helpers::TEST_NOW.into(),
+            "daemon".into(),
+        );
+        let lead_jobs = || {
+            crate::test_helpers::count(
+                &s,
+                "SELECT COUNT(*) AS n FROM jobs WHERE kind = 'lead'",
+                &[],
+            )
+        };
+        assert_eq!(lead_jobs(), 0, "a hard stop woke the lead: {lines:?}");
+        // A routine ask does, owner present or not (TASK-129).
         let ask = owner_ask(
             &s,
             "finding",
@@ -8757,15 +8806,14 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         let lines = crate::lead::tend_lead(
             &s,
             "proj".into(),
-            crate::test_helpers::TEST_NOW.into(),
+            crate::util::plus_minutes(crate::test_helpers::TEST_NOW, 1.0),
             "daemon".into(),
         );
-        let n = crate::test_helpers::count(
-            &s,
-            "SELECT COUNT(*) AS n FROM jobs WHERE kind = 'lead'",
-            &[],
+        assert_eq!(
+            lead_jobs(),
+            1,
+            "a routine ask did not wake the lead: {lines:?}"
         );
-        assert_eq!(n, 0, "an ask for the owner woke the lead: {lines:?}");
         let (job, _) = crate::jobs::add_job(
             &s,
             "proj".into(),
@@ -8780,22 +8828,40 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         )
         .unwrap();
         let rep = crate::brief::Report {
-            decisions: vec![crate::brief::Decision {
-                post_id: ask.str("id"),
-                answer: "no".into(),
-                reason: "keep watching".into(),
-            }],
+            decisions: vec![
+                crate::brief::Decision {
+                    post_id: ask.str("id"),
+                    answer: "no".into(),
+                    reason: "keep watching".into(),
+                },
+                crate::brief::Decision {
+                    post_id: stop.str("id"),
+                    answer: "yes".into(),
+                    reason: "ship it".into(),
+                },
+            ],
             ..Default::default()
         };
         let mut log = crate::run::RunLog::default();
         assert_eq!(
             crate::run::apply_result_decisions(&s, job, rep, &mut log),
-            0
+            1,
+            "{}",
+            log.text()
         );
-        assert!(crate::lead::owner_ask_is_open(
-            &s.conn().unwrap(),
-            &ask.str("id")
-        ));
+        let conn = s.conn().unwrap();
+        assert!(!crate::lead::owner_ask_is_open(&conn, &ask.str("id")));
+        assert!(
+            crate::lead::owner_ask_is_open(&conn, &stop.str("id")),
+            "the lead decided a hard stop: {}",
+            log.text()
+        );
+        assert!(
+            log.text()
+                .contains("is about publication: it waits for the owner"),
+            "{}",
+            log.text()
+        );
     }
 
     /// The VM steps of the statements that finished on the connections a

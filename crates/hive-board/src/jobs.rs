@@ -826,7 +826,7 @@ pub fn decide(
             format!("Post {post_id} was already decided; a new proposal needs a new post"),
         ));
     }
-    let decider = decision_decider(s, &tx, &target, post_id, decided_by)?;
+    let decider = decision_decider(&tx, &target, post_id, decided_by)?;
     let resolution = if answer == "yes" {
         "accepted"
     } else {
@@ -841,7 +841,7 @@ pub fn decide(
         format!("The human answered **{answer}**.\n\n{said}\n\nProposal: {post_id}\n")
     } else {
         format!(
-            "The owner is away (owner.presence = away); **{decided_by}** answered **{answer}** on the owner's behalf.\n\n{said}\n\nProposal: {post_id}\n"
+            "A routine ask, so the project's lead decides it (nothing waits on the owner but a hard stop); **{decided_by}** answered **{answer}** on the owner's behalf.\n\n{said}\n\nProposal: {post_id}\n"
         )
     };
     let post = create_decision_result_conn(
@@ -863,7 +863,7 @@ pub fn decide(
     detail.insert("answer".into(), json!(answer));
     detail.insert("result".into(), json!(post.id));
     if decided_by != hive_store::HUMAN_AGENT {
-        detail.insert("on_behalf".into(), json!("owner-away"));
+        detail.insert("on_behalf".into(), json!("owner-routine"));
     }
     event_conn(
         &tx,
@@ -1000,7 +1000,6 @@ fn create_decision_result_conn(
 }
 
 fn decision_decider(
-    s: &hive_store::Store,
     conn: &Connection,
     target: &crate::posts::Post,
     post_id: &str,
@@ -1014,12 +1013,9 @@ fn decision_decider(
             ..Default::default()
         });
     }
-    if !s.owner_away() {
-        return Err(refuse(
-            2,
-            "hive decide is the human's call; a lead decides only while owner.presence is away",
-        ));
-    }
+    // Nothing waits on the owner by default (TASK-129): the project's lead
+    // decides a routine ask whatever owner.presence says; the hard stops
+    // below stay the owner's.
     let lead = agent_by_name_conn(conn, decided_by)?;
     if !matches!(lead, Some(ref l) if l.kind == "lead" && l.status == "active") {
         return Err(refuse(2, "only a project's lead decides for the owner"));
@@ -1070,6 +1066,13 @@ fn decision_decider(
             format!("a proposal that {spend} pre-authorizes spend: it waits for the owner"),
         ));
     }
+    let why = crate::owner_asks::hard_stop_ask(&target.kind, &target.summary, &target.body);
+    if !why.is_empty() {
+        return Err(refuse(
+            2,
+            format!("a proposal that {why} is at a hard stop: it waits for the owner"),
+        ));
+    }
     Ok(lead.expect("lead checked"))
 }
 
@@ -1103,6 +1106,13 @@ fn agent_by_name_conn(conn: &Connection, name: &str) -> Result<Option<hive_store
         )
         .optional()?;
     Ok(row)
+}
+
+/// Whether a post's body carries a marker line by which a yes would run a
+/// command (`pair:`, `onboard:`, `lead-role:`, `toolkit:`, `goal:`): such a
+/// proposal waits for the human (ADR-021).
+pub fn authorizes_command(body: &str) -> bool {
+    decision_marker_re().is_match(body)
 }
 
 fn decision_marker_re() -> &'static regex::Regex {
@@ -1158,10 +1168,10 @@ fn decision_job_conn(
     let mut title = format!("Act on the human's yes: {}", trunc(&target.summary, 90));
     let mut adr_clause = "If it accepts an ADR: set that ADR's status to Accepted with today's date and the decision id (hive record accept ADR-NNN --words '...' is the human's; you set the delivery mark with hive record deliver), then start the first slice of its plan. ".to_string();
     if decided_by != hive_store::HUMAN_AGENT {
-        actor_text = format!("{decided_by}, deciding for the owner who is away (owner.presence),");
+        actor_text = format!("{decided_by}, deciding a routine ask for the owner,");
         recorded = "the recorded".into();
         title = format!(
-            "Act on the lead's yes (owner away): {}",
+            "Act on the lead's yes (routine ask): {}",
             trunc(&target.summary, 90)
         );
         adr_clause = "This yes is the lead's, not the owner's: it never accepts, changes or supersedes an ADR, never touches the constitution, the evaluators, docs/decisions/ or .github/, and never buys compute - Tier 2 waits for the owner. If the proposal turns out to be one of those, post a QUESTION for the owner and stop. ".into();
@@ -2347,16 +2357,16 @@ mod tests {
     }
 
     #[test]
-    fn owner_away_lead_decide_guards() {
+    fn lead_decides_routine_asks_whatever_presence_says() {
         let _serial = crate::test_helpers::serial();
         let _fidelity_literals = (
-            "\"on_behalf\": \"owner-away\"",
+            "\"on_behalf\": \"owner-routine\"",
             ") is the approval for what it proposes, nothing more",
-            "Act on the lead's yes (owner away):",
+            "Act on the lead's yes (routine ask):",
             "SELECT decided_by FROM decisions WHERE post_id = ?",
             "SELECT detail FROM events WHERE action = 'decide' AND subject = ?",
-            "The owner is away (owner.presence = away); **demo-lead** answered **yes** on the owner's behalf.ship itProposal:",
-            "demo-lead, deciding for the owner who is away (owner.presence), answered YES",
+            "A routine ask, so the project's lead decides it (nothing waits on the owner but a hard stop); **demo-lead** answered **yes** on the owner's behalf.ship itProposal:",
+            "demo-lead, deciding a routine ask for the owner, answered YES",
             "result body:want:",
             "sess-lead",
             "sess-other-lead",
@@ -2377,12 +2387,10 @@ mod tests {
             )
             .unwrap();
         }
+        // The owner is present (the default) and the lead still decides:
+        // nothing waits on the owner but a hard stop (TASK-129).
+        assert!(!s.owner_away());
         let sug = seed_proposal(&s, &p.slug);
-        assert_eq!(
-            err_what(decide(&s, &sug.id, "yes", "", &lead_name(&p.slug))),
-            "hive decide is the human's call; a lead decides only while owner.presence is away"
-        );
-        s.set_setting("human", "owner.presence", "away").unwrap();
         assert_eq!(
             err_what(decide(&s, &sug.id, "yes", "", "alice")),
             "only a project's lead decides for the owner"
@@ -2412,6 +2420,40 @@ mod tests {
                 .brief
                 .contains("never accepts, changes or supersedes an ADR")
         );
+        let detail: String = s
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT detail FROM events WHERE action = 'decide' AND subject = ?",
+                [&sug.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(detail.contains("owner-routine"), "{detail}");
+        // A publication is a hard stop: it stays the owner's, present or away.
+        for presence in ["present", "away"] {
+            s.set_setting("human", "owner.presence", presence).unwrap();
+            let publish = crate::posts::create_post(
+                &s,
+                crate::posts::PostInput {
+                    kind: "question".into(),
+                    project: p.slug.clone(),
+                    area: "site".into(),
+                    thread: format!("deploy-{presence}"),
+                    summary: "Put the new wording on the site now?".into(),
+                    body: "It is a publication.".into(),
+                    agent: "alice".into(),
+                    date: "2026-09-06T09:10:00Z".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                err_what(decide(&s, &publish.id, "yes", "", &lead_name(&p.slug))),
+                "a proposal that is about publication is at a hard stop: it waits for the owner",
+                "{presence}"
+            );
+        }
     }
 
     #[test]
@@ -2603,6 +2645,8 @@ mod tests {
         assert!(!brief.contains("If it accepts an ADR"));
         assert!(brief.contains("never accepts, changes or supersedes an ADR"));
         assert!(brief.contains("Tier 2 waits for the owner"));
+        // A lead's own write of owner.presence changes nothing either way:
+        // the lead decides routine asks whatever the setting says.
         s.set_setting(&lead, "owner.presence", "away").unwrap();
         let other = crate::posts::create_post(
             &s,
@@ -2619,10 +2663,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(
-            err_what(decide(&s, &other.id, "yes", "", &lead)),
-            "hive decide is the human's call; a lead decides only while owner.presence is away"
-        );
+        assert!(decide(&s, &other.id, "yes", "", &lead).is_ok());
     }
 
     #[test]

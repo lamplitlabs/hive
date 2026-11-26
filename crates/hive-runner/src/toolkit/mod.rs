@@ -1520,7 +1520,7 @@ mod tests {
                 project: "proj".into(),
                 area: BOARD_AREA.into(),
                 thread: "tool-playwright".into(),
-                summary: "Decision by lead (owner away): yes".into(),
+                summary: "Decision by lead (routine ask): yes".into(),
                 body: "yes".into(),
                 agent: crate::board::actor_agent(&s, "proj-lead".into()),
                 on: playwright.str("id"),
