@@ -29,6 +29,10 @@ pub const SCHEMA_VERSION: i64 = 3;
 pub const STORE_NAME: &str = "hive.sqlite";
 pub const HUMAN_AGENT: &str = "human";
 pub const EVOLUTION_STOP_SUMMARY: &str = "Evolution stopped; owner review needed";
+/// The start of the planner's question about one thread whose worker jobs
+/// keep changing no code. It is about its own thread: two stuck threads are
+/// two questions, never one handed back to both.
+pub const STUCK_THREAD_SUMMARY: &str = "Stuck thread:";
 pub const COMMONS_SLUG: &str = "commons";
 pub const BUSY_TIMEOUT_MS: u64 = 10_000;
 pub const JOURNAL_SIZE_LIMIT_BYTES: i64 = 64 * 1024 * 1024;
