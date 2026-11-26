@@ -8009,7 +8009,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
                     "- {} owner/budget by borealis: for the owner: raise the budget? - is about money",
                     q.str("id")
                 ),
-                "These wait for the owner; do not answer them".to_string(),
+                "These are listed for context only: they wait for the owner".to_string(),
             ] {
                 assert!(brief.contains(&want), "lead brief lacks {want:?}:\n{brief}");
             }

@@ -463,7 +463,7 @@ pub(crate) fn write_lead_owner_questions_section(
                 let _ = writeln!(b, "  not shown to the owner: {}", q.needs_options);
             }
         }
-        b.push_str("\nThese wait for the owner; do not answer them, but say in the task thread when one blocks a task.\n\n");
+        b.push_str("\nThese are listed for context only: they wait for the owner. Do not answer, decide, queue or close them, and write no `DECIDE:` line for them; say in the task thread when one blocks a task.\n\n");
     }
     if bare > 0 {
         let _ = write!(
@@ -526,10 +526,25 @@ pub(crate) fn write_owner_away_section(b: &mut String, _slug: String, away: Opti
     b.push('\n');
 }
 
-pub(crate) fn owner_cards(items: Vec<hive_tally::WorkItem>) -> Vec<hive_tally::WorkItem> {
+/// The eligible suggestions addressed to the owner that the lead may queue
+/// or close. A card at a hard stop (`hive_board::hard_stop_ask` on its
+/// summary and body) is left out: it is the owner's, and the rule below
+/// would have the lead queue or close it (PR #278 review).
+pub(crate) fn owner_cards(
+    s: &hive_store::Store,
+    items: Vec<hive_tally::WorkItem>,
+) -> Vec<hive_tally::WorkItem> {
+    let conn = s.conn().ok();
     items
         .into_iter()
         .filter(|it| it.kind == hive_tally::WORK_ELIGIBLE && it.blocked == hive_tally::GATE_OWNER)
+        .filter(|it| {
+            let body = conn
+                .as_ref()
+                .map(|c| must_one(c, "SELECT body FROM posts WHERE id = ?", &[&it.id]).str("body"))
+                .unwrap_or_default();
+            hive_board::hard_stop_ask("suggestion", &it.summary, &body).is_empty()
+        })
         .collect()
 }
 
@@ -916,7 +931,7 @@ pub(crate) fn lead_due(
             ..Default::default()
         },
     )?;
-    for c in owner_cards(q.work) {
+    for c in owner_cards(s, q.work) {
         if !recently_presented_to_lead(s, slug.clone(), now.clone(), c.id.clone()) {
             a.owner_cards.push(c);
         }
@@ -1657,7 +1672,7 @@ pub(crate) fn lead_idle_brief(
             awaiting_lead_proposals(s, slug.clone(), s.now(), false).unwrap_or_default();
         let away = Some(AwayBrief {
             proposals,
-            owner_cards: owner_cards(items.clone()),
+            owner_cards: owner_cards(s, items.clone()),
         });
         write_owner_away_section(&mut b, slug.clone(), away.clone());
         away
@@ -2760,6 +2775,44 @@ pub(crate) const FAILED_JOBS_TO_REVIEW: i32 = 3;
 mod tests {
     use super::*;
     use crate::test_helpers::*;
+
+    #[test]
+    fn owner_cards_leave_out_a_card_at_a_hard_stop() {
+        let _serial = serial();
+        let s = new_store();
+        let card = |id: &str, summary: &str| hive_tally::WorkItem {
+            kind: hive_tally::WORK_ELIGIBLE.into(),
+            id: id.into(),
+            summary: summary.into(),
+            blocked: hive_tally::GATE_OWNER.into(),
+            ..Default::default()
+        };
+        let kept = owner_cards(
+            &s,
+            vec![
+                card("P-routine", "Split the parser module"),
+                card("P-money", "Raise the monthly budget for the evolve loop"),
+                card("P-publish", "Publish the guide to the site"),
+            ],
+        );
+        assert_eq!(
+            kept.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            vec!["P-routine"]
+        );
+        let mut b = String::new();
+        write_lead_owner_questions_section(
+            &mut b,
+            "proj".into(),
+            None,
+            vec![OwnerQuestion {
+                id: "Q-1".into(),
+                summary: "Rotate the GitHub PAT".into(),
+                hard_stop: "touches credentials".into(),
+                ..Default::default()
+            }],
+        );
+        assert!(b.contains("listed for context only"), "{b}");
+    }
 
     fn task_job(s: &hive_store::Store, title: &str, source: &str) -> Row {
         crate::jobs::add_job(
@@ -4670,7 +4723,7 @@ mod tests {
             // lead's, the stopped loop (a hard stop) the owner's.
             for guidance in [
                 "Leave money, compute, Tier 2 decisions, the constitution, hard stops and anything only the owner knows unanswered",
-                "These wait for the owner; do not answer them",
+                "These are listed for context only: they wait for the owner",
             ] {
                 assert!(
                     brief.contains(guidance),
