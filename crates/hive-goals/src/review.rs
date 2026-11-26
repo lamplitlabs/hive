@@ -707,6 +707,15 @@ fn lead_reading(conn: &Connection, slug: &str, since: &str) -> Option<LeadReadin
     })
 }
 
+/// The proposed goal that waits for the owner on a project, if any: the
+/// newest undecided `goal/amend` opinion whose body parses as a proposal.
+/// The console's For you inbox and the project's Overview read it from the
+/// org rows; None when the store cannot be read.
+pub fn pending(s: &hive_store::Store, slug: &str) -> Option<Proposal> {
+    let conn = s.conn().ok()?;
+    open_proposal(&conn, slug)
+}
+
 pub(crate) fn open_proposal(conn: &Connection, slug: &str) -> Option<Proposal> {
     let mut st = conn
         .prepare(

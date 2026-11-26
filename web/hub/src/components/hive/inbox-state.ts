@@ -2,6 +2,7 @@ import { daemonControlState, type DaemonControlState } from "./daemon-control-st
 import { foldSteps, gateStep, type GateStep } from "./evolve-gate";
 import { awaitsDecision } from "../records/records-state";
 import { draftState, type DraftState } from "../records/draft-state";
+import { withGoalProposals } from "../project/goal-proposal-state";
 import { evolveGate, registeredProjects, type Compute, type ComputeRequest, type EvolveGate, type HarnessStatus, type Org, type OwnerQuestion, type ProjectCardData, type ProjectsPayload, type Proposal, type RecordRow, type RecordsPayload, type Runner, type ServicePayload, type SettingsPayload, type WorkSuggestion, type WorkSuggestionsPayload } from "../../lib/api";
 import { andList, plural } from "../../lib/format";
 import { sortOwnerQuestions } from "../../lib/owner-questions";
@@ -97,7 +98,8 @@ export function buildInbox(q: InboxSources): Inbox {
   const brain = o?.totals.brain ?? "";
   const gateOf = (p: ProjectCardData) => evolveGate(p, regRows.find((r) => r.slug === p.slug));
   const decisions = (q.proposed.data?.records ?? []).filter(awaitsDecision);
-  const proposals = (o?.proposals ?? []).filter((p) => p.status === "awaiting");
+  // A proposed project goal (goal_proposal on the org rows) waits like any proposal.
+  const proposals = withGoalProposals((o?.proposals ?? []).filter((p) => p.status === "awaiting"), projects);
   const allQuestions = sortOwnerQuestions(o?.questions ?? []);
   const questions = allQuestions.filter((x) => (x.decider ?? "owner") === "owner");
   const agentsDeciding = allQuestions.length - questions.length;

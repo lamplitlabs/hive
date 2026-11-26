@@ -1925,6 +1925,31 @@ mod tests {
         assert_eq!(org["present"], true);
         assert_eq!(org["goal_source"], hive_goals::GENERATED);
         assert_eq!(org["goal_preview"], preview);
+        // Nothing proposed yet: the row says so with a null proposal.
+        assert!(org.get("goal_proposal").is_some(), "{org:?}");
+        assert!(org["goal_proposal"].is_null());
+        // A proposed goal waits on the row (For you, the Overview) until the
+        // owner decides it.
+        s.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO posts (id, project, area, thread, kind, agent, date, summary, body, created_at) VALUES ('P-1', ?, 'goal', 'amend', 'opinion', 'one-lead', ?, 'proposed goal: search', 'goal: amend\nMake search correct for every ticket.\n\nWhy: that is what lands.\n', ?)",
+                rusqlite::params![slug, s.now(), s.now()],
+            )
+            .unwrap();
+        let proposed = org_row(&slug)["goal_proposal"].clone();
+        assert_eq!(proposed["post"], "P-1");
+        assert_eq!(proposed["agent"], "one-lead");
+        assert_eq!(proposed["text"], "Make search correct for every ticket.");
+        assert_eq!(proposed["why"], "that is what lands.");
+        s.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO decisions (post_id, project, answer, words, decided_at, decided_by, result_post) VALUES ('P-1', ?, 'no', '', ?, 'human', 'R-1')",
+                rusqlite::params![slug, s.now()],
+            )
+            .unwrap();
+        assert!(org_row(&slug)["goal_proposal"].is_null());
         // The shared board and a checkout missing on disk carry no goal.
         let (_, result) = http::additions_request(h.clone(), "GET", "/api/v1/org", "");
         assert!(result["commons"].get("goal_source").is_none());

@@ -30,6 +30,8 @@ import { agentName } from "@/lib/words";
 import { cn } from "@/lib/utils";
 import { filterRows, forYouProjects, forYouRows, groupRows, SECTION_NOTE, SECTION_TITLE, waitingWords, type ForYouRow } from "./for-you-state";
 import { rowHref } from "./row-href";
+import { GoalProposalCard } from "@/components/project/goal-proposal";
+import { isGoalProposal } from "@/components/project/goal-proposal-state";
 
 // The For you page (spec "Navigation changes"): everything that waits on the
 // owner's answer across projects, one list per kind, answered in place. The
@@ -145,7 +147,7 @@ function Row({ r, inbox, brain, canDecide, caps, startOpen, selected, onOpen, pr
   // A question or a proposal opens in place, under its row: its whole text
   // and, for a question that wants words, the answer box. Closed, the row is
   // one line like the rest.
-  const [expanded, setExpanded] = useState(!!startOpen);
+  const [expanded, setExpanded] = useState(!!startOpen || !!r.card);
   const toggle = useCallback(() => setExpanded((v) => !v), []);
   // A link that opens this row (Home's Answer) brings it into view once.
   const item = useRef<HTMLDivElement>(null);
@@ -165,7 +167,10 @@ function Row({ r, inbox, brain, canDecide, caps, startOpen, selected, onOpen, pr
     }
   } else if (kind === "proposal") {
     const p = inbox.proposals.find((x) => x.id === id);
-    if (p) {
+    if (p && isGoalProposal(p)) {
+      // A proposed goal: its whole text, the Why and the three answers in the card under the row.
+      if (expanded) details = <GoalProposalCard slug={p.slug || brain} g={p.goal} canDecide={canDecide && p.can_decide !== false} framed={false} />;
+    } else if (p) {
       actions = <ProposalActions p={p} canDecide={canDecide} register={setYn} />;
       if (expanded) details = <ItemText text={p.proposal_text} post={hrefs.post(p.slug || brain, p.id)} empty="The proposal says no more than its title." />;
     }

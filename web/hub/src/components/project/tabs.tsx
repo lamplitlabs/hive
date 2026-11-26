@@ -21,6 +21,8 @@ import { ListItem, ListRow, ListRows, RowCue } from "@/components/hive/list-row"
 import { ComputeDecide, ComputeInboxCard } from "@/components/compute/compute";
 import { ProposedRecordCard } from "@/components/records/decide-record";
 import { DraftCard, RecordDraftPanel } from "@/components/records/draft-panel";
+import { GoalProposalCard, GoalProposalPanel } from "./goal-proposal";
+import { isGoalProposal, withInboxGoals, withoutGoalProposals } from "./goal-proposal-state";
 import { LiveFeed } from "@/components/hive/live-feed";
 import { Markdown } from "@/components/hive/markdown";
 import { GOAL_ANCHOR, GoalEditor } from "@/components/project/goal";
@@ -120,6 +122,9 @@ export function OverviewTab({ slug, canDecide = true }: { slug: string; canDecid
   const tasks = useApi<TasksPayload>("tasks?project=" + encodeURIComponent(slug));
   const inbox = useInbox();
   const commons = slug === "commons";
+  const mine = inbox.forProject(slug);
+  // A goal Hive drafted for this project (TASK-117) gets its own panel at the top.
+  const goal = mine.proposals.find(isGoalProposal);
   return (
     <Wait q={ov} rows={8}>
       {(o) => {
@@ -127,7 +132,8 @@ export function OverviewTab({ slug, canDecide = true }: { slug: string; canDecid
         return (
           <div className="grid gap-6 lg:grid-cols-12">
             <div className="grid min-w-0 content-start gap-8 lg:col-span-8">
-              <NeedsYou slug={slug} mine={inbox.forProject(slug)} canDecide={canDecide} />
+              {goal ? <GoalProposalPanel slug={slug} g={goal.goal} canDecide={canDecide && goal.can_decide !== false} /> : null}
+              <NeedsYou slug={slug} mine={withoutGoalProposals(mine)} canDecide={canDecide} />
               <section aria-label="Working now" className="min-w-0">
                 <SectionHeading icon={RadioIcon} count={o.claims_active || undefined} note={workingSummary(workingRows(o.active_claims, open, slug), o.claims_active)} as="h2">
                   Working now
@@ -259,11 +265,11 @@ function inboxRows(slug: string, mine: Omit<ReturnType<ReturnType<typeof useInbo
           lead={<KindTile kind="proposal" waiting title="Proposal" />}
           title={p.summary}
           actionsVisible
-          actions={canDecide && p.can_decide !== false ? <DecideButtons id={p.id} summary={p.summary} canDecide={canDecide} size="xs" className="w-auto justify-end" /> : undefined}
+          actions={canDecide && p.can_decide !== false && !isGoalProposal(p) ? <DecideButtons id={p.id} summary={p.summary} canDecide={canDecide} size="xs" className="w-auto justify-end" /> : undefined}
           {...opener(key, hrefs.post(p.slug || slug, p.id))}
           ariaLabel={"Proposal: " + p.summary}
         >
-          <SecondLine who={who ? "Proposal from " + inSentence(agentName(who)) : "Proposal"} at={p.date} text={firstLine(p.proposal_text)} />
+          <SecondLine who={isGoalProposal(p) ? "New project goal" : who ? "Proposal from " + inSentence(agentName(who)) : "Proposal"} at={p.date} text={firstLine(p.proposal_text)} />
         </ListRow>
       ),
     });
@@ -731,14 +737,15 @@ export function ForYouTab({ slug, canDecide }: { slug: string; canDecide: boolea
         // Count only what the owner alone can decide: questions the lead answers while the owner is away, or that a setting answers, are the agents' to settle.
         const allQuestions = qs.data ?? mine.questions;
         const { questions, agentsDecided } = splitQuestions(allQuestions);
-        const awaiting = all.filter((p) => p.status === "awaiting");
+        // A goal Hive drafted (TASK-117) is known to the inbox, not the project's proposals route.
+        const awaiting = withInboxGoals(all.filter((p) => p.status === "awaiting"), mine.proposals);
         const decided = all.filter((p) => p.status !== "awaiting");
         const waiting = mine.decisions.length + awaiting.length + questions.length + mine.compute.length + mine.work.length + mine.drafts.length + mine.steps.length;
         const items = { ...mine, proposals: awaiting, questions };
         const rows = inboxRows(slug, items, canDecide, setOpenRecord, { expanded, onExpand: setExpanded });
         const cards: Record<string, React.ReactNode> = {};
         for (const r of mine.decisions) cards["d" + r.id] = <ProposedRecordCard r={r} onOpen={setOpenRecord} />;
-        for (const p of awaiting) cards["p" + p.id] = <ProposalCard r={p} slug={slug} canDecide={canDecide} />;
+        for (const p of awaiting) cards["p" + p.id] = isGoalProposal(p) ? <GoalProposalCard slug={slug} g={p.goal} canDecide={canDecide && p.can_decide !== false} /> : <ProposalCard r={p} slug={slug} canDecide={canDecide} />;
         for (const x of questions) cards["q" + x.id] = <QuestionCard q={x} slug={slug} canDecide={canDecide} />;
         for (const cr of mine.compute) cards["c" + cr.id] = <ComputeInboxCard r={cr} caps={compute.data?.caps} />;
         for (const w of mine.work) cards["w" + w.id] = <WorkSuggestionCard s={w} slug={slug} />;

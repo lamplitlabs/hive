@@ -67,11 +67,13 @@ export interface ForYouRow {
   yesNo?: boolean;
   /** The button word on a row whose fix is a page away (the row links there). */
   fix?: string;
+  /** The row shows its whole card from the start (a proposed goal). */
+  card?: boolean;
 }
 
 export interface ForYouInput {
   decisions: { id: string; project: string; title: string; kind: string; updated_at?: string; date?: string }[];
-  proposals: { id: string; slug?: string; summary: string; date: string; thread_key?: string }[];
+  proposals: { id: string; slug?: string; summary: string; date: string; thread_key?: string; kind?: string }[];
   questions: { id: string; slug?: string; summary: string; date: string; stop?: boolean; thread_key?: string; on_post?: string }[];
   compute: { id: string; project: string; size: string; hours: number; requested_by: string; at: string }[];
   work: { id: string; project: string; title: string; updated_at?: string; created_at?: string; reviewed_at?: string }[];
@@ -99,7 +101,8 @@ export function forYouRows(i: ForYouInput): ForYouRow[] {
   if (i.provider) rows.push({ key: "provider:" + i.provider.name, section: "problems", kind: "tool", project: "", title: i.provider.expired ? (i.provider.label || i.provider.name) + " sign-in expired" : "Connect " + (i.provider.label || i.provider.name), meta: i.provider.expired ? "Sign in again so agents can use their model" : "Agents have no model provider yet", href: "/settings/?connect=" + encodeURIComponent(i.provider.name) + "#harness", at: "", urgent: true, fix: i.provider.expired ? "Sign in" : "Connect" });
   for (const q of i.questions) rows.push({ key: "question:" + q.id, section: "questions", kind: "question", project: q.slug || brain, title: isStop(q) ? STOP_TITLE : q.summary, at: q.date, urgent: !!q.stop, yesNo: true });
   for (const r of i.decisions) rows.push({ key: "decision:" + r.id, section: "decisions", kind: "decision", project: r.project, title: r.title, meta: r.id, at: first(r.updated_at, r.date), yesNo: true });
-  for (const p of i.proposals) rows.push({ key: "proposal:" + p.id, section: "proposals", kind: "proposal", project: p.slug || brain, title: p.summary, at: p.date, yesNo: true });
+  // A proposed project goal (TASK-117) reads as what it is and opens as its card.
+  for (const p of i.proposals) rows.push({ key: "proposal:" + p.id, section: "proposals", kind: "proposal", project: p.slug || brain, title: p.summary, ...(p.kind === "goal" ? { meta: "New project goal", card: true } : {}), at: p.date, yesNo: true });
   for (const c of i.compute) rows.push({ key: "compute:" + c.id, section: "compute", kind: "machine", project: c.project, title: c.size + " for " + c.hours + (c.hours === 1 ? " hour" : " hours"), meta: "Asked by " + c.requested_by, at: c.at, yesNo: true });
   for (const w of i.work) rows.push({ key: "work:" + w.id, section: "work", kind: "suggestion", project: w.project, title: w.title, meta: w.id, at: first(w.reviewed_at, w.updated_at, w.created_at), yesNo: true });
   for (const d of i.drafts) rows.push({ key: "draft:" + d.slug + ":" + d.r.id, section: "drafts", kind: "record", project: d.slug, title: d.r.id === "EVO-evaluators" ? "New evaluators drafted" : "A new constitution drafted", meta: d.r.draft?.author ? "By " + d.r.draft.author : undefined, at: d.r.draft?.at || "" });
