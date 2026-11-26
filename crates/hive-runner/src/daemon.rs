@@ -2297,6 +2297,10 @@ pub(crate) fn daemon(
                     say(&o, line);
                 }
                 stages.mark("heldout");
+                for line in crate::goal_draft::tend_goal_drafts(s, now.clone()) {
+                    say(&o, line);
+                }
+                stages.mark("goal");
                 for pr in crate::keys::reprobe_due(s, interval, &now) {
                     say(
                         &o,

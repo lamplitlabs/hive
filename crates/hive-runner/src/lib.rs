@@ -38,6 +38,7 @@ pub(crate) mod forge;
 pub mod gcp;
 pub mod gh_auth;
 pub mod gitapp;
+pub(crate) mod goal_draft;
 pub(crate) mod hand_watch;
 /// The `hive-hands` protocol lives with the executor path (hive-hand-core,
 /// ADR-070), which the open `hive-hand` binary is built from.

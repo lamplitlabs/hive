@@ -293,6 +293,7 @@ pub(crate) fn onboard_project(
             project.str("slug")
         ));
     }
+    lines.push(goal_draft_line(s, &project.str("slug")));
     lines.extend([
         "What stays human:".into(),
         format!("1. the baseline records itself: once evolve.loop is 1 the daemon measures {} with the enabled fixtures and archives the baseline (ADR-031; costs real agent runs); sooner by hand: hive job add --project {} --kind baseline --title 'Record baseline'", project.str("default_branch"), project.str("slug")),
@@ -304,6 +305,20 @@ pub(crate) fn onboard_project(
     }
     lines.push(format!("store: {}", s.path));
     Ok(lines)
+}
+
+/// What onboarding says about the goal: once the onboarding job is over the
+/// daemon drafts a tailored goal for the owner to take; until then, and
+/// without a model, the generated template stands.
+pub(crate) fn goal_draft_line(s: &hive_store::Store, slug: &str) -> String {
+    if s.setting_int(hive_goals::draft::RECHECK_DAYS_SETTING) <= 0 {
+        return format!(
+            "goal: the generated template stands (goal.recheck_days is 0); set goal.recheck_days above 0 and the daemon drafts a tailored goal for {slug} for the owner to take in the console"
+        );
+    }
+    format!(
+        "goal: once onboarding finishes, the daemon drafts a tailored goal for {slug} with a model and posts it on goal/amend; the owner takes it in the console (For you, Project > Overview); the generated template stands until then"
+    )
 }
 
 pub(crate) fn starter_count(s: &hive_store::Store, slug: String) -> i32 {
@@ -428,6 +443,7 @@ mod tests {
             "2. keep at least two private fixtures in evolve.heldout_dir: hive evolve setup DIR",
             "3. set loop: on in the constitution record",
             "4. keep the daemon and the hub alive with `hive service install`",
+            "goal: the generated template stands (goal.recheck_days is 0); set goal.recheck_days above 0 and the daemon drafts a tailored goal for seeded for the owner to take in the console",
         ] {
             assert!(text.contains(want), "missing {want:?} in:\n{text}");
         }

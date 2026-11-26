@@ -63,6 +63,10 @@ pub(crate) fn test_main_setup() {
         // The login gate would ask the real provider about this machine's sign-in; tests that exercise it
         // call local_login_gate with a fake provider (login_gate.rs) or swap the gate themselves.
         let _ = crate::login_gate::set_login_gate(Box::new(|_| String::new()));
+        // No test reaches a real model through the goal drafter; the drafting tests swap in a fake.
+        crate::goal_draft::set_draft_call(std::sync::Arc::new(|_, _, _, _| {
+            Err(anyhow!("the goal draft call is stubbed in tests"))
+        }));
         // ADR-034: no test reaches GitHub; tests that need answers swap GITHUB_HTTP (or point
         // HIVE_GITHUB_API at a hive_testutil::httptest server).
         let _ = crate::executor::set_github_http(Box::new(no_network_github_http));
@@ -161,6 +165,8 @@ pub(crate) fn new_store() -> TestStore {
     let _ = s.set_setting(util::HUMAN_AGENT, "lead.research_minutes", "0");
     let _ = s.set_setting(util::HUMAN_AGENT, "lead.idle_factor", "1");
     let _ = s.set_setting(util::HUMAN_AGENT, "evolve.draft_hours", "0");
+    // The daemon's goal re-drafts stay off here; the goal_draft tests turn them on.
+    let _ = s.set_setting(util::HUMAN_AGENT, "goal.recheck_days", "0");
     // The fixture cards of these tests name no check: the card-proof gate
     // (evolve.require_check, default on) is off here, and the tests of that
     // gate - card_proof, the briefs, the idle line - turn it on themselves.

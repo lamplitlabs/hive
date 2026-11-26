@@ -201,6 +201,7 @@ Each section below is one family: the settings that share the part of their name
 
 | Setting | Default | What it does |
 | --- | --- | --- |
+| `goal.recheck_days` | `14` | days between the daemon's re-drafts of the project goal: a model side-call reads the README, the docs, recent commits, accepted ADRs, the board's goal readings, the tasks and the owner's words and drafts a goal; a draft that differs materially from the goal in force and from every dismissed draft is posted as a proposal on goal/amend that the owner takes with one yes in the console (For you, Project \> Overview) or `hive decide`, never set silently. A goal review verdict of drift, stale or reached, a newly accepted ADR or new owner direction re-drafts sooner; 0 turns the daemon's re-drafts off |
 | `goal.review_days` | `7` | days between the lead's readings of the project goal: `hive goal review` and the hub's goal panel score the last work against the goal from the store (what landed, what passed its checks, how much of it speaks to the goal's words, how the pace compares with the window before) and blend in the lead's latest reading (a finding on the board thread goal/review with a `Score: NN` line) when it is this recent; when none is, the lead's brief asks for one, and the lead may propose a new goal (an opinion on goal/amend whose first line is `goal: amend`) that the owner takes with one yes |
 
 ## harness
