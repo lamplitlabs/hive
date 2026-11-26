@@ -4,10 +4,13 @@
 /public/install.sh
 # The pictures of ../../docs, copied by the same script; the site serves them at /docs-media/.
 /public/docs-media/
+# The commit a build is made from, written by the same script; the site serves it at /commit.txt.
+/public/commit.txt
 /node_modules
 /.next/
 /build
-/.vercel
+# Without the leading slash: `vercel link` looks for this very line and, not finding it, adds it to this file.
+.vercel
 *.tsbuildinfo
 next-env.d.ts
 .DS_Store

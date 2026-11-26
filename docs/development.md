@@ -140,9 +140,59 @@ passes `npm run check`, set `VERCEL_ORG_ID` and `VERCEL_PROJECT_ID` to the
 team's and the project's ids, then run
 `npx vercel pull --yes --environment=production`, `npx vercel build --prod`
 and `npx vercel deploy --prebuilt --prod`. What is uploaded is the build's
-output, not the source. Until `VERCEL_DEPLOY_TOKEN` is set this is the only
-way the site changes, and the site shows the docs of the commit that was
-deployed, not of `main`.
+output, not the source.
+
+**The site follows main by itself** on a hub whose owner is signed in to
+Vercel (`npx vercel login`) with access to the project. The check
+`.hive/automations/site-shows-main.sh`, which the runner runs every half
+hour (`.hive/automations/site-shows-main.yaml`), asks the public address
+for `/commit.txt`: the commit the site was built from, which
+`web/site/scripts/prebuild.mjs` writes into every build of a tree with
+nothing changed and nothing untracked. While that commit is on `main` and
+`web/site/`, `docs/` and `scripts/install.sh` are as they were at it,
+nothing is deployed; the machine that deploys the site then only compares
+`/install.sh` with the repository's, byte for byte.
+
+It deploys `main` in three cases: those paths changed since the commit
+there; the commit there is not on `main`, because someone deployed a
+branch; or this site is there without a `commit.txt`, from a build before
+the check existed. A deploy is the installer's own test when the installer
+changed, `npm run check`, and the three commands above, in the runner's
+fresh worktree of `main`. Then `/commit.txt` and `/install.sh` are read
+back from the public address.
+
+- Only the runner deploys. Run by hand, in a checkout or in an agent's
+  clone, the script says what a run would do and does nothing;
+  `hive schedule run` makes the check due now.
+- Only this repository is deployed: the upstream has to be
+  `github.com/lamplitlabs/hive`, however its address is written. Only a
+  tree with nothing changed and nothing untracked goes out, and only when
+  its HEAD is on the upstream's default branch, so nothing reaches the
+  public address that is not on the forge already. The project is the one
+  the script names: `VERCEL_ORG_ID` and `VERCEL_PROJECT_ID` in the
+  daemon's environment are dropped.
+- A machine that is not signed in to Vercel, or whose login cannot reach
+  the project, deploys nothing and its check stays green. On a machine
+  that deployed before, a login that no longer works is a failure.
+- A failure is a note the first time, because one run can fail on the
+  network alone; another one within three hours is red. The runner then
+  queues one job with the end of the output. Failures are: `npm run check`
+  or the installer's test fails on `main`; the build or the upload fails;
+  the address still shows another commit, or another installer,
+  afterwards.
+- An address that does not answer, or that answers with another site, is a
+  note and not a failure: no commit can fix it. After twelve runs in a row
+  without an answer, six hours, the check is red on a machine that
+  deployed before.
+
+`.hive/automations/site-shows-main.sh --plan` says what a run would do and
+does nothing. The script's test, `scripts/tests/site-shows-main-test.sh`,
+runs with the project's check (`crates/hive/tests/site_shows_main.rs`),
+and `web/site/src/lib/commit-stamp.test.mjs` tests the stamp.
+
+Without such a hub and without the three secrets, the site changes only
+when someone runs the three commands, and it shows the docs of the commit
+that was deployed, not of `main`.
 
 **Going public** takes five things. `npm run check:live` in `web/site`
 asks the public internet for each, with no login, and says which are
