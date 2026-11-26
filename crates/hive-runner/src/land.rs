@@ -6072,6 +6072,7 @@ mod tests {
             &["git", "commit", "-q", "-m", "deliver source and docs"],
         );
         run(&root, &["git", "switch", "-q", "main"]);
+        crate::test_helpers::task_for_source(&s, "proj", "task:TASK-001");
         let (job, _) = crate::jobs::add_job(
             &s,
             "proj".into(),

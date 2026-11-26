@@ -1623,7 +1623,7 @@ mod tests {
     fn retry_command_output_and_json() {
         let _serial = crate::test_helpers::serial();
         let (_home_dir, _home, s, p, _repo) = fixture();
-        let job = make_failed_job(&s, &p.slug, "task:cli");
+        let job = make_failed_job(&s, &p.slug, "work:cli");
         let (out, err) = run_cmd(
             &s,
             Some(Context {
@@ -1638,7 +1638,7 @@ mod tests {
             format!("job {} queued again (retry 1 of this chain)", job.id)
         );
 
-        let job = make_failed_job(&s, &p.slug, "task:cli-copy");
+        let job = make_failed_job(&s, &p.slug, "work:cli-copy");
         let (out, err) = run_cmd(
             &s,
             Some(Context {
@@ -1664,7 +1664,7 @@ mod tests {
         assert!(err.is_ok(), "{err:?}");
         assert!(out.contains("already has open corrected job"), "{out}");
 
-        let job = make_failed_job(&s, &p.slug, "task:json");
+        let job = make_failed_job(&s, &p.slug, "work:json");
         let (out, err) = run_cmd(
             &s,
             Some(Context {

@@ -225,6 +225,7 @@ mod tests {
         );
         assert_eq!(crate::run::jobs_today_with(&s, &now, &[]), 2);
         let add = |kind: &str, source: &str| {
+            crate::test_helpers::task_for_source(&s, "proj", source);
             crate::jobs::add_job(
                 &s,
                 "proj".into(),

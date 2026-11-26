@@ -3770,6 +3770,7 @@ mod tests {
         ] {
             let s = new_store();
             new_bare_repo(&s);
+            crate::test_helpers::task_for_source(&s, "proj", "task:TASK-guard");
             let job = insert_recover_failed_job(
                 &s,
                 "job-not-pending",
@@ -4497,6 +4498,49 @@ mod tests {
         assert_eq!(j.str("status"), "failed", "job = {j:?}");
         assert_eq!(j.str("result"), want, "job = {j:?}");
         *crate::tmpspace::FREE_SPACE.write().expect("free space") = old_space;
+    }
+
+    /// TASK-140: cancelling a task stops the run of its leased job even
+    /// before the run has a harness session to ask.
+    #[test]
+    fn run_watcher_stops_a_run_whose_task_is_cancelled() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        let task = hive_tasks::new(&s, "proj", "Declined", "", 0, "human").unwrap();
+        let c = s.conn().unwrap();
+        c.execute(
+            "INSERT INTO jobs (id, project, kind, title, source, status, created_at) VALUES ('job-t', 'proj', 'task', 'T', ?, 'leased', ?)",
+            rusqlite::params![format!("task:{}:x", task.id), s.now()],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO runs (id, job_id, agent, project, started_at) VALUES ('run-t', 'job-t', 'aurora', 'proj', ?)",
+            [s.now()],
+        )
+        .unwrap();
+        drop(c);
+        assert!(!crate::run::run_task_cancelled(&s, "run-t"));
+        let worker_cancel = hive_bus::CancellationToken::new();
+        let owner_cancelled = Arc::new(AtomicBool::new(false));
+        let done = crate::run::watch_run_harness_cancel_every(
+            &worker_cancel,
+            &s,
+            "run-t",
+            Arc::clone(&owner_cancelled),
+            Duration::from_millis(1),
+        );
+        hive_tasks::cancel(&s, &task.id, "wont do", "human").unwrap();
+        let start = SystemTime::now();
+        while !worker_cancel.is_cancelled() {
+            assert!(
+                start.elapsed().unwrap_or_default() < Duration::from_secs(10),
+                "the run of a cancelled task was not stopped"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(owner_cancelled.load(Ordering::SeqCst));
+        done();
     }
 
     #[test]

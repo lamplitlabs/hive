@@ -113,6 +113,34 @@ forces nothing ([When delivery fails](#when-delivery-fails)). A pass opens at mo
 tries at most three held deliveries again, the oldest hold first ([When
 delivery fails](#when-delivery-fails)), and reads every open one.
 
+### Work for a closed task
+
+A task that is `done` or `cancelled` gets no pull request, and a job whose
+source is `task:…` is never delivered on its own. So such work is stopped
+before it runs, not after (TASK-140):
+
+- `hive job add --source task:<id>` (and every internal queue) refuses a
+  source that names no task of the job's project - `task:126:followups`
+  once ran 65 minutes and nothing delivered it - and a source whose task is
+  `done` or `cancelled`. The refusal names the fix: file the follow-up as a
+  new task and queue its jobs under that task's id. Of the three paths -
+  reopen the finished task, deliver the branch on its own, or refuse - Hive
+  refuses: a `done` task's pull request merged, and reopening it would turn
+  the owner's closed record back into open work behind their back; a
+  `cancelled` task was declined by the owner; and a branch delivered on its
+  own would skip the task's end-to-end check and the reviewer's view of the
+  whole. A new task is visible to the owner, is planned like any other, and
+  gets its own pull request.
+- A queued job of a closed task is not leased: the lease ends it `cancelled`
+  with `TASK-NNN is done: a closed task takes no more runs; ...` (a
+  `job.cancelled` event by `lease`).
+- `hive job finish JOB queued` and `hive job retry` refuse a blocked, failed
+  or cancelled job of a closed task.
+- `hive task cancel` cancels the task's queued and blocked jobs and asks the
+  run of a leased one to stop, as the owner's **Cancel run** does; the run's
+  watch also stops a run whose task is cancelled before its harness session
+  exists. The run ends `cancelled by the owner`.
+
 The measured share: of the 260 landings on one machine in the seven days
 before this flow, 22 (8%) were task work and 238 were everything else -
 suggestion jobs 120, security updates 39, lead idle work 21, role leads 17,

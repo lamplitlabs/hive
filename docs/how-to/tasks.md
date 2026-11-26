@@ -192,14 +192,23 @@ does to the work:
   that is already running keeps the brief it started with, and nothing
   tells it of the change. So when the change matters to work that is
   planned or running, say it in the task's conversation as well.
-- **A cancel** is final: to take the work up again, give a new task. The
-  task's jobs that have not started are cancelled with it. A job that is
-  already running is not stopped. To stop it now, open its run from
-  **Steps** and press **Cancel run**, or run `hive harness cancel ID` with
-  the run's id (`hive harness sessions --project my-app` lists the runs).
+- **A cancel** is final: to take the work up again, give a new task. Every
+  open job of the task ends with it: the queued and the blocked ones are
+  cancelled, and a job that is already running has its run asked to stop,
+  as **Cancel run** on its **Steps** would; it ends `cancelled by the
+  owner` within a few seconds. The `task.cancelled` event counts them
+  (`cancelled_jobs`, `blocked_jobs`, `leased_jobs`, `stopped_runs`).
 
 Hive refuses to amend a task that is `done` or `cancelled`, and the runner
-opens no new pull request for it.
+opens no new pull request for it. A closed task has no running jobs: a
+queued job of it is never leased (the lease cancels it with the reason),
+and `hive job finish JOB queued` or `hive job retry` refuses to put one of
+its blocked or failed jobs back in the queue. Work still wanted after a
+task is done - a review's follow-up, a fix found later - is a new task:
+`hive job add --source task:<id>` refuses a done or cancelled task, and a
+source that names no task of the project (`task:126:followups`), and says
+`hive task new` instead ([Landing](../landing.md#work-for-a-closed-task)
+says why).
 
 ## 7. Rule on suggested work
 
