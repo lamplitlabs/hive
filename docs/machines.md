@@ -807,3 +807,8 @@ project/area/thread/summary/agent, earliest kept), drops and recreates the post
 immutability triggers from their stored definitions, verifies they are present,
 and writes a `post.remove.duplicates` event. Human and worker findings are left
 alone.
+
+A removed executor keeps its row in the store, with the status `removed`.
+`hive executor list` leaves such rows out. The `executors` line of
+`hive status` counts them at its end instead of listing them
+(`local active (0/5 busy), 2 removed`), and works out no note for them.

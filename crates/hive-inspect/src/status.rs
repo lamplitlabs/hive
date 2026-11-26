@@ -694,6 +694,11 @@ pub fn unfit_phrase(tool: &str) -> String {
     }
 }
 
+/// The `executors` row: this machine and every paired one, with its state,
+/// its busy slots and the projects it cannot run. A removed machine keeps
+/// its row in the store, and every rented machine leaves one, so those are
+/// counted at the end of the row instead of listed, and no note is worked
+/// out for them.
 pub fn executors_line(s: &hive_store::Store) -> Result<String> {
     let values = s.settings()?;
     let now = parse_utc(&s.now())?;
@@ -712,7 +717,9 @@ pub fn executors_line(s: &hive_store::Store) -> Result<String> {
         workers: i64::from(hive_runner::capacity::local_slots(s)),
     }];
     let conn = s.conn()?;
-    let mut stmt = conn.prepare("SELECT name, status, workers FROM executors ORDER BY name")?;
+    let mut stmt = conn.prepare(
+        "SELECT name, status, workers FROM executors WHERE status != 'removed' ORDER BY name",
+    )?;
     for row in stmt.query_map([], |r| {
         Ok(Executor {
             name: r.get(0)?,
@@ -753,6 +760,14 @@ pub fn executors_line(s: &hive_store::Store) -> Result<String> {
             );
         }
         parts.push(part);
+    }
+    let removed: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM executors WHERE status = 'removed'",
+        [],
+        |r| r.get(0),
+    )?;
+    if removed > 0 {
+        parts.push(format!("{removed} removed"));
     }
     Ok(parts.join(", "))
 }
@@ -1410,6 +1425,67 @@ mod tests {
             "local active (0/1 busy); lacks node@22 for fresh, needs services for services, cannot set up Gemfile.lock for setup"
         );
         assert_eq!(event_count(&s), before);
+    }
+
+    /// The store keeps the row of every machine it ever had. A removed one
+    /// takes no work: the line counts it, and works out no note for it.
+    #[test]
+    fn executors_line_counts_removed_executors_instead_of_listing_them() {
+        let (_dir, s) = temporary_store();
+        s.set_setting("human", "capacity", "1").unwrap();
+        exec_sql(
+            &s,
+            "INSERT INTO projects(slug,name,path,added_at) VALUES ('pinned','Pinned','/does-not-exist','2026-09-06T19:00:00Z')",
+        );
+        // A recipe that pins a tool: hands that never answered a probe with
+        // `recipe=1` read as outdated for the project.
+        let record = hive_store::Record {
+            id: "CTX-environment".into(),
+            project: "pinned".into(),
+            kind: "context".into(),
+            slug: "environment".into(),
+            title: "Environment".into(),
+            created_at: TEST_NOW.into(),
+            updated_at: TEST_NOW.into(),
+            origin: "store".into(),
+            ..Default::default()
+        };
+        let mut data = std::collections::BTreeMap::new();
+        data.insert("recipe".to_string(), serde_json::json!("1"));
+        data.insert("tools".to_string(), serde_json::json!(["node@22"]));
+        s.put_record(record, data, "The environment.", "human", "")
+            .unwrap();
+        exec_sql(
+            &s,
+            "INSERT INTO executors(name,status,workers,created_at) VALUES \
+             ('hands-drained','drained',1,'2026-09-01T10:00:00Z'), \
+             ('hands-gone-1','removed',1,'2026-09-01T10:00:00Z'), \
+             ('hands-gone-2','removed',1,'2026-09-02T10:00:00Z'), \
+             ('hands-kept','active',2,'2026-09-03T10:00:00Z')",
+        );
+        // A mark a failed setup left for a machine that is gone since.
+        exec_sql(
+            &s,
+            r#"INSERT INTO meta(key,value) VALUES ('unfit','{"hands-gone-1":{"pinned":{"tool":"cargo","at":"2026-09-06T18:30:00Z"}}}')"#,
+        );
+        assert_eq!(
+            executors_line(&s).unwrap(),
+            "local active (0/1 busy), hands-drained drained (0/1 busy); hands outdated for pinned, hands-kept active (0/2 busy); hands outdated for pinned, 2 removed"
+        );
+        let report = status(&s).unwrap();
+        assert!(
+            report.text().contains(
+                "\nexecutors  local active (0/1 busy), hands-drained drained (0/1 busy); hands outdated for pinned, hands-kept active (0/2 busy); hands outdated for pinned, 2 removed\n"
+            ),
+            "{}",
+            report.text()
+        );
+        // Without a removed machine the line says nothing about them.
+        exec_sql(&s, "DELETE FROM executors WHERE status = 'removed'");
+        assert_eq!(
+            executors_line(&s).unwrap(),
+            "local active (0/1 busy), hands-drained drained (0/1 busy); hands outdated for pinned, hands-kept active (0/2 busy); hands outdated for pinned"
+        );
     }
 
     #[test]
