@@ -1720,7 +1720,10 @@ with one sentence on what to do:
 After a retry over ssh the sentence follows what ssh said.
 
 Two more pushes hold an ssh key and follow the same rule, read by the same
-code (`hive_gitenv::forge`), so the three cannot drift apart:
+code (`hive_gitenv::forge`: the url's ssh form, GitHub's question, and
+whether the repository's config sends the url elsewhere, asked with the
+push's own environment and given up after 10 seconds), so the three cannot
+drift apart:
 
 - the probe of `hive cred set` makes a dry-run push to each project's
   remote with the key alone. On a GitHub https url it is made once more
