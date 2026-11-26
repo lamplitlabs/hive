@@ -1219,7 +1219,7 @@ fn compute_request_says_how_many_machine_runs_landed() {
         "{line}"
     );
     assert!(line.contains("did not come back"), "{line}");
-    let r = request_compute(&s, "demo", "demo-lead", "Standard_B2ms", 100, "a big run").unwrap();
+    let r = request_compute(&s, "demo", "demo-lead", "Standard_B2ms", 4, "a big run").unwrap();
     let body: String = conn
         .query_row(
             "SELECT body FROM posts WHERE id = ?",
@@ -1515,6 +1515,87 @@ fn no_hours_a_day_approves_nothing() {
         .unwrap();
     let r = request_compute(&s, "demo", "demo-lead", "", 1, "one allowed").unwrap();
     assert_eq!(r.status, "approved", "{r:?}");
+}
+
+/// `hive compute request --hours 2147483647` with an hour already counted today wrapped the
+/// day's sum round to a negative number in a release build, was approved on its own, and the
+/// worker's cap let a machine with no hour limit be rented. It is refused at the door now, with
+/// the most a request may ask in the error.
+#[test]
+fn a_request_for_more_hours_than_a_day_allows_is_refused() {
+    let _serial = crate::test_helpers::serial();
+    let s = new_store();
+    for (k, v) in [
+        ("compute.auto_approve", "1"),
+        ("compute.max_vms", "2"),
+        ("compute.max_hours_per_day", "8"),
+    ] {
+        s.set_setting("human", k, v).unwrap();
+    }
+    let first = request_compute(&s, "demo", "demo-lead", "", 1, "one hour").unwrap();
+    assert_eq!(first.status, "approved", "{first:?}");
+    let err = request_compute(&s, "demo", "demo-lead", "", i32::MAX, "forever")
+        .expect_err("an absurd request is refused");
+    let said = format!("{err:#}");
+    assert!(
+        said.contains("2147483647 hours") && said.contains("(8)"),
+        "{said}"
+    );
+    let err = request_compute(&s, "demo", "demo-lead", "", 9, "past the cap").expect_err("refused");
+    assert!(format!("{err:#}").contains("(8)"), "{err:#}");
+    // A cap above a day still lets one request ask no more than a day.
+    s.set_setting("human", "compute.max_hours_per_day", "100")
+        .unwrap();
+    let err = request_compute(&s, "demo", "demo-lead", "", 25, "past a day").expect_err("refused");
+    assert!(format!("{err:#}").contains("(24)"), "{err:#}");
+    let fine = request_compute(&s, "demo", "demo-lead", "", 24, "a day").unwrap();
+    assert_eq!(fine.status, "approved", "{fine:?}");
+    // Nothing of the refused ones was recorded.
+    let n: i64 = s
+        .conn()
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM compute_requests", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 2);
+}
+
+/// A day whose sum passes what an i32 holds (rows written before the door refused such asks)
+/// counts as over every cap; it never wraps round to a small or negative number.
+#[test]
+fn a_day_sum_past_i32_counts_as_over_the_cap() {
+    let _serial = crate::test_helpers::serial();
+    let s = new_store();
+    let conn = s.conn().unwrap();
+    for id in ["CR-001", "CR-002"] {
+        conn.execute(
+            "INSERT INTO compute_requests(id,project,requested_by,size,hours,reason,status,decided_by,executor,at,updated_at) VALUES(?,'demo','demo-lead','Standard_B2ms',?,'more hands','approved','hive','',?,?)",
+            params![id, i32::MAX, "2026-09-06T20:00:00Z", "2026-09-06T20:00:00Z"],
+        )
+        .unwrap();
+    }
+    drop(conn);
+    let caps = get_caps(&s).unwrap();
+    assert_eq!(caps.hours_today, i32::MAX);
+    for (k, v) in [
+        ("compute.auto_approve", "1"),
+        ("compute.max_vms", "5"),
+        ("compute.max_hours_per_day", "24"),
+    ] {
+        s.set_setting("human", k, v).unwrap();
+    }
+    let r = request_compute(&s, "demo", "demo-lead", "", 1, "one more").unwrap();
+    assert_eq!(r.status, "pending", "{r:?}");
+}
+
+/// The day's hours are counted from the store's clock; one that does not read is an error, so
+/// nothing is rented on a count of zero.
+#[test]
+fn a_clock_that_does_not_read_counts_no_hours() {
+    let _serial = crate::test_helpers::serial();
+    let s = new_store();
+    let conn = s.conn().unwrap();
+    let err = hours_today(&conn, "not a time").expect_err("no count from a bad clock");
+    assert!(format!("{err:#}").contains("does not read"), "{err:#}");
 }
 
 #[test]

@@ -901,8 +901,8 @@ pub(crate) fn rental_failed_lately(s: &hive_store::Store, now: &str) -> Option<N
     // it ends neither the run of failures nor the pause.
     let rows = crate::util::must_rows(
         &conn,
-        "SELECT r.id, r.status, r.executor, r.note, r.hours, r.updated_at, COALESCE(m.created_at, '') AS made_at, COALESCE(m.released_at, '') AS released_at FROM compute_requests r LEFT JOIN compute_machines m ON m.request_id = r.id WHERE r.status != 'denied' ORDER BY r.rowid DESC LIMIT 8",
-        &[],
+        "SELECT r.id, r.status, r.executor, r.note, r.hours, r.updated_at, COALESCE(m.created_at, '') AS made_at, COALESCE(m.released_at, '') AS released_at, COALESCE((SELECT MIN(e.at) FROM events e WHERE e.action = ?1 AND e.subject = r.id), '') AS release_began FROM compute_requests r LEFT JOIN compute_machines m ON m.request_id = r.id WHERE r.status != 'denied' ORDER BY r.rowid DESC LIMIT 8",
+        &[&crate::compute::RELEASE_BEGAN_ACTION],
     );
     let last = rows.first()?;
     let since = crate::util::must_iso(&last.str("updated_at"))
@@ -962,7 +962,9 @@ pub(crate) fn rental_failed_lately(s: &hive_store::Store, now: &str) -> Option<N
 pub(crate) const OVERRUN_GRACE_MINUTES: i64 = 5;
 
 /// The hours a released request's machine ran when that was more than it was approved for (by
-/// more than `OVERRUN_GRACE_MINUTES`), from when it was made to when it was released. A machine runs on past its hours until its last
+/// more than `OVERRUN_GRACE_MINUTES`), from when it was made to when its release began (the
+/// provider's delete that follows may take up to `compute::COMPUTE_RELEASE_BUDGET`; a release
+/// with no such mark, as the sweep's, counts to when it was released). A machine runs on past its hours until its last
 /// run ends (`compute::rentals_past_hours`); one hub replayed two that ran 5.2 and 8.0 hours on
 /// 4-hour approvals, and the daemon asked for the next machine at once after each.
 fn ran_past_hours(r: &Row) -> Option<f64> {
@@ -972,8 +974,13 @@ fn ran_past_hours(r: &Row) -> Option<f64> {
     {
         return None;
     }
-    let ran =
-        crate::util::must_iso(&r.str("released_at")) - crate::util::must_iso(&r.str("made_at"));
+    let began = r.str("release_began");
+    let until = if began.is_empty() || began > r.str("released_at") {
+        r.str("released_at")
+    } else {
+        began
+    };
+    let ran = crate::util::must_iso(&until) - crate::util::must_iso(&r.str("made_at"));
     let asked = r.int("hours");
     (asked > 0
         && ran
@@ -1011,7 +1018,7 @@ pub(crate) fn auto_compute(
         )));
     }
     // 0 means none, as the setting's description says and the compute worker reads it.
-    if caps.hours_today + AUTO_COMPUTE_HOURS > caps.max_hours_per_day {
+    if caps.hours_today.saturating_add(AUTO_COMPUTE_HOURS) > caps.max_hours_per_day {
         return Err(why(format!(
             "compute.max_hours_per_day {} would be passed ({} h today, {AUTO_COMPUTE_HOURS} h asked)",
             caps.max_hours_per_day, caps.hours_today
@@ -4756,6 +4763,42 @@ mod tests {
             "2026-09-06T05:50:00Z",
             "2026-09-06T05:57:00Z",
             "2026-09-06T09:58:00Z",
+        );
+        let req = auto_compute(
+            &s,
+            "1 job(s) waited 31 min with every slot on this machine busy or held",
+            HANDS_WANTED_MINUTES,
+            TEST_NOW,
+            "daemon",
+        )
+        .expect("asked at once");
+        assert_eq!(req.hours, AUTO_COMPUTE_HOURS, "{req:?}");
+    }
+
+    /// A release that began on the tick the hours ran out but whose provider delete took 15
+    /// minutes (the budget is 20) is no overrun: the grace is measured to when the release
+    /// began, not to the `released_at` stamped after the delete returned.
+    #[test]
+    fn a_slow_teardown_is_no_overrun() {
+        let _serial = crate::test_helpers::serial();
+        let _lock = crate::test_helpers_provider::provider_test_lock();
+        let s = new_store();
+        let _h = renting_hub(&s);
+        released_rental(
+            &s,
+            "CR-001",
+            4,
+            "2026-09-06T05:30:00Z",
+            "2026-09-06T05:40:00Z",
+            "2026-09-06T09:55:00Z",
+        );
+        crate::util::event_at(
+            &s.conn().unwrap(),
+            "2026-09-06T09:41:00Z",
+            "daemon",
+            crate::compute::RELEASE_BEGAN_ACTION,
+            "CR-001",
+            serde_json::Value::Null,
         );
         let req = auto_compute(
             &s,
