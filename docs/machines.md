@@ -536,8 +536,11 @@ the hand on the stdin of one `push JOB URL SHA BRANCH` verb. The hand
 writes it beside the clone with mode 0600, pushes the job's `hive/`
 branch to the upstream with `ssh -i` that key (`--force-with-lease` on an
 absent branch: it never moves a branch the remote already holds), and
-removes the key whatever the push did. An unset `push.credential` pushes
-with what git on the hand already uses. The run log says `pushed … with
+removes the key whatever the push did. Git offers a key over ssh only, so
+on a GitHub https url the hand pushes once more over the url's ssh form
+when GitHub asking for a credential is all git says, the daemon's own rule
+([An upstream with an https url](landing.md#an-upstream-with-an-https-url)).
+An unset `push.credential` pushes with what git on the hand already uses. The run log says `pushed … with
 the leased push credential`, a `hand.push` event records it, and a push
 that fails is left to the delivery pass, which pushes the same branch
 from the checkout. Hands that answer `push=1` in their probe take the

@@ -621,8 +621,58 @@ pub fn upstream_remote(root: &str, branch: &str) -> String {
     }
 }
 
-/// Checks that the key opens the remote for writing without changing it.
+/// Checks that the key opens the remote for writing without changing it:
+/// a dry-run push of a branch nobody has. Git offers the key over ssh only,
+/// so on a remote whose url is GitHub's https one the dry run fails for want
+/// of a credential however good the key is; when that is all git says, it
+/// is made once more against the url's ssh form, the rule the daemon's own
+/// pushes follow (`hive_gitenv::forge`), and that answer counts.
 pub fn probe_remote(root: &str, remote: &str, ssh_command: &str) -> AnyResult<()> {
+    let first = dry_run(root, remote, ssh_command)?;
+    let Err(https_said) = first else {
+        return Ok(());
+    };
+    let Some(ssh) = hive_gitenv::forge::ssh_retry_url(root, &push_url(root, remote), &https_said)
+    else {
+        return Err(anyhow!(https_said));
+    };
+    match dry_run(root, &ssh, ssh_command)? {
+        Ok(()) => Ok(()),
+        Err(ssh_said) => Err(anyhow!(
+            "failed over https ({https_said}), then over ssh ({ssh}): {ssh_said}"
+        )),
+    }
+}
+
+/// The url a push to `remote` goes to: its push url, else its url, else
+/// the name itself (git reads it the same way).
+fn push_url(root: &str, remote: &str) -> String {
+    for args in [
+        ["remote", "get-url", "--push", remote].as_slice(),
+        ["remote", "get-url", remote].as_slice(),
+    ] {
+        let out = Command::new(hive_gitenv::git_program())
+            .args(["-C", root])
+            .args(args)
+            .env_clear()
+            .envs(env_pairs(hive_gitenv::env()))
+            .output();
+        if let Ok(out) = out
+            && out.status.success()
+        {
+            let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !url.is_empty() {
+                return url;
+            }
+        }
+    }
+    remote.to_string()
+}
+
+/// One dry-run push to `to` (a remote's name or a url) with the key's ssh
+/// command: Ok(Ok) when git would push, Ok(Err) with what git said when it
+/// would not, Err when git could not be run.
+fn dry_run(root: &str, to: &str, ssh_command: &str) -> AnyResult<std::result::Result<(), String>> {
     let mut cmd = Command::new(hive_gitenv::git_program());
     cmd.args([
         "-C",
@@ -630,7 +680,7 @@ pub fn probe_remote(root: &str, remote: &str, ssh_command: &str) -> AnyResult<()
         "push",
         "--dry-run",
         "--porcelain",
-        remote,
+        to,
         "HEAD:refs/heads/hive-cred-probe-does-not-exist",
     ])
     .env_clear()
@@ -644,10 +694,10 @@ pub fn probe_remote(root: &str, remote: &str, ssh_command: &str) -> AnyResult<()
         if child.try_wait()?.is_some() {
             let out = child.wait_with_output()?;
             if out.status.success() {
-                return Ok(());
+                return Ok(Ok(()));
             }
             let text = output_text(&out.stdout, &out.stderr);
-            return Err(anyhow!(if text.is_empty() {
+            return Ok(Err(if text.is_empty() {
                 format!("exit status {}", out.status)
             } else {
                 text
@@ -1106,6 +1156,93 @@ mod tests {
         let refu = err.downcast_ref::<Refusal>().unwrap();
         assert!(!refu.why.contains(TEST_TOKEN));
         assert_eq!(refu.what, "The key could not be read");
+    }
+
+    /// `hive cred set` probes the key the way the daemon will push with
+    /// it: on a remote whose url is GitHub's https one, git offers the key
+    /// over ssh only, so when GitHub asking for a credential is all git
+    /// says, the dry run is made once more over the url's ssh form and
+    /// that answer counts. On another host nothing goes over ssh.
+    #[test]
+    fn the_probe_reaches_an_https_github_remote_over_ssh_with_the_key() {
+        let s = setup_store();
+        if !hive_testutil::githttp::available() {
+            return;
+        }
+        let root = push_project(&s, "https-origin");
+        let dir = tempdir().unwrap();
+        let served = dir.path().join("owner").join("repo.git");
+        fs::create_dir_all(served.parent().unwrap()).unwrap();
+        let bare = Path::new(&s.home).join("https-origin.git");
+        let out = Command::new(hive_gitenv::git_program())
+            .args(["clone", "-q", "--bare"])
+            .arg(&bare)
+            .arg(&served)
+            .env_clear()
+            .envs(env_pairs(hive_testutil::git_env()))
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let srv = hive_testutil::githttp::Server::new(dir.path(), "Basic nothing-has-this");
+        let url = format!("{}/owner/repo.git", srv.url());
+        let out = Command::new(hive_gitenv::git_program())
+            .args(["-C", &root, "remote", "set-url", "origin", &url])
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        // GitHub's ssh as seen from here: records its arguments, then runs
+        // git's command where the repository is served, or refuses.
+        let record = dir.path().join("ssh-record");
+        let ssh = dir.path().join("fake-ssh");
+        fs::write(
+            &ssh,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nif [ -n \"$HIVE_TEST_SSH_REFUSE\" ]; then echo \"$HIVE_TEST_SSH_REFUSE\" >&2; exit 255; fi\nfor a in \"$@\"; do last=\"$a\"; done\ncd '{}' && exec sh -c \"$last\"\n",
+                record.display(),
+                dir.path().display()
+            ),
+        )
+        .unwrap();
+        set_mode(&ssh, 0o755);
+        let ssh_command = format!("'{}' -i /dev/null", ssh.display());
+
+        // On another forge's address the https url has no ssh form here.
+        let _unset = hive_testutil::unsetenv("HIVE_FORGE_WEB");
+        let err = probe_remote(&root, "origin", &ssh_command).unwrap_err();
+        assert!(err.to_string().contains("could not read Username"), "{err}");
+        assert!(
+            !record.exists(),
+            "ssh was tried for a url that is not GitHub's"
+        );
+
+        let _web = hive_testutil::setenv("HIVE_FORGE_WEB", srv.url());
+        probe_remote(&root, "origin", &ssh_command).unwrap();
+        let args = fs::read_to_string(&record).unwrap();
+        assert!(
+            args.contains("git@127.0.0.1\n") && args.contains("-i\n"),
+            "{args}"
+        );
+
+        let _refuse = hive_testutil::setenv(
+            "HIVE_TEST_SSH_REFUSE",
+            "git@github.com: Permission denied (publickey).",
+        );
+        let err = probe_remote(&root, "origin", &ssh_command)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("failed over https") && err.contains("Permission denied (publickey)"),
+            "{err}"
+        );
+        let remote = Command::new(hive_gitenv::git_program())
+            .args(["-C", &root, "remote", "get-url", "origin"])
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&remote.stdout).trim(), url);
     }
 
     fn push_project(s: &Store, slug: &str) -> String {

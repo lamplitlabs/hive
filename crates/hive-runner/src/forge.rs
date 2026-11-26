@@ -1121,21 +1121,7 @@ fn app_fallback(s: &hive_store::Store, repo: &str, why: &str) {
 /// no query, no fragment, no further path - and the names hold letters,
 /// digits, `.`, `_` and `-` alone.
 pub(crate) fn ssh_url(url: &str) -> Option<String> {
-    let forge = crate::gitapp::endpoint();
-    let path = url
-        .strip_prefix(forge.web.trim_end_matches('/'))?
-        .strip_prefix('/')?;
-    let (owner, repo) = path.strip_suffix(".git").unwrap_or(path).split_once('/')?;
-    let plain = |name: &str| {
-        !name.starts_with('-')
-            && name.bytes().any(|b| b != b'.')
-            && name
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
-    };
-    let host = forge.git_host();
-    let host = host.split(':').next().unwrap_or(&host);
-    (plain(owner) && plain(repo)).then(|| format!("git@{host}:{owner}/{repo}.git"))
+    hive_gitenv::forge::ssh_form(&crate::gitapp::endpoint().web, url)
 }
 
 /// Whether `env` holds the daemon's own key: `push_credential_env` with
@@ -1185,13 +1171,7 @@ fn no_https_credential(why: &str) -> bool {
 /// that name no address, another address, or the address with the
 /// repository's path (`credential.useHttpPath`) are not that answer.
 fn github_asked(why: &str) -> bool {
-    let web = crate::gitapp::endpoint().web;
-    let web = web.trim_end_matches('/');
-    let asked = format!("fatal: could not read Username for '{web}': terminal prompts disabled");
-    let redirected = format!("warning: redirecting to {web}/");
-    let mut lines = why.lines().filter(|line| !line.trim().is_empty());
-    lines.next_back().is_some_and(|last| last == asked)
-        && lines.all(|line| line.starts_with(&redirected))
+    hive_gitenv::forge::credential_asked(&crate::gitapp::endpoint().web, why)
 }
 
 /// Whether git asks `url` as it is given, and not another the checkout's
