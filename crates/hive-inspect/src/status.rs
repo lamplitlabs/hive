@@ -346,6 +346,97 @@ pub struct DaemonBeat {
     /// heartbeats older than the measurement and before the first body ends.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tick: Option<TickBeat>,
+    /// The pending restart (restart.rs `restart_beat`): since when, the
+    /// runs the new build waits for and when its bound
+    /// (daemon.restart_max_minutes) is up; absent when none is pending.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub restart: Option<RestartBeat>,
+}
+
+/// A pending restart as the heartbeat records it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RestartBeat {
+    pub since: String,
+    pub inflight: u64,
+    pub dispatching: Option<bool>,
+    pub waits_for: Vec<RestartWait>,
+    /// When the bound is up and nothing new starts; absent without one
+    /// and from heartbeats older than the bound.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub until: String,
+}
+
+/// One run a pending restart waits for.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RestartWait {
+    pub agent: String,
+    pub kind: String,
+    pub project: String,
+    pub job: String,
+    pub started_at: String,
+}
+
+/// The status line's clause for a pending restart: since when (and how
+/// long that is), what the new build waits for and when the bound closes
+/// the slots - so a restart held open by the owner's queue reads as such,
+/// not as a daemon that forgot to restart.
+fn restart_clause(r: &RestartBeat, now: chrono::DateTime<chrono::Utc>) -> String {
+    let ago = |at: &str| {
+        parse_utc(at).ok().map(|t| {
+            hive_cli::format_duration(std::time::Duration::from_secs(
+                (now - t).num_seconds().max(0) as u64,
+            ))
+        })
+    };
+    let since = match ago(&r.since) {
+        Some(d) => format!("since {} ({d})", r.since),
+        None => "pending".to_string(),
+    };
+    let names: Vec<String> = r
+        .waits_for
+        .iter()
+        .take(3)
+        .map(|w| {
+            let mut who = if w.agent.is_empty() {
+                w.kind.clone()
+            } else {
+                format!("{}'s {}", w.agent, w.kind)
+            };
+            if !w.project.is_empty() {
+                who.push_str(&format!(" on {}", w.project));
+            }
+            who
+        })
+        .collect();
+    let waits = if names.is_empty() {
+        format!("{} run(s) in flight", r.inflight)
+    } else if r.waits_for.len() > names.len() {
+        format!(
+            "{} and {} more",
+            names.join(", "),
+            r.waits_for.len() - names.len()
+        )
+    } else {
+        names.join(", ")
+    };
+    let starts = if r.dispatching == Some(false) {
+        "; nothing new starts".to_string()
+    } else if r.until.is_empty() {
+        String::new()
+    } else {
+        match parse_utc(&r.until) {
+            Ok(t) if t <= now => {
+                "; nothing new starts (daemon.restart_max_minutes is up)".to_string()
+            }
+            _ => format!(
+                "; nothing new starts after {} (daemon.restart_max_minutes)",
+                r.until
+            ),
+        }
+    };
+    format!(", restart {since}, waits for {waits}{starts}")
 }
 
 /// The last loop body in milliseconds, the slowest since the daemon started
@@ -449,8 +540,14 @@ pub fn daemon_status(s: &hive_store::Store) -> Result<String> {
             )
         })
         .unwrap_or_default();
+    let restart = beat
+        .restart
+        .as_ref()
+        .filter(|_| state == "alive")
+        .map(|r| restart_clause(r, now))
+        .unwrap_or_default();
     Ok(format!(
-        "{state} pid {pid}, last loop {age}s ago, {} loop(s), interval {interval_text}s{tick}",
+        "{state} pid {pid}, last loop {age}s ago, {} loop(s), interval {interval_text}s{tick}{restart}",
         beat.loops
     ))
 }
@@ -1267,6 +1364,18 @@ mod tests {
             (
                 r#"{"pid":7,"at":"2026-09-06T19:00:00Z","loops":9,"interval":300,"tick":{"ms":80,"max_ms":950,"slow":0}}"#,
                 "alive pid 7, last loop 0s ago, 9 loop(s), interval 300s, last tick 80ms (slowest 950ms)",
+            ),
+            (
+                r#"{"pid":7,"at":"2026-09-06T19:00:00Z","loops":9,"interval":300,"restart":{"since":"2026-09-06T12:35:00Z","inflight":2,"dispatching":true,"until":"2026-09-06T14:05:00Z","waits_for":[{"agent":"fjord","kind":"task","project":"brain","job":"j1","started_at":"2026-09-06T18:20:00Z"}]}}"#,
+                "alive pid 7, last loop 0s ago, 9 loop(s), interval 300s, restart since 2026-09-06T12:35:00Z (6h25m0s), waits for fjord's task on brain; nothing new starts (daemon.restart_max_minutes is up)",
+            ),
+            (
+                r#"{"pid":7,"at":"2026-09-06T19:00:00Z","loops":9,"interval":300,"restart":{"since":"2026-09-06T18:30:00Z","inflight":1,"dispatching":true,"until":"2026-09-06T20:00:00Z","waits_for":[]}}"#,
+                "alive pid 7, last loop 0s ago, 9 loop(s), interval 300s, restart since 2026-09-06T18:30:00Z (30m0s), waits for 1 run(s) in flight; nothing new starts after 2026-09-06T20:00:00Z (daemon.restart_max_minutes)",
+            ),
+            (
+                r#"{"pid":7,"at":"2026-09-06T19:00:00Z","loops":9,"interval":300,"restart":{"since":"2026-09-06T18:30:00Z","inflight":4,"dispatching":false,"waits_for":[{"agent":"a","kind":"task","project":"p","job":"1","started_at":""},{"agent":"b","kind":"review","project":"p","job":"2","started_at":""},{"agent":"c","kind":"lead","project":"q","job":"3","started_at":""},{"agent":"d","kind":"task","project":"q","job":"4","started_at":""}]}}"#,
+                "alive pid 7, last loop 0s ago, 9 loop(s), interval 300s, restart since 2026-09-06T18:30:00Z (30m0s), waits for a's task on p, b's review on p, c's lead on q and 1 more; nothing new starts",
             ),
             (
                 r#"{"pid":7,"at":"2026-09-06T19:00:00Z","loops":9,"interval":300,"tick":{"ms":80,"max_ms":31000,"slow":7,"longest":[{"stage":"plan","ms":14000},{"stage":"pipeline","ms":9000}]}}"#,

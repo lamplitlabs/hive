@@ -78,8 +78,11 @@ pub(crate) struct SelfUpdateState {
     /// has stood for `daemon.self_update_settle_minutes`.
     pub(crate) settle_rev: String,
     pub(crate) settle_since: String,
-    /// Since when (store clock) the build waits for queued work the restart
-    /// it ends in would refuse; empty while it does not.
+    /// Since when (store clock) the build has waited for queued work the
+    /// restart it ends in would refuse: set by the first pass that waits for
+    /// it and kept until the build starts or HEAD is no longer due, so a
+    /// queue that empties for a pass and fills again does not start the
+    /// bound (`daemon.restart_max_minutes`) over.
     pub(crate) refused_since: String,
     /// The brain HEAD last found to differ from the running binary only
     /// outside [`BINARY_INPUTS`]: it is not built, and the pass does not
@@ -93,11 +96,25 @@ pub(crate) struct SelfUpdateState {
 }
 
 /// How long the build waits for queued work the restart would refuse to
-/// start first: past an hour the queue is stuck on something a restart does
-/// not change, and the update should not wait behind it. The owner's work
+/// start first when `daemon.restart_max_minutes` is 0 (no bound on the
+/// restart): past an hour the queue is stuck on something a restart does
+/// not change, and the update should not wait behind it. With a bound the
+/// build waits that long instead (`refused_wait_minutes`). The owner's work
 /// is never among the refused - it starts in any restart window - so this
 /// wait never holds a build for it.
 pub(crate) const REFUSED_WORK_WAIT_MINUTES: f64 = 60.0;
+
+/// The most minutes the build waits for queued work the restart would
+/// refuse: the bound on a restart (`daemon.restart_max_minutes`), so the
+/// build that ends in a restart is held no longer than the restart itself
+/// may be; with no bound (0), the hour it always had.
+pub(crate) fn refused_wait_minutes(restart_max_minutes: i64) -> f64 {
+    if restart_max_minutes > 0 {
+        restart_max_minutes as f64
+    } else {
+        REFUSED_WORK_WAIT_MINUTES
+    }
+}
 
 pub(crate) static SELF_UPDATE_STATE: LazyLock<RwLock<SelfUpdateState>> =
     LazyLock::new(|| RwLock::new(SelfUpdateState::default()));
@@ -123,6 +140,16 @@ pub(crate) struct SelfUpdateEnv {
     /// per pass, empty when there is none. The owner's work is not in it:
     /// the restart starts it in any window.
     pub refused_queued: String,
+    /// When (store clock) the restart pending in this daemon was armed;
+    /// empty when none is. The daemon sets it per pass: the build's wait for
+    /// `refused_queued` counts from here when it is earlier than the wait's
+    /// own start, so the bound runs from the restart's arming.
+    #[serde(default)]
+    pub restart_armed: String,
+    /// `daemon.restart_max_minutes`, read by each pass of `tend_binary`:
+    /// the most the build waits for `refused_queued` (`refused_wait_minutes`).
+    #[serde(default)]
+    pub restart_max_minutes: i64,
     /// The running build's version, for `daemon.self_update release`;
     /// empty means this process's (`hive_cli::version`).
     #[serde(default)]
@@ -461,6 +488,7 @@ pub(crate) fn tend_binary(s: &hive_store::Store, now: String, env: SelfUpdateEnv
     // On most passes HEAD is what runs, what is installed or a landing
     // already found neutral: the diff and the probes below are spared.
     if !co.due(&st, &env) {
+        st.refused_since.clear();
         return lines;
     }
     // The binary the daemon runs next is the installed one when a build or a
@@ -477,14 +505,16 @@ pub(crate) fn tend_binary(s: &hive_store::Store, now: String, env: SelfUpdateEnv
     co.diff_from(&base);
     let bench = Bench::read(std::path::Path::new(&s.home), &env, &co.rev);
     let settle = s.setting_int("daemon.self_update_settle_minutes").max(0);
+    let mut env = env;
+    env.restart_max_minutes = s.setting_int("daemon.restart_max_minutes").max(0);
     match gate(&mut st, settle, &now, &env, &co, &bench) {
         Gate::Quiet => {}
         Gate::Wait(reason) => say(&mut st, &mut lines, reason),
-        Gate::Build => {
+        Gate::Build(past) => {
             st.last_skip.clear();
             st.inflight = true;
             lines.push(format!(
-                "self-update: brain HEAD {} differs from the running {}; building",
+                "self-update: brain HEAD {} differs from the running {}; building{past}",
                 short_rev(co.rev.clone()),
                 short_rev(env.revision.clone())
             ));
@@ -627,8 +657,9 @@ pub(crate) enum Gate {
     Quiet,
     /// The build waits for the named reason; the pass says it once.
     Wait(String),
-    /// HEAD is built now.
-    Build,
+    /// HEAD is built now. The text, empty or starting with a space, is
+    /// said after "building": what the build goes ahead past.
+    Build(String),
 }
 
 /// The ladder of gates a due HEAD climbs, in the order it climbs them,
@@ -646,6 +677,7 @@ pub(crate) fn gate(
     bench: &Bench,
 ) -> Gate {
     if !co.due(st, env) {
+        st.refused_since.clear();
         return Gate::Quiet;
     }
     let rev = co.rev.clone();
@@ -707,22 +739,39 @@ pub(crate) fn gate(
     // The build ends in a restart, and a restart armed with runs in flight
     // starts only the owner's work and the kinds of run that end before
     // them: a fleet improve job queued behind it would wait the whole
-    // window. It starts first.
+    // window. It starts first - for daemon.restart_max_minutes at most,
+    // counted from the first pass that waited (or from the arming of a
+    // restart already pending, when earlier) and not started over when the
+    // queue empties for a pass. Past it the build goes ahead and the queued
+    // work starts under the next daemon: on 2026-11-26 a priority-0 audit
+    // queued behind the owner's tasks held every build for seven hours.
+    let mut past = String::new();
     if !env.refused_queued.is_empty() {
         if st.refused_since.is_empty() {
             st.refused_since = now.to_string();
         }
-        let until = crate::util::plus_minutes(&st.refused_since, REFUSED_WORK_WAIT_MINUTES);
+        let minutes = refused_wait_minutes(env.restart_max_minutes);
+        let mut from = crate::util::must_iso(&st.refused_since);
+        if env.restart_max_minutes > 0
+            && let Ok(armed) = crate::util::parse_iso(&env.restart_armed)
+        {
+            from = from.min(armed);
+        }
+        let until = crate::util::plus_minutes(&crate::util::format_iso(from), minutes);
         if crate::util::must_iso(now) < crate::util::must_iso(&until) {
             return Gate::Wait(format!(
-                "brain HEAD {} differs from the running {}; building once the queued {} have started, as the restart the build ends in would refuse them while the runs in flight finish",
+                "brain HEAD {} differs from the running {}; building once the queued {} have started, as the restart the build ends in would refuse them while the runs in flight finish, or at {until} (daemon.restart_max_minutes) whatever is queued",
                 short_rev(rev.clone()),
                 short_rev(env.revision.clone()),
                 env.refused_queued
             ));
         }
-    } else {
-        st.refused_since.clear();
+        past = format!(
+            " past the queued {}, waited for since {} (daemon.restart_max_minutes, {} min); they start under the next daemon",
+            env.refused_queued,
+            crate::util::format_iso(from),
+            minutes
+        );
     }
     if !bench.cargo_on_path {
         return Gate::Wait(format!(
@@ -754,7 +803,7 @@ pub(crate) fn gate(
         ));
     }
     st.refused_since.clear();
-    Gate::Build
+    Gate::Build(past)
 }
 
 /// The line a neutral landing is said with: the revision it was measured
@@ -1704,6 +1753,8 @@ mod tests {
         let _guard = hive_testutil::env_lock();
         reset_self_update();
         let (s, repo, env, _fixture) = self_update_fixture();
+        // No bound on the restart: the build waits the hour it always had.
+        set_setting(&s, "daemon.restart_max_minutes", "0");
         let rev = head_of(&repo);
         let at = |minutes: f64| crate::util::plus_minutes(TEST_NOW, minutes);
         let mut waiting = env.clone();
@@ -1730,7 +1781,8 @@ mod tests {
         // An hour on, the queue is stuck on something else: the build goes ahead.
         let lines = tend_binary(&s, at(REFUSED_WORK_WAIT_MINUTES), waiting);
         assert!(
-            lines.len() == 1 && lines[0].ends_with("; building"),
+            lines.len() == 1
+                && lines[0].contains("; building past the queued improve runs on proj"),
             "an hour is the most it waits: {lines:?}"
         );
         wait_self_update_idle();
@@ -1739,6 +1791,153 @@ mod tests {
             lines.len() == 1 && lines[0].contains(&format!("hive rebuilt from {}", &rev[..12])),
             "built after the wait: {lines:?}"
         );
+    }
+
+    #[test]
+    fn self_update_builds_past_a_queued_fleet_task_once_the_restart_bound_is_up() {
+        let _serial = serial();
+        let _guard = hive_testutil::env_lock();
+        reset_self_update();
+        let (s, repo, env, _fixture) = self_update_fixture();
+        set_setting(&s, "daemon.restart_max_minutes", "90");
+        let rev = head_of(&repo);
+        let at = |minutes: f64| crate::util::plus_minutes(TEST_NOW, minutes);
+        // A fleet task on the brain at priority 0, queued behind the owner's
+        // work: the restart the build ends in would refuse it.
+        crate::test_helpers_daemon::queued_job(&s, "fleet-audit", "proj", "task", "schedule");
+        let mut waiting = env.clone();
+        waiting.refused_queued = "task runs on proj".into();
+        let lines = tend_binary(&s, at(0.0), waiting.clone());
+        assert!(
+            lines.len() == 1
+                && lines[0].contains("building once the queued task runs on proj have started")
+                && lines[0].contains(&format!("or at {} (daemon.restart_max_minutes)", at(90.0))),
+            "the build waits for the task, and says until when: {lines:?}"
+        );
+        // An hour on - past the old hour, inside the bound - it still waits.
+        let lines = tend_binary(&s, at(60.0), waiting.clone());
+        assert!(lines.is_empty(), "said once: {lines:?}");
+        // For a pass the build waits on a later rung (the experiment lane)
+        // and nothing is refused; then the task is refused again. The wait
+        // is not started over: the bound still counts from minute 0.
+        let mut lane = env.clone();
+        lane.measuring = true;
+        let lines = tend_binary(&s, at(70.0), lane);
+        assert!(
+            lines.len() == 1 && lines[0].contains("building once the experiment lane is idle"),
+            "{lines:?}"
+        );
+        assert!(
+            !file_exists(&format!("{}.new", env.binary)),
+            "something was built while the task waited"
+        );
+        let lines = tend_binary(&s, at(80.0), waiting.clone());
+        assert!(
+            lines.len() == 1
+                && lines[0].contains(&format!("or at {} (daemon.restart_max_minutes)", at(90.0))),
+            "the same wait, not a new one: {lines:?}"
+        );
+        // The bound is up; the fleet task is still queued, and the build
+        // goes ahead past it. The task waits for the next daemon.
+        let lines = tend_binary(&s, at(90.0), waiting.clone());
+        assert!(
+            lines.len() == 1
+                && lines[0].contains(&format!(
+                    "brain HEAD {} differs from the running 000000000000; building past the queued task runs on proj, waited for since {} (daemon.restart_max_minutes, 90 min); they start under the next daemon",
+                    &rev[..12],
+                    at(0.0)
+                )),
+            "the bound lets the build go ahead: {lines:?}"
+        );
+        let status = query_one(
+            &*s.conn().unwrap(),
+            "SELECT status FROM jobs WHERE id = 'fleet-audit'",
+            &[],
+        );
+        assert!(
+            matches!(&status, Ok(Some(row)) if row.str("status") == "queued"),
+            "the fleet task stays queued for the next daemon: {status:?}"
+        );
+        wait_self_update_idle();
+        let lines = tend_binary(&s, at(91.0), waiting);
+        assert!(
+            lines.len() == 1 && lines[0].contains(&format!("hive rebuilt from {}", &rev[..12])),
+            "built past the queued task: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn the_build_s_wait_counts_from_a_restart_already_armed() {
+        let env = SelfUpdateEnv {
+            binary: "/nonexistent/hive".into(),
+            cargo_cmd: "cargo".into(),
+            revision: "a".repeat(40),
+            refused_queued: "task runs on brain".into(),
+            restart_max_minutes: 90,
+            restart_armed: crate::util::plus_minutes(TEST_NOW, -80.0),
+            ..Default::default()
+        };
+        let bench = Bench {
+            cargo_on_path: true,
+            ..Default::default()
+        };
+        let co = Checkout {
+            repo: "/nonexistent".into(),
+            rev: "b".repeat(40),
+            branch: "main".into(),
+            default_branch: "main".into(),
+            changed: Some(vec!["crates/hive-runner/src/daemon.rs".into()]),
+            base: "a".repeat(40),
+            ..Default::default()
+        };
+        let at = |minutes: f64| crate::util::plus_minutes(TEST_NOW, minutes);
+        let mut st = SelfUpdateState::default();
+        // A restart armed 80 minutes ago: ten minutes of the bound are left.
+        assert!(matches!(
+            gate(&mut st, 0, &at(0.0), &env, &co, &bench),
+            Gate::Wait(line) if line.contains(&format!("or at {}", at(10.0)))
+        ));
+        assert!(matches!(
+            gate(&mut st, 0, &at(9.0), &env, &co, &bench),
+            Gate::Wait(_)
+        ));
+        assert!(matches!(
+            gate(&mut st, 0, &at(10.0), &env, &co, &bench),
+            Gate::Build(past) if past.contains(&format!("waited for since {}", at(-80.0)))
+        ));
+        // No bound (0): the arming is not read, the hour counts from the wait.
+        let unbounded = SelfUpdateEnv {
+            restart_max_minutes: 0,
+            ..env.clone()
+        };
+        let mut st = SelfUpdateState::default();
+        assert!(matches!(
+            gate(&mut st, 0, &at(0.0), &unbounded, &co, &bench),
+            Gate::Wait(_)
+        ));
+        assert!(matches!(
+            gate(&mut st, 0, &at(59.0), &unbounded, &co, &bench),
+            Gate::Wait(_)
+        ));
+        assert!(matches!(
+            gate(&mut st, 0, &at(60.0), &unbounded, &co, &bench),
+            Gate::Build(_)
+        ));
+        // HEAD no longer due (built, or changed back): the wait is forgotten.
+        let mut st = SelfUpdateState::default();
+        assert!(matches!(
+            gate(&mut st, 0, &at(0.0), &unbounded, &co, &bench),
+            Gate::Wait(_)
+        ));
+        let running = Checkout {
+            rev: "a".repeat(40),
+            ..co.clone()
+        };
+        assert_eq!(
+            gate(&mut st, 0, &at(1.0), &unbounded, &running, &bench),
+            Gate::Quiet
+        );
+        assert!(st.refused_since.is_empty());
     }
 
     #[test]
@@ -2107,7 +2306,10 @@ mod tests {
         assert_eq!(st.settle_rev, co.rev);
         assert_eq!(st.settle_since, at(0.0));
         assert_eq!(gate(&mut st, 15, &at(14.0), &env, &co, &bench), settling);
-        assert_eq!(gate(&mut st, 15, &at(15.0), &env, &co, &bench), Gate::Build);
+        assert_eq!(
+            gate(&mut st, 15, &at(15.0), &env, &co, &bench),
+            Gate::Build(String::new())
+        );
         // Unknown to git (an unstamped build, rewritten history): not
         // neutral, so the ladder goes on to the checkout's state.
         co.rev = "e".repeat(40);
@@ -2118,7 +2320,10 @@ mod tests {
             Gate::Wait("brain checkout is dirty; waiting for it to be clean".into())
         );
         co.dirty = false;
-        assert_eq!(gate(&mut st, 0, TEST_NOW, &env, &co, &bench), Gate::Build);
+        assert_eq!(
+            gate(&mut st, 0, TEST_NOW, &env, &co, &bench),
+            Gate::Build(String::new())
+        );
         // The ladder's tail, in order: cargo, the disk, the lane, the room.
         let no_cargo = Bench {
             cargo_on_path: false,

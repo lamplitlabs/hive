@@ -340,7 +340,31 @@ takes hours, ten self-updates in three days waited 0.2 to 4.3 hours each
 with nothing dispatched, twelve hours in all. `off` waits for every run, as
 before; the console's own **Restart** without "now" holds nothing either, as
 the owner chose. `0` stops
-dispatching at once and holds the runs the same way. The build itself is a
+dispatching at once and holds the runs the same way.
+
+The whole handover is bounded too: `daemon.restart_max_minutes` (default
+90), counted from the moment the restart is armed, caps the drain, the stay
+for the owner's queued work and every owner's run that anchors the window
+again. Once it is up nothing new starts, the owner's work included; the
+daemon says `restart pending for 1h30m0s (daemon.restart_max_minutes):
+nothing new starts, the owner's work included; exiting with code 3 after the
+N run(s) in flight finish or hold, the next daemon starts the queue first`
+and leaves as at the drain's end - the runs in flight hold as
+`daemon.restart_hold` says, or are waited out under the console's
+**Restart** without "now". The fleet's window never runs past what is left
+of the bound either. The measured reason: on 2026-11-26 a restart armed at
+05:42Z had not come by 12:07Z, because each run of the owner's work that
+started while it was pending anchored the window again and the owner's queue
+was never empty; nine merged fixes sat on disk all that time. Ninety minutes
+is the thirty-minute drain plus one more drain of stay for the owner's work,
+and half an hour past that so an owner's run started late in the window gets
+on before it is held. `0` is no bound, the old behaviour. While a restart is
+pending the heartbeat's `restart` record carries `since` and `until` (when
+the bound is up) beside the runs the new build waits for; `hive status`
+reads them on its daemon line (`restart since <time> (<how long>), waits for
+<runs>; nothing new starts after <until> (daemon.restart_max_minutes)`) and
+the console's **Update waiting** row under **Settings → This machine** says
+how long the restart has been pending and when new runs stop starting. The build itself is a
 full release compile, so it keeps out of the runs' way: it runs at nice 10
 with `cargo -j` set to `daemon.build_jobs` (half the machine's cores by
 default), and it does not start while the load governor (below) says the
@@ -359,7 +383,15 @@ commit. Nor
 does it start while a fleet improve, task or experiment job is queued that the
 restart the build ends in would refuse (its run is not expected to end before
 the runs in flight): the daemon says `building once the queued improve runs on
-<project> have started` once and lets them start first, for at most an hour.
+<project> have started, ..., or at <time> (daemon.restart_max_minutes)` once
+and lets them start first, for at most `daemon.restart_max_minutes` (90; an
+hour when it is 0). The wait counts from the first pass that waited, or from
+the arming of a restart already pending when that is earlier, and a queue that
+empties for a pass and fills again does not start it over. Past it the daemon
+says `building past the queued task runs on <project>, waited for since <time>`
+and builds: the queued work stays queued and starts under the next daemon. On
+2026-11-26 a priority-0 audit queued on the brain behind the owner's tasks held
+every build for seven hours.
 The owner's queued work is never among those: the restart does not refuse
 it, so the build does not wait for it.
 A merge that touches nothing the binary is built from is not built at all:
@@ -440,7 +472,7 @@ waiting** row under **Settings → This machine**;
 (**Restart when they finish**): nothing new starts, the runs in flight are
 waited out, the daemon keeps its heartbeat and exits with code 3 once they
 end or `daemon.restart_drain_minutes` is up (with nothing in flight it exits
-at once). The dialog's **Hold the runs and restart now instead** (a payload
+at once); `daemon.restart_max_minutes` bounds it the same way. The dialog's **Hold the runs and restart now instead** (a payload
 of `{"now": true}`) asks the daemon to restart at once with the
 work held rather than cut: every run in flight is asked to hold, its harness
 saves the agent's conversation and exits `held` (code 75), the run settles
