@@ -656,6 +656,30 @@ clone (all four tests pass in a read-only copy of the tree). Adding one `pool` c
 `verify-check.sh`'s pool cap from 8 to 9 scored 9 against 38 (`0.1184`). A
 diff with no script prints 1 on both trees. Without a scope it runs every test
 (raw 113 at `bf08b5e3`, about 20 s).
+In the 20 cycles up to B-119, 3 improved, and the Rust cards among them
+moved only the test-count and coverage fixtures. No fixture asked what a
+change does when something fails. The crates hold about 620 places where an
+error is thrown away: `let _ = s.event(..)`, `let _ = finish_job(..)`,
+`let _ = fs::remove_file(..)`, or a `map_err(|_| ..)` that drops the cause from
+the message the user reads. Each one is a failure the owner never hears
+about. `behaviour-crate-silent-errors` (RSI sitting 37, metric, weight 2,
+lower is better) runs the project's own lint, `cargo clippy -p CRATE
+--no-deps`, with `clippy::let_underscore_must_use`, `map_err_ignore` and
+`unused_result_ok` raised to warnings. It lints a writable copy under
+`HIVE_MEASURE_SCRATCH`, in `$CARGO_TARGET_DIR/crate-silent-errors` after
+`cargo clean -p`, like the panic-sites fixture above. It counts the distinct
+primary spans inside the changed `.rs` files. Sites whose expression is
+`write!`, `writeln!` or `flush()` are not counted: those write to a buffer or
+a terminal. A lint run that reports a compile error adds 1000, so a variant
+that does not build never reads as "no sites". In the toy pair, the base
+counted 2 sites in `crates/hive-tasks/src/leads.rs`. Propagating the
+`finish_job` error that `leads::end` threw away scored `0.6667` (raw 1)
+against `0.5000`. Adding a `let _ = fs::remove_file(..)` and a `let _ =`
+on a `fmt::Write` call scored `0.2857` (raw 5), and a variant that did not
+compile scored `0.0020`. A diff with no crate source prints 1 on both trees.
+Without a scope it lints the whole workspace: raw 623 in a read-only copy
+of `a70f62d4` (47 s warm, about 5 minutes cold), and `hive evolve measure
+--ref HEAD` scored it `0.5016` (raw 632, scale 636).
 A diff made of lock files alone (`Cargo.lock`, `pnpm-lock.yaml`,
 `package-lock.json`, `yarn.lock`) is not measured: the variant takes the base's
 numbers, is archived `neutral` with the reason `lockfile-only`, and still
