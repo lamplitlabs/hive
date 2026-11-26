@@ -108,6 +108,7 @@ pub mod steps_mirror;
 pub mod suggestions;
 pub mod sweep;
 pub mod tally;
+pub(crate) mod unchecked;
 pub use hive_hand_core::tidy;
 pub mod tmpspace;
 pub mod token;
