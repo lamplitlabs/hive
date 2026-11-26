@@ -160,9 +160,10 @@ def lockup():
     ms = LOCK_H / 256
     wx = LOCK_H + 72
     word, width = wordmark(wx, 10)
-    text = "".join(f'<text x="{f(wx)}" y="{150 + 27 * i}" fill="#cfe3ff" font-family="{MONO}" font-size="21" font-weight="600" letter-spacing="4.3">{line}</text>'
+    # The first row starts below the point of the V, which comes 18 lower than the other letters.
+    text = "".join(f'<text x="{f(wx)}" y="{166 + 25 * i}" fill="#cfe3ff" font-family="{MONO}" font-size="21" font-weight="600" letter-spacing="4.3">{line}</text>'
                    for i, line in enumerate(TAGLINE))
-    text += f'<text x="{f(wx)}" y="212" fill="#7f93b5" font-family="{MONO}" font-size="17" letter-spacing="1.4">{SUBLINE}</text>'
+    text += f'<text x="{f(wx)}" y="219" fill="#7f93b5" font-family="{MONO}" font-size="17" letter-spacing="1.4">{SUBLINE}</text>'
     return f'<g transform="scale({f(ms)})" filter="url(#glow)">{mark("url(#gm)")}</g>{word}{text}', wx, width
 
 
