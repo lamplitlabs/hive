@@ -39,7 +39,7 @@ export const RECORDS_GROUP = "Decisions and design";
  * lands in "More", so a new doc is never dropped silently.
  */
 export const DOC_GROUPS: readonly GroupSpec[] = [
-  { title: "Start", files: ["concepts", "faq", "console", "mac-app"] },
+  { title: "Start", files: ["concepts", "sdlc", "faq", "console", "mac-app"] },
   { title: GUIDES_GROUP, dirs: [GUIDES_DIR] },
   { title: "The agents", files: ["board", "harness", "self-improvement", "evolve", "review", "landing"] },
   { title: "Machines and running", files: ["machines", "runner", "release", "recovery", "security"] },
