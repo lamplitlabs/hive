@@ -323,13 +323,13 @@ pub(crate) fn failed_work_branch(agent: &str, job_id: &str) -> String {
 /// [`failed_work_branch`] and saved as a patch under
 /// `<HIVE_HOME>/patches/<slug>/`. The clone is removed right after the run,
 /// so this is the last moment the commits exist. Never fails the run; returns
-/// the clause for its summary ("" when nothing could be kept).
+/// the clause for its summary ("" when nothing could be kept). `fetch`
+/// brings the clone's `HEAD` to the ref it is given and says whether it did
+/// ([`crate::run::fetch_run_work`]).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn keep_failed_work(
-    cancel: &hive_bus::CancellationToken,
     root: &str,
-    fetch_source: String,
-    fetch_env: &[String],
+    fetch: impl FnOnce(&str) -> bool,
     base: &str,
     branch: &str,
     home: &str,
@@ -348,27 +348,8 @@ pub(crate) fn keep_failed_work(
         ],
     )
     .ok();
-    if !exists {
-        let fetched = crate::proc::run_group(
-            cancel,
-            &[
-                "git".into(),
-                "-C".into(),
-                root.to_string(),
-                "fetch".into(),
-                "-q".into(),
-                "--no-tags".into(),
-                fetch_source,
-                format!("+HEAD:refs/heads/{branch}"),
-            ],
-            "",
-            fetch_env,
-            &[],
-            Duration::from_secs(300),
-        );
-        if !matches!(&fetched, Ok(o) if o.exit_code == 0) {
-            return String::new();
-        }
+    if !exists && !fetch(&format!("refs/heads/{branch}")) {
+        return String::new();
     }
     let patch = save_branch_patch(
         root.to_string(),

@@ -882,7 +882,64 @@ impl Hands {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
+        // The session is the protocol: what the fetching git sends arrives
+        // on this verb's stdin and goes to upload-pack, and every chunk
+        // upload-pack answers goes back out at once (the two sides talk in
+        // turns, so a buffered answer stalls the fetch). Until 2026-11-26
+        // the pipes were made and never pumped, so every `git fetch
+        // ssh://` from a machine answered "Could not read from remote
+        // repository" and the work of 34 runs was lost.
+        let mut to_git = child.stdin.take();
+        let mut session_in = std::mem::replace(&mut self.stdin, Box::new(std::io::empty()));
+        // Not joined: a client that keeps its end open after upload-pack is
+        // done must not hold the verb; the thread ends with the process.
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 64 * 1024];
+            loop {
+                let n = match session_in.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => n,
+                };
+                let Some(w) = to_git.as_mut() else { break };
+                if w.write_all(&buf[..n]).and_then(|()| w.flush()).is_err() {
+                    break;
+                }
+            }
+            drop(to_git.take());
+        });
+        let mut git_err = child.stderr.take();
+        let err_reader = std::thread::spawn(move || {
+            let mut out = Vec::new();
+            if let Some(e) = git_err.as_mut() {
+                let _ = e.read_to_end(&mut out);
+            }
+            out
+        });
+        if let Some(mut from_git) = child.stdout.take() {
+            let mut buf = [0u8; 64 * 1024];
+            loop {
+                let n = match from_git.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => n,
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                };
+                if self
+                    .stdout
+                    .write_all(&buf[..n])
+                    .and_then(|()| self.stdout.flush())
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }
         let status = child.wait()?;
+        let err = err_reader.join().unwrap_or_default();
+        if !err.is_empty() {
+            let _ = self.stderr.write_all(&err);
+            let _ = self.stderr.flush();
+        }
         if !status.success() {
             return Err(anyhow!(HandsExit {
                 code: status.code().unwrap_or(1)

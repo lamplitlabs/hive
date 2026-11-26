@@ -694,6 +694,19 @@ pub(crate) fn lease_job(
                 crate::executor::LOCAL_EXECUTOR
             ));
             sql.push_str(&format!(" AND j.kind NOT IN ({})", store_kinds_sql()));
+            // A machine whose fetch the brain saw fail takes no run that
+            // changes code until a fetch from it works again or the owner
+            // activates it: the commits would stay on it (TASK-133).
+            if crate::executor::fetch_broken(s, &o.executor) {
+                sql.push_str(&format!(
+                    " AND j.kind NOT IN ({})",
+                    hive_store::IMPLEMENTATION_JOB_KINDS
+                        .iter()
+                        .map(|k| format!("'{k}'"))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ));
+            }
         }
         // `brain.code none` (ADR-070 rule 6): this machine clones no
         // project, so it takes only the kinds that plan from the board; the
@@ -4455,6 +4468,227 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             .unwrap_or_default();
         assert!(entries.is_empty(), "hand job dir not cleaned: {entries:?}");
     }
+    /// Runs one committing task job on an ssh machine played by this
+    /// machine's `hive-hand` binary, where `git fetch ssh://...` answers
+    /// what the machines answered from 2026-11-01 to 2026-11-26: "Could not
+    /// read from remote repository" (git's ssh is a stand-in that fails).
+    /// With `refuse_bundle` the hand's `bundle` verb fails as well. Hands
+    /// the store, the run, the job and the machine's workdir to `check`.
+    fn committing_run_on_a_hand_whose_fetch_fails(
+        refuse_bundle: bool,
+        check: impl FnOnce(&hive_store::Store, &crate::util::Row, &crate::util::Row, &std::path::Path),
+    ) {
+        let _serial = crate::test_helpers::serial();
+        let _guard = hive_testutil::env_lock();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let bin = crate::test_helpers::build_hive();
+        let _stage = crate::test_helpers_staged_hive::stage_local_hive(&bin);
+        let s = crate::test_helpers::new_store();
+        let (_proj, _root) = crate::test_helpers::new_bare_repo(&s);
+        crate::test_helpers::join(&s, "aurora");
+        s.set_setting(crate::util::HUMAN_AGENT, "minutes_per_job", "1")
+            .unwrap();
+        let tools = tempfile::tempdir().unwrap();
+        let fake_ssh = tools.path().join("ssh");
+        std::fs::write(
+            &fake_ssh,
+            "#!/bin/sh\necho 'fatal: Could not read from remote repository.' >&2\nexit 128\n",
+        )
+        .unwrap();
+        crate::test_helpers::run(tools.path(), &["chmod", "+x", "ssh"]);
+        let path = format!(
+            "{}:{}",
+            tools.path().display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let _path = hive_testutil::setenv("PATH", &path);
+        let workroot = tempfile::tempdir().unwrap();
+        let workdir = workroot.path().join("srv");
+        let hands_home = tempfile::tempdir().unwrap();
+        let fake_path = crate::test_helpers::fake_hands_path(&[]);
+        let fake_path = fake_path.trim_start_matches("PATH=").to_string();
+        let hand = crate::test_helpers_hands::hive_hand_binary();
+        let old_ssh = crate::executor::set_run_ssh(|_, _, _, _| unreachable!());
+        let _ssh = crate::test_helpers_hands::RunSshGuard::new(old_ssh);
+        let runner = crate::executor::local_hand_runner(
+            hand,
+            vec![
+                ("HIVE_HANDS_WORKDIR".into(), workdir.display().to_string()),
+                ("HOME".into(), hands_home.path().display().to_string()),
+                ("HIVE_HANDS_ALLOW_ANY_WORKER".into(), "1".into()),
+                ("HIVE_HANDS_KEYS_OK".into(), "yes".into()),
+                ("PATH".into(), fake_path.clone()),
+            ],
+        );
+        crate::executor::set_run_ssh(move |c, a, i, t| {
+            let verb = a
+                .last()
+                .and_then(|w| w.strip_prefix("b64 "))
+                .and_then(|b| {
+                    base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b).ok()
+                })
+                .map(|raw| String::from_utf8_lossy(&raw).to_string())
+                .unwrap_or_default();
+            if refuse_bundle && verb.starts_with("bundle\u{0}") {
+                return Ok((1, String::new(), "bundle: refused".into()));
+            }
+            runner(c, a, i, t)
+        });
+        crate::executor::add_executor(
+            &s,
+            crate::test_helpers::TEST_NOW,
+            "hands",
+            "hive@hands",
+            workdir.to_str().unwrap(),
+            1,
+            "*",
+            crate::util::HUMAN_AGENT,
+        )
+        .unwrap();
+        let (ok, note) = crate::executor::probe_executor(
+            &s,
+            "hands",
+            crate::util::HUMAN_AGENT,
+            crate::test_helpers::TEST_NOW,
+        )
+        .unwrap();
+        assert!(ok, "probe: {note:?}");
+        let job = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "remote".into(),
+            "note it remotely".into(),
+            1,
+            0,
+            "test".into(),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap()
+        .0;
+        let (run, reason) = crate::run::work_once(
+            &s,
+            "aurora",
+            "",
+            "",
+            crate::test_helpers::TEST_NOW,
+            crate::run::RunOpts {
+                executor: "hands".into(),
+                worker_cmd: "sh -c 'echo hi > note.txt && git add note.txt && git commit -q -m note && echo SUMMARY: noted on the machine'".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(reason.is_empty(), "{reason}");
+        assert_eq!(run.str("executor"), "hands", "run {run:?}");
+        assert_eq!(run.int("commits"), 1, "run {run:?}");
+        check(&s, &run, &job, &workdir);
+    }
+
+    /// TASK-133 part 2: a machine whose `git-upload-pack` does not answer
+    /// (every hand before the fix) still sends its commits: the brain asks
+    /// for the `bundle` verb and fetches from that, and the run lands.
+    #[test]
+    fn a_failed_fetch_from_a_machine_falls_back_to_its_bundle() {
+        committing_run_on_a_hand_whose_fetch_fails(false, |s, run, job, workdir| {
+            assert_eq!(
+                run.str("status"),
+                "done",
+                "the run did not land: {}",
+                run.str("summary")
+            );
+            let log = std::fs::read_to_string(run.str("log")).unwrap_or_default();
+            assert!(
+                log.contains("its commits came back as a bundle instead"),
+                "{log}"
+            );
+            assert!(!crate::executor::fetch_broken(s, "hands"));
+            let entries = std::fs::read_dir(workdir)
+                .map(|rd| rd.collect::<Vec<_>>())
+                .unwrap_or_default();
+            assert!(entries.is_empty(), "landed clone not cleaned: {entries:?}");
+            let _ = job;
+        });
+    }
+
+    /// TASK-133 parts 3 and 4: when neither the fetch nor the bundle brings
+    /// the commits back, the clone stays on the machine, the run says how to
+    /// get its work, and the machine takes no code-changing run until a
+    /// fetch from it works again or the owner activates it.
+    #[test]
+    fn a_fetch_that_failed_keeps_the_clone_and_the_machine_off_code_work() {
+        committing_run_on_a_hand_whose_fetch_fails(true, |s, run, job, workdir| {
+            assert_eq!(run.str("status"), "failed", "run {run:?}");
+            let summary = run.str("summary");
+            assert!(
+                summary.contains("could not land the branch")
+                    && summary.contains("the clone stays on hands at")
+                    && summary.contains("git -C ")
+                    && summary.contains(&format!("hive/aurora/{}", job.str("id"))),
+                "the failure does not say how to get the work: {summary}"
+            );
+            let clone = workdir.join(job.str("id")).join("clone");
+            assert!(
+                clone.join("note.txt").exists(),
+                "the machine's clone was cleaned: {}",
+                clone.display()
+            );
+            assert!(crate::executor::fetch_broken(s, "hands"));
+            assert!(
+                crate::executor::kept_clones(s, "hands").contains(&job.str("id")),
+                "the kept clone is not written down"
+            );
+            // The machine takes no run that changes code now.
+            let next = crate::jobs::add_job(
+                s,
+                "proj".into(),
+                "task".into(),
+                "remote".into(),
+                "more work".into(),
+                1,
+                0,
+                "test".into(),
+                crate::util::HUMAN_AGENT.into(),
+                false,
+            )
+            .unwrap()
+            .0;
+            let lease = |who: &str| {
+                crate::jobs::lease_job(
+                    s,
+                    who.into(),
+                    crate::test_helpers::TEST_NOW.into(),
+                    crate::jobs::LeaseOpts {
+                        project: "proj".into(),
+                        job_id: next.str("id"),
+                        executor: "hands".into(),
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+            };
+            assert!(
+                crate::util::is_nil(&lease("aurora")),
+                "a code run went to a machine whose fetch failed"
+            );
+            // The owner activating it says it is fixed.
+            crate::executor::set_executor_status(
+                s,
+                crate::test_helpers::TEST_NOW,
+                "hands",
+                "active",
+                crate::util::HUMAN_AGENT,
+                None,
+            )
+            .unwrap();
+            assert!(!crate::executor::fetch_broken(s, "hands"));
+            assert_eq!(lease("aurora").str("id"), next.str("id"));
+        });
+    }
+
     #[test]
     fn remote_run_through_a_local_hive_hand() {
         let _serial = crate::test_helpers::serial();
