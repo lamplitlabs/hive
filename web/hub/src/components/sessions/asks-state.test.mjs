@@ -250,3 +250,27 @@ test("a question the hub marks hard_stop reaches the strip whatever its words (T
   ]);
   assert.equal(HARD_STOP_LABEL.owner, "Only you");
 });
+
+test("a major-upgrade finding the hub gives the owner reaches the strip with the watcher's answers (dependencies.major_updates = ask)", async () => {
+  const { questionAnswers } = await import("../../lib/owner-questions.ts");
+  const finding = {
+    id: "F-1",
+    slug: "web",
+    kind: "finding",
+    summary: "Security fix for next needs a major upgrade",
+    body: "Dependabot #20.",
+    date: "2026-11-09T00:00:00Z",
+    decider: "owner",
+    hard_stop: "is a major dependency upgrade (dependencies.major_updates = ask)",
+    options: [
+      { label: "Upgrade it", effect: "", answer: "yes", recommended: true },
+      { label: "Leave it to me", effect: "", answer: "no", recommended: false },
+    ],
+    recommended_why: "the job lands only when the project's checks pass on the new major",
+  };
+  const strip = hardStopRows(forYouRows({ ...empty, questions: [finding] }));
+  assert.deepEqual(strip.map((r) => [r.key, r.stopKind]), [["question:F-1", "owner"]]);
+  const answers = questionAnswers(finding, false);
+  assert.equal(answers.kind, "pick");
+  assert.deepEqual(answers.options.map((o) => [o.label, o.recommended]), [["Upgrade it", true], ["Leave it to me", false]]);
+});
