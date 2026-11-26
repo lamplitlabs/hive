@@ -1069,8 +1069,8 @@ pub(crate) fn compute_finding(
 }
 pub(crate) fn caps_allow(
     caps: hive_tasks::Caps,
-    req: hive_tasks::ComputeRequest,
-    now: &str,
+    _req: hive_tasks::ComputeRequest,
+    _now: &str,
 ) -> String {
     if caps.max_vms <= 0 || caps.vms_now > caps.max_vms {
         return format!(
@@ -1078,10 +1078,9 @@ pub(crate) fn caps_allow(
             caps.vms_now, caps.max_vms
         );
     }
-    let mut used = caps.hours_today;
-    if req.at.len() >= 10 && now.len() >= 10 && req.at[..10] != now[..10] {
-        used += req.hours;
-    }
+    // `hours_today` already holds every open request's unrun hours, whatever day it was made
+    // (`hive_tasks::compute::hours_today`), this one's included.
+    let used = caps.hours_today;
     if caps.max_hours_per_day <= 0 || used > caps.max_hours_per_day {
         return format!(
             "cap: {} machine-hour(s) today against compute.max_hours_per_day={}",
