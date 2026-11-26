@@ -402,7 +402,7 @@ export function DeclineSuggestionDialog({ s, open, onOpenChange }: { s: WorkSugg
       }
       action="Decline it"
       dismiss="Keep it open"
-      words={{ label: "Why not?", placeholder: "For example: already covered by TASK-012, or not worth the agents' time this month", required: s.suggested_by !== "human" }}
+      words={{ label: "Why not?", placeholder: "For example: already covered by TASK-012, or not worth the agents' time this month", required: s.suggested_by !== "human", initial: "Not now: not worth the agents' time this month." }}
       success="Declined. The suggester has been told."
       onConfirm={(reason) => writes.declineSuggestion(s.id, reason)}
       invalidates={refresh}

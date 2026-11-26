@@ -305,7 +305,7 @@ function ComputeActions({ r, caps, register }: { r: ReturnType<typeof useInbox>[
         }
         action={approve ? "Approve" : "Deny"}
         destructive={!approve}
-        words={{ label: approve ? "A note for the agent (optional)" : "Tell the agent why", placeholder: approve ? "Approved: needed for the load test." : "Not now. Use the machines you have.", required: !approve }}
+        words={{ label: approve ? "A note for the agent (optional)" : "Tell the agent why", placeholder: approve ? "Approved: needed for the load test." : "Not now. Use the machines you have.", required: !approve, initial: approve ? "" : "Not now. Use the machines you have." }}
         success={approve ? "Approved. Hive will start the machine." : "Denied. The agent will see your note."}
         onConfirm={(w) => (approve ? writes.approveCompute(r.id, w) : writes.denyCompute(r.id, w))}
         invalidates={COMPUTE_CHANGES}

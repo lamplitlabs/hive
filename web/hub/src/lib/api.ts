@@ -2789,6 +2789,11 @@ export type MessageChoiceAction = "reply" | "done" | "amend";
 export interface MessageChoice {
   label: string;
   action?: MessageChoiceAction;
+  // What picking it does, in one line; absent when the label says it all.
+  note?: string;
+  // The one the asker recommends (TASK-129: exactly one per message with
+  // choices): shown first, filled and marked. Older hubs omit it.
+  recommended?: boolean;
 }
 
 export interface Message {
