@@ -311,7 +311,7 @@ web/hub/                       the console (source, mock API; the static export 
 web/site/                      hivefleet.dev: the landing page and the docs (Next.js static export, deployed to Vercel by .github/workflows/deploy-site.yml; not part of the binary)
 apps/macos/                    the Mac app: a Swift package (HiveKit decides, the AppKit shell shows), build.sh, check.sh
 docs/                          the reference, one file per part (the README's Documentation table lists them)
-docs/design/                   design notes for work an ADR still gates (computer-use.md: the desktop-control tool ADR-048 decides; not built)
+docs/design/                   design notes for work an ADR still gates (computer-use.md: the desktop-control tool ADR-048 decides; decision-model.md: the local decision model ADR-072 decides; neither built)
 ```
 
 ## Diagrams in the docs
