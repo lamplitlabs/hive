@@ -186,8 +186,8 @@ export default function RsiPage() {
             you.
           </li>
           <li>
-            Hard stops, money, big changes and questions marked for you wait on the <strong>For you</strong> page, and Home shows the first five under{" "}
-            <strong>Needs you</strong>. A yes-or-no question shows two buttons, an open one an answer box.
+            Hard stops - money, what cannot be undone, credentials, publication - wait on <strong>Sessions</strong>, where the console opens,
+            and every question marked for you waits on its project&apos;s <strong>For you</strong> tab. A yes-or-no question shows two buttons, an open one an answer box.
           </li>
         </ul>
         <p>A reply does not authorise going around a stop: a hard stop waits for your decision.</p>

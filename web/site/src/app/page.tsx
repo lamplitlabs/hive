@@ -100,7 +100,7 @@ const YOURS = [
   {
     icon: InboxIcon,
     title: "Decisions wait for you",
-    text: "Hard stops, money, big changes and questions marked for you wait for your answer on the For you page, and Home shows the first five under Needs you. One exception: a loop that pauses over its own fixtures answers that question itself after a day. Everything else carries on.",
+    text: "Hard stops - money, what cannot be undone, credentials, publication - wait for your answer on Sessions, where the console opens, and every question marked for you waits on its project's For you tab. One exception: a loop that pauses over its own fixtures answers that question itself after a day. Everything else carries on.",
   },
   {
     icon: LockIcon,
@@ -132,7 +132,7 @@ const YOURS = [
 /** The guides the front page names, by the file's name under docs/how-to/: the path from a first project to a second machine, and where to look when something is wrong. */
 const GUIDES = ["first-project", "tasks", "pull-requests", "self-improvement-loop", "add-a-machine", "troubleshooting"];
 
-/** Three more pages of the console, small, under the picture of Home. */
+/** Three more pages of the console, small, under the picture of Sessions. */
 const SHOTS = [
   {
     name: "console-tasks.webp",
@@ -301,8 +301,8 @@ export default function Home() {
             <Eyebrow>The console</Eyebrow>
             <Heading id="console-title">See what needs you and what is running.</Heading>
             <p className="mt-4 text-pretty text-muted-foreground">
-              The console runs on your own machine, at <code className="font-mono text-[0.9em] text-foreground">{SITE.console}</code>. Home lists the questions,
-              decisions and proposals that wait for your answer, the agents at work and your projects. Every button calls what the matching{" "}
+              The console runs on your own machine, at <code className="font-mono text-[0.9em] text-foreground">{SITE.console}</code>. It opens on Sessions: the
+              decisions only you can make, anything that stops the agents, and the sessions with them at work. Every button calls what the matching{" "}
               <code className="font-mono text-[0.9em] text-foreground">hive</code> command calls, so a terminal can do the same.
             </p>
           </div>
@@ -311,10 +311,10 @@ export default function Home() {
               name="console-home.webp"
               large="/console-home-2x.webp"
               sizes="(min-width: 72rem) 68rem, 100vw"
-              title="Home"
-              alt="The Home page of the console: five things that need you, one agent working now, three projects and this week's numbers"
+              title="Sessions"
+              alt="Sessions, where the console opens: three decisions only you can make, each with its buttons, above the list of sessions"
             />
-            <figcaption className="mt-3 text-sm text-muted-foreground">Home, on a machine with three projects. The pictures are from the console&apos;s own example data.</figcaption>
+            <figcaption className="mt-3 text-sm text-muted-foreground">Sessions, on a machine with three projects. The pictures are from the console&apos;s own example data.</figcaption>
           </figure>
           <ul className="mt-10 grid gap-6 sm:grid-cols-3">
             {SHOTS.map((shot) => (

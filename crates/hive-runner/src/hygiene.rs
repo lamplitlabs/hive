@@ -142,6 +142,8 @@ pub(crate) fn post_daemon_owner_question(
     s: &hive_store::Store,
     ask: DaemonQuestionAsk,
 ) -> Result<Option<Row>> {
+    let mut ask = ask;
+    ask.body = with_default_answers(&ask.body);
     let key = daemon_question_key(&ask.project, &ask.ask_kind, &ask.summary, &ask.body);
     if let Some(existing) = open_daemon_question_with_key(s, &ask.project, &key) {
         note_coalesced_skip(s, &ask.now, &ask.actor, &key, &existing.str("id"));
@@ -171,6 +173,24 @@ pub(crate) fn post_daemon_owner_question(
         },
     )
     .map(Some)
+}
+
+/// The answers a daemon question offers when its body names none
+/// (TASK-129: the owner answers every question with one pick, the
+/// recommended one first). The daemon asks about this machine - a login, a
+/// hand, a held drain - which a person fixes on the machine, so the
+/// question stays the owner's with these two answers.
+pub(crate) fn with_default_answers(body: &str) -> String {
+    if hive_board::ask_options(body).ready() {
+        return body.to_string();
+    }
+    let mut out = body.trim_end().to_string();
+    out.push_str(
+        "\n\nYes: Hand it to an agent - a job looks into what it names and reports back\n\
+No: I handle it - the question closes; the daemon asks again if it still holds\n\
+Recommended: No - it is about this machine; do what the post says on it\n",
+    );
+    out
 }
 
 #[cfg(test)]

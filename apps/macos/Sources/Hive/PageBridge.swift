@@ -112,13 +112,14 @@ enum PageBridge {
         """
     }
 
-    /// The console's For you section on Home, without a reload when Home is open.
+    /// The hard-stop strip on Sessions (the console has no For you page since
+    /// TASK-129), without a reload when Sessions is open.
     static let showForYou = """
     (() => {
-      if (location.pathname !== '/') return false;
-      const section = document.getElementById('for-you');
+      if (location.pathname !== '/chat/') return false;
+      const section = document.getElementById('hard-stops');
       if (section) section.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      history.replaceState(history.state, '', '#for-you');
+      history.replaceState(history.state, '', '#hard-stops');
       return true;
     })()
     """

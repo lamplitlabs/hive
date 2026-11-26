@@ -2887,7 +2887,6 @@ pub(crate) fn run_job(
             && !job
                 .str("source")
                 .starts_with(hive_tasks::leads::SOURCE_PREFIX)
-            && s.owner_away()
         {
             lines.push(format!(
                 "- Decisions: {decided} recorded of {} DECIDE: line(s)",
@@ -2961,7 +2960,10 @@ pub(crate) fn run_job(
         {
             failures.note("answer", &e);
         }
-        for q in &parsed.questions {
+        for line in &parsed.questions {
+            // TASK-129: the answers ride on the line (`question | recommended
+            // | alternative`); a question without them goes to the lead.
+            let (q, answers) = hive_board::split_question_line(line);
             if let Err(e) = crate::board::create_post(
                 s,
                 now.to_string(),
@@ -2972,7 +2974,12 @@ pub(crate) fn run_job(
                     thread: job.str("id"),
                     summary: q.clone(),
                     body: format!(
-                        "The worker stopped because this needs a real decision or crosses a hard stop.\n\n{q}\n"
+                        "{}
+
+{q}
+
+{answers}",
+                        hive_board::WORKER_QUESTION_PREAMBLE
                     ),
                     agent: arow.clone(),
                     session: run_id.clone(),
@@ -3391,8 +3398,10 @@ pub(crate) fn apply_result_decisions_ran(
         || job
             .str("source")
             .starts_with(hive_tasks::leads::SOURCE_PREFIX)
-        || !s.owner_away()
     {
+        // Whatever owner.presence says: nothing waits on the owner by
+        // default, so the lead's DECIDE lines count when the owner is here
+        // too; the hard stops are skipped below (TASK-129).
         return 0;
     }
     let slug = job.str("project");
@@ -3432,8 +3441,8 @@ pub(crate) fn apply_result_decisions_ran(
             continue;
         }
         // An agreed proposal, or a finding, handoff or suggestion addressed
-        // to the owner (the hub's "For you"): both are the lead's call while
-        // the owner is away.
+        // to the owner (the hub's "For you"): both are the lead's call,
+        // whether the owner is here or away, unless at a hard stop.
         let proposal = post.str("resolution") == "agreed";
         let ask = !proposal
             && crate::lead::OWNER_ASK_DECIDE_KINDS.contains(&post.str("kind").as_str())
@@ -3480,7 +3489,14 @@ pub(crate) fn apply_result_decisions_ran(
             ));
             continue;
         }
-        let why = hive_board::owner_only_proposal(&post.str("summary"), &post.str("body"));
+        let mut why = hive_board::owner_only_proposal(&post.str("summary"), &post.str("body"));
+        if why.is_empty() {
+            why = hive_board::hard_stop_ask(
+                &post.str("kind"),
+                &post.str("summary"),
+                &post.str("body"),
+            );
+        }
         if !why.is_empty() {
             log.add(format!(
                 "decision skipped: {} {}: it waits for the owner",

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { askTitle, decisionLabels, isOpenQuestion, sortOwnerQuestions } from "./owner-questions.ts";
+import { askOptions, askTitle, decisionLabels, isOpenQuestion, questionAnswers, sortOwnerQuestions } from "./owner-questions.ts";
 
 test("stop questions lead, stale threads trail, newest first within a group", () => {
   const rows = [
@@ -48,4 +48,52 @@ test("a which/what/how question is answered in words, a should-we question with 
   // A post that names its own buttons keeps them, whatever it asks.
   assert.equal(isOpenQuestion("Which way: upgrade now?", "Yes: Upgrade it\nNo: Leave it to me"), false);
   assert.equal(isOpenQuestion("Whichever works", ""), false);
+});
+
+// TASK-129: every question to the owner carries its answers and a
+// recommended one; nothing is typed.
+test("a post's Option: lines and its Recommended: line are the answers, recommended first", () => {
+  const body = "The fixtures need a sandbox.\n\nOption: Stripe test mode - the fixtures call Stripe's sandbox\nOption: A local fake - no network\nRecommended: A local fake - the checks stay offline\n";
+  const { options, why } = askOptions(body);
+  assert.deepEqual(options.map((o) => [o.label, o.effect, o.answer, o.recommended]), [
+    ["A local fake", "no network", "", true],
+    ["Stripe test mode", "the fixtures call Stripe's sandbox", "", false],
+  ]);
+  assert.equal(why, "the checks stay offline");
+  const yn = askOptions("Yes: Upgrade it - queues the upgrade\nNo: Leave it to me\nRecommended: No - the major breaks the API");
+  assert.deepEqual(yn.options.map((o) => [o.label, o.answer, o.recommended]), [["Leave it to me", "no", true], ["Upgrade it", "yes", false]]);
+  // A sentence after Yes: is the explanation, not an answer.
+  assert.equal(askOptions("Yes: " + "x".repeat(61) + "\nNo: Keep it").options.length, 1);
+});
+
+test("a question with answers and a recommended one is picked; without, it is the lead's", () => {
+  const ready = questionAnswers({ body: "Yes: Rename it\nNo: Keep it\nRecommended: Yes - nothing else uses the old name" }, false);
+  assert.equal(ready.kind, "pick");
+  assert.deepEqual(ready.options.map((o) => o.label), ["Rename it", "Keep it"]);
+  assert.equal(ready.options[0].recommended, true);
+  assert.equal(ready.byLabel, true);
+  assert.equal(ready.why, "nothing else uses the old name");
+  // No answers at all, or answers with none recommended: never a text box.
+  assert.deepEqual(questionAnswers({ body: "Which payment sandbox should the fixtures hit?" }, false), { kind: "with-lead", missing: "it names no answers to pick" });
+  assert.deepEqual(questionAnswers({ body: "Yes: Rename it\nNo: Keep it" }, false), { kind: "with-lead", missing: "it names no recommended answer" });
+  // The hub's reading wins when it sends one.
+  const hub = questionAnswers({ body: "", options: [{ label: "A", effect: "", answer: "", recommended: false }, { label: "B", effect: "", answer: "", recommended: true }], recommended_why: "safer" }, false);
+  assert.equal(hub.kind, "pick");
+  assert.equal(hub.why, "safer");
+  assert.deepEqual(questionAnswers({ body: "", needs_options: "no recommended answer" }, false), { kind: "with-lead", missing: "no recommended answer" });
+});
+
+test("a stop of the loop always offers keep paused (recommended) and carry on", () => {
+  const a = questionAnswers({ body: "evolution constraint violation" }, true, { yes: "Yes, carry on", no: "No, keep it paused" });
+  assert.equal(a.kind, "pick");
+  assert.deepEqual(a.options.map((o) => [o.label, o.answer, o.recommended]), [["No, keep it paused", "no", true], ["Yes, carry on", "yes", false]]);
+  assert.equal(a.byLabel, false);
+  // A stop post that names its own answers keeps them.
+  const own = questionAnswers({ body: "Yes: Carry on - the loop resumes\nNo: Keep it paused\nRecommended: No - review the gate first" }, true);
+  assert.equal(own.byLabel, true);
+  assert.equal(own.options[0].label, "Keep it paused");
+});
+
+test("a which-question that names its answers is not answered in words", () => {
+  assert.equal(isOpenQuestion("Which sandbox?", "Option: EU\nOption: US\nRecommended: US - billing uses it"), false);
 });

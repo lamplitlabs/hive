@@ -114,13 +114,14 @@ list.
   security, tests, docs, dependencies, monitoring and more - each own one
   concern on their own cadence. [The board](docs/board.md#the-board-for-the-agents),
   [Role leads](docs/board.md#role-leads-hive-lead).
-- **Decisions stay yours.** Hard stops, money, big changes and the questions
-  marked for the owner wait on the **For you** page until you answer; Home
-  shows the first five under **Needs you**. One question does not wait for
+- **Decisions stay yours.** The hard stops - money, what cannot be undone,
+  credentials and publication - wait on **Sessions**, where the console
+  opens, until you answer; every other question marked for the owner waits
+  on its project's **For you** tab. One question does not wait for
   ever: when the loop asks whether its fixtures still tell a better variant
   from a worse one and has no answer after a day, it answers that one itself
   (`evolve.flat_wait_hours`). While you are away the lead answers the routine
-  ones and says so. [For you](docs/console.md#for-you),
+  ones and says so. [What Sessions shows first](docs/console.md#what-sessions-shows-first),
   [When the owner is away](docs/recovery.md#when-the-owner-is-away).
 - **Its own harness.** Agents run on Hive's built-in harness - a tool loop
   with limits, deny rules, hooks, MCP servers, skills, helpers and
@@ -208,10 +209,10 @@ merges pull requests through `gh`. Agents run on the harness built into
 
 2. **Open the console.** `hive hub` serves it at `http://127.0.0.1:8765`;
    open that address in your browser. Only this computer can reach it. On a
-   new machine Home shows the card **Set up Hive** with three steps. The next
+   new machine **Sessions**, where the console opens, shows the card **Set up Hive** with three steps. The next
    three steps here are those, in the card's order.
 
-   <p align="center"><img src=".github/assets/console-home.png" alt="Home: a notice that the runner is off, what waits for the owner under Needs you, the agents working now, the projects" width="900"></p>
+   <p align="center"><img src="docs/how-to/images/console-home.webp" alt="Sessions: the decisions only the owner can make, with their buttons, above the session list" width="900"></p>
 
 3. **Connect a model provider.** The card's first step opens the provider
    wizard; later the same wizard is under **Settings**, **Harness**,
@@ -234,7 +235,7 @@ merges pull requests through `gh`. Agents run on the harness built into
    services (launchd on macOS, `systemd --user` on Linux), so they outlive
    the terminal and restart on a newer `hive` when you install one
    ([Releases and `hive update`](docs/release.md)). The card goes away once
-   a provider is connected and a project is added. After that, Home shows a
+   a provider is connected and a project is added. After that, Sessions shows a
    notice with the same step behind its button: **Start runner** while no
    runner runs, **Keep Hive running** while one runs in a terminal only.
    Done from the console, the `hive hub` you started hands the address over
@@ -249,9 +250,10 @@ merges pull requests through `gh`. Agents run on the harness built into
    commands, the files and the replies as they happen, and type into the box
    when you want to steer.
 7. **Say yes or no.** Anything that needs you (a question, a proposal, a
-   compute request, a hard stop) waits on the **For you** page with the
-   agents' reasoning beside the buttons; Home shows the first five under
-   **Needs you**. It waits until you answer, and everything else carries on.
+   compute request, a hard stop) waits on its project's **For you** tab with
+   the agents' reasoning beside the buttons, and the hard stops (money, what
+   cannot be undone, credentials, publication) also wait on **Sessions**,
+   where the console opens. It waits until you answer, and everything else carries on.
    The one exception is the loop's question about its own fixtures: with no
    answer after a day, the loop answers that one itself
    (`evolve.flat_wait_hours`).
@@ -331,7 +333,7 @@ console searches them and `hive ask` answers from them.
 | [Concepts](docs/concepts.md) | start here: the cast, the store, tasks and jobs, the board, the constitution and tiers, the loop step by step, machines, delivery by pull request |
 | [The AI-native SDLC](docs/sdlc.md) | how work moves through Hive, phase by phase: direction, intake, plan, build, verify, review, deliver, release, operate, learn; who acts, what each phase leaves behind, where you decide |
 | [Questions people ask](docs/faq.md) | short answers: what Hive needs, which models, what leaves your machine, what the loop does on its own, how to stop it, how to add a machine, how to update |
-| [The console](docs/console.md) | the console, for the owner: starting it, the sidebar's pages, Home, For you, Projects, Tasks, Sessions, Votes, Machines, Settings, Automations, Runs, Records, Reports and Ask |
+| [The console](docs/console.md) | the console, for the owner: starting it, the sidebar's pages, what Sessions shows first, Projects, Tasks, Sessions, Votes, Machines, Settings, Automations, Runs, Records, Reports and Ask |
 | [The Mac app](docs/mac-app.md) | Hive.app: building it, what it does on its own, its menus and settings |
 | [The board](docs/board.md) | the `hive` commands agents use: schedules and the project's own `.hive/` files, role leads, suggested work, the toolkit, MCP servers, skills, goals, records, events and hooks |
 | [Democracy and self-improvement](docs/self-improvement.md) | suggestions, the evolve loop, seeded records and fixtures, the card check, the fleet, the runner caps |

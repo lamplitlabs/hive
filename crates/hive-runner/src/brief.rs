@@ -469,7 +469,10 @@ pub(crate) fn write_brief(o: BriefOpts) -> anyhow::Result<String> {
         "     `SUMMARY: nothing-to-do - <the commit or worker that already covers it, or what you checked>`, `SUMMARY: blocked: <cause and attempts>` or `SUMMARY: failed: <cause and attempts>`"
     );
     w!(
-        "   - `QUESTION:` one line when you stopped for a Tier 2 decision or a hard stop (optional)"
+        "   - `QUESTION:` one line when you stopped for a Tier 2 decision or a hard stop (optional), with the answers the owner can pick after it:"
+    );
+    w!(
+        "     `QUESTION: <question> | <your recommended answer - what it does> | <the alternative - what it does>`; the owner answers with one pick, never by typing, so a question without two answers goes to the lead instead"
     );
     w!(
         "   - `FINDING:` one line for anything the next agent would rediscover (optional, repeatable);"
