@@ -37,7 +37,11 @@ here, and the local executor must offer what it needs (`jobs.rs`
   first local slot offered on the tick takes owner-driven work only, and the
   fleet gets what is left (`room - 1`). If the owner job cannot be leased this
   tick (its lane is still held, for example), the slot stays empty. The idle
-  line then reports a hold, not starvation.
+  line then reports a hold, not starvation. The owner's work leases past its
+  project's share, but the last free local slot of a tick is kept back from a
+  `task:` or `security:` job past that share (`LeaseOpts::keep_slot`), so a
+  lead's sitting, an answer, a review or another project's owner task still
+  finds a slot.
 - **Over the cap, over `daemon.max_load` at any height, or under
   `daemon.min_free_mb`**, the reservation becomes the owner's one run over the
   line: one restricted slot that only the owner's work can take. Only one
@@ -60,8 +64,11 @@ daemon builds from the same readings the governor uses on that tick. A fleet
 run is asked to hold only if the owner job it makes way for could start once
 the lane is free:
 
-- **The lane.** As before, every lane the owner job needs is held, some of them
-  by the fleet.
+- **The lane.** The lanes in the owner job's way are held, some of them by
+  the fleet: the project's narrowed lanes (fewer than its share), the owner's
+  bound under `verify.lock` (share plus one), or every slot of the fleet. The
+  plain share is not in its way, since the owner's work leases past it; a
+  fleet run is not asked to hold while a free slot would start the owner's job.
 - **Everywhere.** No console drain is running (a drain starts nothing), and
   neither the bulk volume nor the disk floor would refuse the start.
 - **Local.** The login gate is open, and `daemon_load::owner_refusal` returns
