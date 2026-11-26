@@ -109,8 +109,9 @@ commit the last push left there, so a branch someone moved on the forge is
 not overwritten. After a hold for a failed push or forge call, and until
 the work is delivered, a try reads the branch on the upstream first and
 forces nothing ([When delivery fails](#when-delivery-fails)). A pass opens at most ten pull requests per project
-(GitHub's secondary rate limit is on creations; the rest wait a tick), and
-reads every open one.
+(GitHub's secondary rate limit is on creations; the rest wait a tick),
+tries at most three held deliveries again, the oldest hold first ([When
+delivery fails](#when-delivery-fails)), and reads every open one.
 
 The measured share: of the 260 landings on one machine in the seven days
 before this flow, 22 (8%) were task work and 238 were everything else -
@@ -552,13 +553,47 @@ hold stands depends on what it is about:
   Before this such a hold stood like the others: three finished jobs stood
   for a day after an account was repaired, and nine after a remote was.
 
+**A few tries again a pass, the oldest first.** Holds tend to stop standing
+together: the forge comes back for every held work at once, and a new pull
+request moves the top of the stack every held job would build on, which
+changes their hold keys all at once. On 26 November one new pull request
+released 38 holds of one project together, and each would have opened a
+pull request of its own. So a pass tries at most 3 held works again (a task,
+a job or a conversation branch whose newest delivery event is a hold and
+whose own branches have not moved since), those with the oldest holds first,
+and leaves the rest for the next pass. The log says `<slug>: N held
+deliveries wait for a later pass (3 are tried again a pass, the oldest hold
+first)`. Work never held, and work whose commits changed since its hold, is
+new work and is not bounded by this; the 10 pull requests a pass may open
+([above](#what-is-delivered-and-when)) still bound everything.
+
+**A job a newer one repeats is not tried again.** Two finished jobs repeat
+one piece of work when they come from the same source - a job and its retry,
+two sittings of one schedule, two answers to one suggestion; a security job's
+work is its manifest, whatever alerts it answered. A held job whose work a
+newer finished job with commits repeats (one still waiting, or one
+delivered already) is held for that instead of being tried again:
+`B is not tried again: job J finished later on the same work (SOURCE); run
+hive land --branch B to propose this one by hand`. That hold is about the
+work and stands until the work changes. A fix of a pull request (`pr-fix:`)
+and a job with no source repeat nothing. Of the 40 jobs ever held on
+azure-compliance, the project of 26 November, nine were security updates of two manifests (five
+of one, four of the other) and six were three items of lead sittings, two
+each; every one of them would have opened a pull request of its own.
+
 After such a hold, and until the work is delivered, no try forces the
 branch onto the upstream as the first push of a branch does. A try before
 it may have pushed the branch before the call that failed: `gh pr create`
 comes after the push, and its answer can be lost once the pull request is
 open. And somebody may have pushed onto the branch during the wait. So the
 try reads the branch on the upstream first, as it reads the head of an open
-pull request. For a branch that is pushed as it is - a job's, a
+pull request. The holds read for this are every hold of the work since its
+last `land.pr`, `land.merged` or `land.pr-closed`, however many: each
+refusal below is a hold of its own, and the stack's top moving writes a new
+one, so a window of the newest few (64 were read at first) would let the
+forge hold fall out of it and the next try push with a plain force over the
+commits those refusals said it would not push over. For a branch that is
+pushed as it is - a job's, a
 conversation's, an experiment's:
 
 - not there: the branch is pushed, and the push is refused should the
@@ -620,9 +655,12 @@ notes begin otherwise:
   [rejected]`: a lease that no longer holds), and one the upstream refused
   for a rule of the repository (`! [remote rejected]` with `hook declined`,
   `push declined due to`, `refusing to allow` or `non-fast-forward` as its
-  reason). The upstream reports its own passing trouble under the same
-  mark - a ref it could not lock, objects it could not store - and any
-  other reason stays a failed push, tried again after the wait;
+  reason). The reason is the text inside the status line's final
+  parentheses only: the line also names the branches, and a branch named
+  `fix/non-fast-forward` must not turn every passing trouble of its push
+  into a standing hold. The upstream reports its own passing trouble under
+  the same mark - a ref it could not lock, objects it could not store - and
+  any other reason stays a failed push, tried again after the wait;
 - `gh pr create` answering `No commits between` the two branches is held as
   `nothing to open a pull request for: gh pr create failed: ...`.
 
