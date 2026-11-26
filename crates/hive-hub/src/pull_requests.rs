@@ -186,6 +186,18 @@ fn merge_refusal(state: &str, number: i64, note: &str, follow_up: &str) -> (Stri
             format!("You already asked for PR #{number} to be merged."),
             "The daemon merges it on its next pass.".to_string(),
         ),
+        "merge_waiting" => (
+            format!(
+                "The reviewer approved PR #{number} and its merge waits{}.",
+                if note.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {note}")
+                }
+            ),
+            "The daemon merges it once that clears, with no second review; a conflict or a red check brings it to you."
+                .to_string(),
+        ),
         "changes_requested" => (
             format!(
                 "The reviewer asked for changes on PR #{number}{}.",

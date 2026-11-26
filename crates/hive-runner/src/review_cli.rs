@@ -186,7 +186,8 @@ fn need_bottom(s: &hive_store::Store, project: &Row, number: i64) -> Result<()> 
 /// A pull request already decided since its last push takes no second
 /// verdict: the agent issues exactly one. The owner's merge (`--by
 /// owner`) is the answer to a hand-off, so `review.owner` and
-/// `review.changes` stand open to it; only a merge is final.
+/// `review.changes` stand open to it, and so does a reviewer's merge that
+/// waits (`review.merge-wait`); only a merge is final.
 fn need_undecided(s: &hive_store::Store, slug: &str, number: i64, owner_merge: bool) -> Result<()> {
     let Some((_, action)) = s
         .conn()
@@ -196,7 +197,11 @@ fn need_undecided(s: &hive_store::Store, slug: &str, number: i64, owner_merge: b
         return Ok(());
     };
     if action == "land.pr"
-        || (owner_merge && matches!(action.as_str(), "review.owner" | "review.changes"))
+        || (owner_merge
+            && matches!(
+                action.as_str(),
+                "review.owner" | "review.changes" | review::WAIT_ACTION
+            ))
     {
         return Ok(());
     }
@@ -465,15 +470,33 @@ fn merge(c: &mut Context, fs: &FlagSet, number: i64) -> Result<()> {
     } else {
         actor.clone()
     };
-    let url =
-        review::merge_viewed(s, &project, number, Some(&view), &by, &actor, &now).map_err(|e| {
-            hive_cli::errorf(
-                1,
-                &format!("Merge of #{number} failed"),
-                &e,
-                "the failure is recorded (review.failed); the owner can merge on GitHub",
-            )
-        })?;
+    let failed = |e: String| {
+        hive_cli::errorf(
+            1,
+            &format!("Merge of #{number} failed"),
+            &e,
+            "the failure is recorded (review.failed); the owner can merge on GitHub",
+        )
+    };
+    // The owner's merge is refused or failed outright, as the hub's button
+    // shows it; a reviewer's verdict waits for running checks or a forge
+    // that answered 5xx, and the daemon merges it later.
+    let url = if by == "owner" {
+        review::merge_viewed(s, &project, number, Some(&view), &by, &actor, &now).map_err(failed)?
+    } else {
+        match review::merge_or_wait(s, &project, number, Some(&view), &by, &actor, &now)
+            .map_err(failed)?
+        {
+            review::Verdict::Merged(url) => url,
+            review::Verdict::Waits(words) => {
+                writeln!(
+                    c.out,
+                    "Merge of #{number} waits: {words}. The verdict stands; the daemon merges it without another review - finish the job."
+                )?;
+                return Ok(());
+            }
+        }
+    };
     writeln!(
         c.out,
         "Merged #{number}{} as {by}",
@@ -802,6 +825,49 @@ mod tests {
             "the CLI's actor, an agent in a job"
         );
         assert_eq!(merged[0]["number"], 7);
+    }
+
+    #[test]
+    fn a_reviewers_merge_the_forge_refuses_with_5xx_keeps_the_verdict() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let (bin, _path, log, _view) = fake_gh();
+        let s = new_store();
+        let (_proj, _repo, _bare) = push_fixture(&s);
+        land_pr(&s, 7, "task", "TASK-001", "JOB-a");
+        std::fs::write(bin.path().join("fail"), "merge\n").unwrap();
+        std::fs::write(
+            bin.path().join("failmsg"),
+            "GraphQL: Something went wrong while executing your query (mergePullRequest)",
+        )
+        .unwrap();
+        let (out, err, code) = invoke(&s, "review", "proj", &["merge", "7"]);
+        assert_eq!(code, 0, "{out} {err}");
+        assert!(
+            out.contains("Merge of #7 waits: approved; GitHub refused the merge"),
+            "{out}"
+        );
+        assert!(out.contains("finish the job"), "{out}");
+        assert!(events(&s, "review.failed").is_empty());
+        assert_eq!(events(&s, "review.merge-wait").len(), 1);
+        // The verdict stands: a second reviewer verdict is refused...
+        let (_, err, code) = invoke(&s, "review", "proj", &["changes", "7", "--note", "x"]);
+        assert_eq!(code, 2, "{err}");
+        assert!(
+            err.contains("already has a verdict (review.merge-wait)"),
+            "{err}"
+        );
+        // ...and the owner may still merge it by hand.
+        std::fs::write(bin.path().join("fail"), "").unwrap();
+        let (out, err, code) = invoke(&s, "review", "proj", &["merge", "7", "--by", "owner"]);
+        assert_eq!(code, 0, "{out} {err}");
+        assert_eq!(
+            calls(&log)
+                .iter()
+                .filter(|c| c.starts_with("pr merge"))
+                .count(),
+            2
+        );
     }
 
     #[test]
