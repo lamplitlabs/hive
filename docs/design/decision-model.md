@@ -5,8 +5,16 @@ model on a local provider may answer the owner's routine asks, and under
 which guards, is up to **ADR-072** ("A decision model on a local provider
 answers the routine asks of an away owner"). ADR-072 is a record in the
 store, not a file under `docs/decisions/`; read it with
-`hive record show ADR-072`. It is Proposed and its delivery is "not
-started". This note shows where each part of that record fits into the
+`hive record show ADR-072`. The owner accepted it on 2026-11-26, and its
+delivery is "not started". The owner's acceptance note changes two of its
+parts: "this decision can also be used for other things as well, not only
+the owner decision ... on by default". So the role is on by default, and
+the later candidates (votes, answers, idle planning) are in scope. The
+never-list still stands: runs that change code, a reviewer's verdict on a
+pull request, hard stops and money. On by default still changes nothing
+while `decide_model` or `decide_provider` is empty, or while no local
+server answers, because every such ask falls back to the main provider.
+This note shows where each part of that record fits into the
 code as it stands, so the work that delivers it is plumbing, not new
 design. Where this note and the ADR differ, the ADR wins.
 
@@ -37,7 +45,7 @@ The settings are new rows in the catalogue of
 
 | setting | kind | default | says |
 |---|---|---|---|
-| `decide.mode` | choice off, shadow, on | `off` | whether the decide role answers; `on` is refused until a replay meets the bar |
+| `decide.mode` | choice off, shadow, on | `on` (owner's acceptance note; the record said `off`) | whether the decide role answers; it answers only once a replay of its model and provider meets the bar, and shadows until then |
 | `decide_model` | text | empty | the model of the decide role; empty means no role |
 | `decide_provider` | choice, the `provider` list | empty | the provider of the decide role, read only by the decide call |
 | `decide.base_url` | text | empty | an endpoint of its own, when `decide_provider` is the same vendor as `provider` (two `custom` servers) |
