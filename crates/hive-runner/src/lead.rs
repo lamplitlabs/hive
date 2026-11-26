@@ -1069,19 +1069,98 @@ pub(crate) fn owner_addressed_questions(
             crate::plan::is_owner_addressed_post(q.clone())
                 || crate::plan::owner_targeted(q.clone())
         })
-        .map(|q| OwnerQuestion {
-            id: q.str("id"),
-            area: q.str("area"),
-            thread: q.str("thread"),
-            agent: q.str("agent"),
-            summary: q.str("summary"),
-            kind: "question".into(),
-            yes: String::new(),
-            no: String::new(),
-            hard_stop: hive_board::hard_stop_ask("question", &q.str("summary"), &q.str("body")),
-            needs_options: ask_needs_options(&q.str("body")),
+        .map(|q| {
+            let (agent, summary) = (q.str("agent"), q.str("summary"));
+            // The hub's rule: the daemon's question is the owner's (a
+            // person fixes it on the machine), shown with the daemon's own
+            // answers when it names none.
+            let body = hive_board::with_default_owner_answers(
+                "question",
+                &agent,
+                &summary,
+                &q.str("body"),
+                false,
+            );
+            let mut hard_stop = hive_board::hard_stop_ask("question", &summary, &body);
+            if hard_stop.is_empty() && agent == "daemon" {
+                hard_stop = "was asked by the daemon".into();
+            }
+            OwnerQuestion {
+                id: q.str("id"),
+                area: q.str("area"),
+                thread: q.str("thread"),
+                summary,
+                kind: "question".into(),
+                yes: String::new(),
+                no: String::new(),
+                hard_stop,
+                needs_options: ask_needs_options(&body),
+                agent,
+            }
         })
         .collect()
+}
+
+/// The meta key that marks the one pass handing the open asks without
+/// answers to their leads (PR #278 review, point 5).
+pub(crate) const BARE_ASKS_HANDED_META: &str = "migration.bare-owner-asks-handed";
+
+/// How many open asks without answers one project's pass hands its lead.
+pub(crate) const BARE_ASKS_HANDED_CAP: usize = 50;
+
+/// Once per store, on the first daemon start with TASK-129's rule: the open
+/// asks addressed to the owner that name no answers to pick (posted before
+/// every owner question had to carry them) are handed to their project's
+/// lead in one pass - at most [`BARE_ASKS_HANDED_CAP`] per project - so the
+/// lead asks again with answers or decides them. The daemon's own
+/// questions are not among them: they keep the daemon's answers and stay
+/// the owner's. Returns the log line, or nothing when the pass ran before.
+pub(crate) fn hand_bare_asks_once(
+    s: &hive_store::Store,
+    projects: &[String],
+    now: &str,
+    actor: &str,
+) -> Vec<String> {
+    if s.meta(BARE_ASKS_HANDED_META)
+        .map(|(_, set)| set)
+        .unwrap_or(true)
+    {
+        return Vec::new();
+    }
+    let mut handed = 0;
+    let mut leads = 0;
+    for slug in projects {
+        let asks: Vec<String> = owner_addressed_questions(s, slug.clone(), now.to_string())
+            .into_iter()
+            .chain(owner_addressed_asks(s, slug.clone()))
+            .filter(|q| {
+                !q.needs_options.is_empty()
+                    && q.agent != "daemon"
+                    && q.summary != hive_evolve::STOP_SUMMARY
+            })
+            .map(|q| q.id)
+            .take(BARE_ASKS_HANDED_CAP)
+            .collect();
+        if asks.is_empty() {
+            continue;
+        }
+        handed += asks.len();
+        leads += 1;
+        if let Ok(conn) = s.conn() {
+            event_at(
+                &conn,
+                now,
+                actor,
+                "owner_asks.handed",
+                slug,
+                json!({"project": slug, "asks": asks, "why": "no answers to pick (TASK-129)"}),
+            );
+        }
+    }
+    let _ = s.set_meta(BARE_ASKS_HANDED_META, now);
+    vec![format!(
+        "handed {handed} open ask(s) without answers to the leads of {leads} project(s), once: the owner answers with one pick, so their leads ask again with answers or decide them"
+    )]
 }
 
 /// Whether the post is the security watcher's finding about a major
@@ -4786,5 +4865,62 @@ mod tests {
             .filter(|m| !m.choices.is_empty())
             .count();
         assert_eq!(asks, 1);
+    }
+
+    #[test]
+    fn open_asks_without_answers_are_handed_to_the_lead_once() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = hive_testutil::env_lock();
+        let s = new_store();
+        new_bare_repo(&s);
+        join(&s, "aurora");
+        let post = |agent: &str, thread: &str, summary: &str, body: &str| {
+            crate::board::create_post(
+                &s,
+                plus_hours(TEST_NOW, -2.0),
+                crate::board::PostOpts {
+                    kind: "question".into(),
+                    project: "proj".into(),
+                    area: "api".into(),
+                    thread: thread.into(),
+                    summary: summary.into(),
+                    body: body.into(),
+                    for_owner: true,
+                    agent: crate::board::actor_agent(&s, agent.into()),
+                    ..Default::default()
+                },
+            )
+            .expect("ask")
+        };
+        let bare = post("aurora", "cache", "Keep the cache?", "It is slow.");
+        post(
+            "aurora",
+            "port",
+            "Which port?",
+            "Yes: 8080\nNo: 9090\nRecommended: Yes\n",
+        );
+        let daemon = post("daemon", "login", "Login wanted", "Sign in with GitHub.");
+        let lines = hand_bare_asks_once(&s, &["proj".into()], TEST_NOW, "daemon");
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].starts_with("handed 1 open ask(s)"), "{lines:?}");
+        let events = must_rows(
+            &s.conn().unwrap(),
+            "SELECT detail FROM events WHERE action = 'owner_asks.handed'",
+            &[],
+        );
+        assert_eq!(events.len(), 1);
+        assert!(events[0].str("detail").contains(&bare.str("id")));
+        assert!(!events[0].str("detail").contains(&daemon.str("id")));
+        // The daemon's question stays the owner's, with its own answers.
+        let q = owner_addressed_questions(&s, "proj".into(), TEST_NOW.into())
+            .into_iter()
+            .find(|q| q.id == daemon.str("id"))
+            .expect("daemon question listed");
+        assert!(
+            !q.hard_stop.is_empty() && q.needs_options.is_empty(),
+            "{q:?}"
+        );
+        // One pass: the next start hands nothing and says nothing.
+        assert!(hand_bare_asks_once(&s, &["proj".into()], TEST_NOW, "daemon").is_empty());
     }
 }

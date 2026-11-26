@@ -254,6 +254,14 @@ fn open_owner_question_with_summary(
              SELECT 1 FROM posts r
              WHERE r.on_post = q.id AND r.kind IN ('answer', 'result')
          )
+         -- A thread resolved or answered after the question closes it too
+         -- (a declined toolkit thread): asking again after it is a new ask.
+         AND NOT EXISTS (
+             SELECT 1 FROM posts r
+             WHERE r.project = q.project AND r.area = q.area AND r.thread = q.thread
+               AND (r.resolution != '' OR r.kind = 'answer')
+               AND (r.date > q.date OR (r.date = q.date AND r.id > q.id))
+         )
          ORDER BY q.date DESC, q.id DESC"
     ))?;
     let mut rows = stmt.query([project])?;

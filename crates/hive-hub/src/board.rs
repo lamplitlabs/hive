@@ -863,7 +863,11 @@ impl BoardData {
                 // is the owner's and is never handed to the lead for lacking
                 // them (PR #278 review).
                 let options = hive_board::ask_options(&hive_board::with_default_owner_answers(
-                    &kind, &summary, body, major,
+                    &kind,
+                    &str_key(post, "agent"),
+                    &summary,
+                    body,
+                    major,
                 ));
                 let decider = match question_decider(&hard_stop, major, major_updates_auto) {
                     "owner" if !stop && !options.ready() => "lead",

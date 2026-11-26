@@ -1029,6 +1029,7 @@ pub fn decide_option(
     // with the watcher's own, so a pick reads the same ones.
     let body = crate::owner_asks::with_default_owner_answers(
         &target.kind,
+        &target.agent,
         &target.summary,
         &target.body,
         crate::owner_asks::is_security_major_finding(&*s.conn()?, post_id),

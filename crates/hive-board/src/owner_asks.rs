@@ -176,18 +176,57 @@ pub fn with_security_major_answers(body: &str) -> String {
 /// (hive-evolve flat_gate): the owner's call, like the loop's stop.
 pub const FLAT_PAUSE_ANSWERS: &str = "Yes: Run more cycles - the loop plans again with the fixtures as they are and asks again after as many tied cycles\nNo: Keep it paused - the loop waits until a fixture whose score moves is enabled\nRecommended: No - more tied cycles cost worker runs and teach nothing until a fixture tells variants apart\n";
 
+/// The answers a question of the daemon offers when its body names none
+/// (TASK-129: the owner answers every question with one pick). The daemon
+/// asks about this machine - a login, a hand, a held drain - which a person
+/// fixes on the machine; a lead seat or a toolkit entry carries a marker
+/// line, and a yes acts on it.
+pub fn daemon_default_answers(body: &str) -> &'static str {
+    static MARKER: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"(?m)^[ \t]*(lead-role|toolkit):[ \t]*\S").expect("daemon marker regex")
+    });
+    match MARKER.captures(body).map(|c| c[1].to_string()).as_deref() {
+        Some("lead-role") => {
+            "Yes: Seat the lead - the daemon seats the lead role the marker line names; it fixes what it can and never decides for you\n\
+No: Not now - no lead is seated; the daemon may suggest it again later\n\
+Recommended: Yes - nobody owns this concern now, and a lead can be removed again with one command\n"
+        }
+        Some("toolkit") => {
+            "Yes: Add it - the daemon adds the tool or skill the marker line names (a server that needs a secret waits until you put it in place)\n\
+No: Not now - nothing is added; the daemon may suggest it again later\n\
+Recommended: Yes - the project shows the signal it answers, and it can be removed again with one command\n"
+        }
+        _ => {
+            "Yes: Hand it to an agent - a job looks into what it names and reports back\n\
+No: I handle it - the question closes; the daemon asks again if it still holds\n\
+Recommended: No - it is about this machine; do what the post says on it\n"
+        }
+    }
+}
+
 /// `body` with the answers the owner picks from when the asker wrote
 /// none ready to pick: the watcher's for a major upgrade (`major`), the
-/// loop's for its flat-fixture pause. Any other body comes back as it is.
-pub fn with_default_owner_answers(kind: &str, summary: &str, body: &str, major: bool) -> String {
+/// loop's for its flat-fixture pause, the daemon's for a question the
+/// daemon asked (`agent`), also one posted before it wrote answers. Any
+/// other body comes back as it is.
+pub fn with_default_owner_answers(
+    kind: &str,
+    agent: &str,
+    summary: &str,
+    body: &str,
+    major: bool,
+) -> String {
     if major {
         return with_security_major_answers(body);
     }
-    if kind == "question"
-        && summary == hive_store::EVOLUTION_FLAT_SUMMARY
-        && !crate::ask_options::ask_options(body).ready()
-    {
+    if crate::ask_options::ask_options(body).ready() {
+        return body.to_string();
+    }
+    if kind == "question" && summary == hive_store::EVOLUTION_FLAT_SUMMARY {
         return format!("{}\n\n{FLAT_PAUSE_ANSWERS}", body.trim_end());
+    }
+    if kind == "question" && agent == "daemon" {
+        return format!("{}\n\n{}", body.trim_end(), daemon_default_answers(body));
     }
     body.to_string()
 }
@@ -306,6 +345,7 @@ mod tests {
         );
         let answered = with_default_owner_answers(
             "question",
+            "evolve",
             hive_store::EVOLUTION_FLAT_SUMMARY,
             "paused",
             false,
@@ -313,6 +353,40 @@ mod tests {
         assert!(
             crate::ask_options::ask_options(&answered).ready(),
             "{answered}"
+        );
+    }
+
+    /// A daemon question without answers, also one from before it wrote
+    /// them, is shown with the daemon's own; a lead seat and a toolkit
+    /// entry say what a yes does there and recommend it.
+    #[test]
+    fn a_daemon_question_gets_the_daemons_answers() {
+        let login =
+            with_default_owner_answers("question", "daemon", "Login wanted", "Sign in.", false);
+        let o = crate::ask_options::ask_options(&login);
+        assert!(o.ready(), "{login}");
+        assert!(login.contains("Hand it to an agent"), "{login}");
+        let seat = with_default_owner_answers(
+            "question",
+            "daemon",
+            "Seat a security lead?",
+            "Nobody owns it.\n\nlead-role: proj security\n",
+            false,
+        );
+        assert!(seat.contains("Yes: Seat the lead"), "{seat}");
+        assert!(seat.contains("Recommended: Yes"), "{seat}");
+        let tool = with_default_owner_answers(
+            "question",
+            "daemon",
+            "Connect GitHub?",
+            "toolkit: proj tool github\n",
+            false,
+        );
+        assert!(tool.contains("Yes: Add it"), "{tool}");
+        // An agent's bare question is left as it is: it goes to its lead.
+        assert_eq!(
+            with_default_owner_answers("question", "proj-lead", "Go on?", "Bare.", false),
+            "Bare."
         );
     }
 
