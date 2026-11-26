@@ -2,6 +2,7 @@ use anyhow::Error as AnyError;
 use hive_cli::flags::{FlagError, FlagSet, Output, parse_interleaved};
 use hive_cli::{Command, Context};
 use std::io::Write;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Once};
 
 // The build-info block `build.rs` stamps this binary with (`BUILD_INFO_TEXT`). It is generated
@@ -19,22 +20,64 @@ mod version_stamp;
 /// One writer shared between the runner and the command's `Context`. Lines
 /// stream through as they are written, which `hive daemon` and `hive hub`
 /// need for their service logs.
+///
+/// It also remembers whether the reader went away (a write or flush failed
+/// with `BrokenPipe`), so `hive ... | head -n 1` can end quietly once `head`
+/// has read its line instead of reporting the closed pipe as a failure.
 #[derive(Clone)]
-struct Shared(Arc<Mutex<Box<dyn Write + Send>>>);
+struct Shared {
+    inner: Arc<Mutex<Box<dyn Write + Send>>>,
+    closed: Arc<AtomicBool>,
+}
 
 impl Shared {
     fn new(w: Box<dyn Write + Send>) -> Self {
-        Shared(Arc::new(Mutex::new(w)))
+        Shared {
+            inner: Arc::new(Mutex::new(w)),
+            closed: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// A write or flush through this writer found its reader gone.
+    fn reader_closed(&self) -> bool {
+        self.closed.load(Ordering::Relaxed)
+    }
+
+    fn note<T>(&self, r: std::io::Result<T>) -> std::io::Result<T> {
+        if let Err(e) = &r
+            && e.kind() == std::io::ErrorKind::BrokenPipe
+        {
+            self.closed.store(true, Ordering::Relaxed);
+        }
+        r
     }
 }
 
 impl Write for Shared {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).write(buf)
+        let r = self
+            .inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .write(buf);
+        self.note(r)
     }
     fn flush(&mut self) -> std::io::Result<()> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).flush()
+        let r = self.inner.lock().unwrap_or_else(|e| e.into_inner()).flush();
+        self.note(r)
     }
+}
+
+/// The command failed only because its standard output was closed under it:
+/// the reader (`head`, a pager quit early) took what it wanted and left. That
+/// is how a pipeline ends, not a fault, so nothing is reported. A broken pipe
+/// anywhere else (a child process's stdin, a socket) still is.
+fn stopped_by_closed_stdout(out: &Shared, e: &AnyError) -> bool {
+    out.reader_closed()
+        && e.chain().any(|c| {
+            c.downcast_ref::<std::io::Error>()
+                .is_some_and(|io| io.kind() == std::io::ErrorKind::BrokenPipe)
+        })
 }
 
 #[derive(Default)]
@@ -411,6 +454,7 @@ pub fn run_streaming(
             let _ = hive_cli::help_command(out, color, &cmd);
             0
         }
+        Err(e) if stopped_by_closed_stdout(out, &e) => 0,
         Err(e) => report(name, e, err),
     }
 }
@@ -684,6 +728,47 @@ mod tests {
 
     fn s(b: &[u8]) -> String {
         String::from_utf8(b.to_vec()).unwrap()
+    }
+
+    /// A standard output whose reader has gone: every write is `BrokenPipe`.
+    struct ClosedPipe;
+
+    impl Write for ClosedPipe {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::ErrorKind::BrokenPipe.into())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::ErrorKind::BrokenPipe.into())
+        }
+    }
+
+    #[test]
+    fn closed_stdout_ends_the_command_quietly() {
+        let _serial = crate::test_helpers::serial();
+        // `hive version | head -c 0`: the reader is gone before the first line.
+        let err = hive_cli::Buffer::new();
+        let code = run_streaming(
+            &sv(&["version"]),
+            Box::new(ClosedPipe),
+            Box::new(err.clone()),
+            Terminal::default(),
+        );
+        assert_eq!(code, 0, "stderr: {:?}", err.string());
+        assert_eq!(err.string(), "", "a closed pipe is not reported");
+    }
+
+    #[test]
+    fn broken_pipe_elsewhere_is_still_reported() {
+        // stdout is fine: a broken pipe to a child or a socket is a real fault.
+        let out = Shared::new(Box::new(Vec::new()));
+        let pipe: AnyError = std::io::Error::from(std::io::ErrorKind::BrokenPipe).into();
+        assert!(!stopped_by_closed_stdout(&out, &pipe));
+        // stdout closed, but the command failed for another reason.
+        let mut closed = Shared::new(Box::new(ClosedPipe));
+        assert!(writeln!(closed, "x").is_err());
+        let other = anyhow::anyhow!("no such job");
+        assert!(!stopped_by_closed_stdout(&closed, &other));
+        assert!(stopped_by_closed_stdout(&closed, &pipe.context("print")));
     }
 
     #[test]
