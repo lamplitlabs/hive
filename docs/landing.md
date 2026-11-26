@@ -535,7 +535,16 @@ hold stands depends on what it is about:
   show. The hold stands until the work changes (a new job of the task
   finishes, a branch of it appears or moves to a new commit) or you propose
   the branch by hand with `hive land --branch`. It is not retried blind
-  every tick: these reasons do not clear by themselves.
+  every tick: these reasons do not clear by themselves. A finished job's
+  branch proposed by hand is that job's delivery: its `land.pr` names the
+  job in `jobs`, and a `land.pr` whose `head` is the job's branch counts the
+  same (one proposed by hand before names no job). So the next pass leaves
+  the branch alone instead of merging the stack's top into it and pushing it
+  again: that branch is the head of the pull request by hand and may be the
+  base of the one above, which the forge then takes for merged. On 26
+  November azure-compliance had pull requests 5, 6 and 8 opened by hand,
+  11, 12 and 13 opened from the same heads a minute later, and 6, 8 and 9
+  marked merged into sibling branches.
 - **The way to the forge**: the push, a fetch, a `gh` call or the push
   credential failed. No commit of the work repairs that; an account, a
   remote or a network does. So the pass tries the same work again after a
@@ -543,7 +552,9 @@ hold stands depends on what it is about:
   after the first hold, 15 after the second, 45 after the third, 135 after
   the fourth, and 6 hours after every later one. These are the pauses of a
   failed job's recovery ([Failed jobs and
-  recovery](recovery.md#failed-jobs-and-recovery)). A hold younger than its
+  recovery](recovery.md#failed-jobs-and-recovery)). A store the pass cannot read when it decides a push's lease is such a
+  fault too (`store not read:`): the delivery is held and tried again, never
+  pushed with a plain force on that silence. A hold younger than its
   wait is not tried. A try that fails writes a new hold, which carries the
   count as `tries`; a hold without one counts as the first. So an outage of
   minutes heals within minutes, and a fault that lasts is tried four times
@@ -565,21 +576,32 @@ and leaves the rest for the next pass. The log says `<slug>: N held
 deliveries wait for a later pass (3 are tried again a pass, the oldest hold
 first)`. Work never held, and work whose commits changed since its hold, is
 new work and is not bounded by this; the 10 pull requests a pass may open
-([above](#what-is-delivered-and-when)) still bound everything.
+([above](#what-is-delivered-and-when)) still bound everything. The bound
+spreads a release over passes and does not cap it: every held work is tried
+in the end, three a pass, so the 38 holds of 26 November take 13 passes.
 
-**A job a newer one repeats is not tried again.** Two finished jobs repeat
-one piece of work when they come from the same source - a job and its retry,
-two sittings of one schedule, two answers to one suggestion; a security job's
-work is its manifest, whatever alerts it answered. A held job whose work a
-newer finished job with commits repeats (one still waiting, or one
-delivered already) is held for that instead of being tried again:
-`B is not tried again: job J finished later on the same work (SOURCE); run
-hive land --branch B to propose this one by hand`. That hold is about the
-work and stands until the work changes. A fix of a pull request (`pr-fix:`)
-and a job with no source repeat nothing. Of the 40 jobs ever held on
-azure-compliance, the project of 26 November, nine were security updates of two manifests (five
-of one, four of the other) and six were three items of lead sittings, two
-each; every one of them would have opened a pull request of its own.
+**A job whose commits a newer pull request carries is not tried again.**
+Where two jobs came from says nothing of their work: one source names
+different work from one sitting to the next. A lead's idle work counts
+again at every sitting (`lead-idle:azure-compliance:2026-11-11:1` is both
+the parser and normalizer tests and the theme-toggle lint fix, and
+`lead-idle:blog:2026-11-25:1` three different posts), a schedule does what
+it finds, and a newer security job inside the quiet period answers only the
+alerts the older one left. So the commits are compared, not the sources. A
+held job whose own commits (its branch's first-parent commits beyond the
+default branch, merges of the stack's top left out) a newer finished job's
+pull request carries - every one of them, by patch (`git cherry`), so a
+commit picked or rebased onto the newer branch counts - is held for that
+instead of being tried again: `B is not tried again: job J finished later
+and its pull request #N (open|merged) carries every commit of it`. It
+counts only while that pull request is open or merged: a newer job whose
+own delivery is held, or whose pull request was closed unmerged, holds
+nothing. The hold is read again each pass, so the held job is tried once
+the newer pull request closes unmerged, and it stands until then or until
+the held job's commits change. On 26 November azure-compliance had 40 jobs
+held; by source nine were security updates of two manifests and six were
+three items of lead sittings, but by their commits those are different
+work, and each is delivered as its own.
 
 After such a hold, and until the work is delivered, no try forces the
 branch onto the upstream as the first push of a branch does. A try before
