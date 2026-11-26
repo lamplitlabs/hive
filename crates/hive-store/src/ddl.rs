@@ -220,4 +220,17 @@ pub const JOB_COLUMNS: &[crate::Column] = &[
         name: "reserved",
         ddl: "INTEGER NOT NULL DEFAULT 0",
     },
+    // Which model and provider decided (ADR-072 part 5): the decide role's,
+    // or the lead's own for its `DECIDE:` lines and compute. The human's
+    // rows, and rows older than the columns, stay empty (unknown).
+    crate::Column {
+        table: "decisions",
+        name: "decided_model",
+        ddl: "TEXT NOT NULL DEFAULT ''",
+    },
+    crate::Column {
+        table: "decisions",
+        name: "decided_provider",
+        ddl: "TEXT NOT NULL DEFAULT ''",
+    },
 ];

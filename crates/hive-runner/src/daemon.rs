@@ -2107,6 +2107,14 @@ pub(crate) fn daemon(
                         say(&o, line);
                     }
                     stages.mark("records");
+                    // The decide role (ADR-072) answers the routine asks
+                    // it can before the lead's pass reads what is left.
+                    if !o.dry_run {
+                        for line in crate::decide::tend_decide(s, &slug, &now) {
+                            say(&o, line);
+                        }
+                    }
+                    stages.mark("decide");
                     for line in crate::lead::tend_lead(s, slug.clone(), now.clone(), actor.clone())
                     {
                         say(&o, line);
