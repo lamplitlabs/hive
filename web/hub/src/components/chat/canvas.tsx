@@ -33,6 +33,7 @@ import {
   PaperclipIcon,
   PlusIcon,
   RefreshCwIcon,
+  RouteIcon,
   ScrollTextIcon,
   SearchIcon,
   TerminalIcon,
@@ -241,6 +242,7 @@ const KIND_ICON: Record<CanvasKind, typeof TerminalIcon> = {
   links: LinkIcon,
   steps: ListTodoIcon,
   brief: ScrollTextIcon,
+  lifecycle: RouteIcon,
   evidence: ImagesIcon,
 };
 

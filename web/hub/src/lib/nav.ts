@@ -145,5 +145,5 @@ export const hrefs = {
   // What agents remembered across runs; `key` opens one file, `q` searches.
   memory: (f: { key?: string; q?: string } = {}) =>
     "/memory/" + qs({ key: f.key, q: f.q }),
-  tasks: (f: { project?: string; status?: string } = {}) => "/tasks/" + qs(f),
+  tasks: (f: { project?: string; status?: string; view?: "phases" } = {}) => "/tasks/" + qs(f),
 };

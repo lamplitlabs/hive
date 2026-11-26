@@ -428,7 +428,17 @@ function WorkTab({ slug, task, setParams }: { slug: string; task: string | null;
   return (
     <div className="grid gap-8 xl:grid-cols-[minmax(0,1fr)_minmax(380px,1fr)]">
       <section aria-label="Tasks" className="min-w-0">
-        <SectionHeading icon={ListChecksIcon} note="What you asked for, and how far each task has come.">Tasks</SectionHeading>
+        <SectionHeading
+          icon={ListChecksIcon}
+          note="What you asked for, and how far each task has come."
+          action={
+            <Link href={hrefs.tasks({ project: slug, view: "phases" })} className="text-sm whitespace-nowrap text-muted-foreground hover:text-foreground hover:underline">
+              By phase
+            </Link>
+          }
+        >
+          Tasks
+        </SectionHeading>
         <TasksTab slug={slug} onOpen={(id) => setParams({ task: id })} activeId={task} />
       </section>
       <section aria-label="Sessions" className="min-h-[520px] min-w-0">
