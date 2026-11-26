@@ -2928,7 +2928,10 @@ pub(crate) fn run_job(
         {
             failures.note("answer", &e);
         }
-        for q in &parsed.questions {
+        for line in &parsed.questions {
+            // TASK-129: the answers ride on the line (`question | recommended
+            // | alternative`); a question without them goes to the lead.
+            let (q, answers) = hive_board::split_question_line(line);
             if let Err(e) = crate::board::create_post(
                 s,
                 now.to_string(),
@@ -2939,7 +2942,7 @@ pub(crate) fn run_job(
                     thread: job.str("id"),
                     summary: q.clone(),
                     body: format!(
-                        "The worker stopped because this needs a real decision or crosses a hard stop.\n\n{q}\n"
+                        "The worker stopped because this needs a real decision or crosses a hard stop.\n\n{q}\n\n{answers}"
                     ),
                     agent: arow.clone(),
                     session: run_id.clone(),
@@ -3344,10 +3347,12 @@ pub(crate) fn apply_result_decisions(
         || job
             .str("source")
             .starts_with(hive_tasks::leads::SOURCE_PREFIX)
-        || !s.owner_away()
     {
         return 0;
     }
+    // While the owner is present the lead decides only the asks that name no
+    // answers to pick (TASK-129): the console never shows those to the owner.
+    let away = s.owner_away();
     let slug = job.str("project");
     let lead = crate::lead::lead_name(slug.clone());
     let c = conn(s);
@@ -3373,6 +3378,13 @@ pub(crate) fn apply_result_decisions(
         );
         if is_nil(&post) {
             log.add(format!("decision skipped: {} does not exist", d.post_id));
+            continue;
+        }
+        if !away && hive_board::ask_options(&post.str("body")).ready() {
+            log.add(format!(
+                "decision skipped: {} names its answers and the owner is present: the owner's pick",
+                d.post_id
+            ));
             continue;
         }
         if post.str("project") != slug {

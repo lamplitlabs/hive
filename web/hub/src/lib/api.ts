@@ -335,8 +335,25 @@ export interface OwnerQuestion extends Who {
   // Who alone can answer: `owner`, `lead` (owner away), or `setting` (a
   // policy answers it). Older hubs omit it - treat a missing value as owner.
   decider?: "owner" | "lead" | "setting";
+  // The answers the owner picks from, the recommended one first and marked
+  // (TASK-129: the owner answers with one pick, never by typing). Older hubs
+  // omit them; the console reads them from the body then.
+  options?: AskOption[];
+  // Why the recommended answer is the one.
+  recommended_why?: string;
+  // What the ask still lacks before it may reach the owner; empty when ready.
+  needs_options?: string;
   slug?: string;
   base?: string;
+}
+
+// One answer a question offers. `answer` is `yes` or `no` for the two
+// answers of a yes-or-no question and empty for an `Option:` line.
+export interface AskOption {
+  label: string;
+  effect: string;
+  answer: "yes" | "no" | "";
+  recommended: boolean;
 }
 
 export interface Bucket {
@@ -3920,6 +3937,15 @@ export const writes = {
       id,
       post_id: id,
       answer,
+      words,
+    }),
+  // The owner picked one of the answers a question names; the hub reads
+  // what it means from the question itself. `words` is an optional note.
+  decideOption: (id: string, option: string, words: string) =>
+    post<{ ok?: boolean; answer?: string }>("decide", {
+      id,
+      post_id: id,
+      option,
       words,
     }),
   setSetting: (name: string, value: string) =>

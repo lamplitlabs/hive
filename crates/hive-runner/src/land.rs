@@ -724,7 +724,7 @@ pub(crate) fn hold_recipe_branch(
                 diff_text = "(no diff text)".to_string();
             }
             let body = format!(
-                "`{}` changed alone on `{}`{} (ADR-026). The runner never lands a recipe change by itself: read the diff, then land it with\n\n    {}\n\nor delete the branch (`git branch -D {}`) to drop it.{}\n\n```diff\n{}\n```\n",
+                "`{}` changed alone on `{}`{} (ADR-026). The runner never lands a recipe change by itself: read the diff, then land it with\n\n    {}\n\nor delete the branch (`git branch -D {}`) to drop it.{}\n\n```diff\n{}\n```\n\nYes: Land it - recorded as your go-ahead; the command above lands it\nNo: Drop it - the recipe stays as it is; delete the branch to clear it\nRecommended: No - a recipe change lands only after a person reads it; pick Yes once you have\n",
                 crate::recipe::RECIPE_PATH,
                 branch,
                 for_job,
@@ -1291,7 +1291,7 @@ pub(crate) fn hold_unreported_branch(
                 .collect::<Vec<_>>()
                 .join(", ");
             let body = format!(
-                "`{branch}` changes {files} ({shown}) and job `{}` left no before/after report in its artifacts folder: {trouble}. Under `landing.ui_report = require` the branch waits and lands by itself once `report.json` there shows a change (`hive report` builds the page).\n\nTo land it as it is, look at the change and run\n\n    {command}\n\nor let this project's UI changes land without a report:\n\n    hive settings set {} warn\n",
+                "`{branch}` changes {files} ({shown}) and job `{}` left no before/after report in its artifacts folder: {trouble}. Under `landing.ui_report = require` the branch waits and lands by itself once `report.json` there shows a change (`hive report` builds the page).\n\nTo land it as it is, look at the change and run\n\n    {command}\n\nor let this project's UI changes land without a report:\n\n    hive settings set {} warn\n\nYes: Land it without a report - you run the command above\nNo: Wait for the report - the branch lands by itself once report.json shows the change\nRecommended: No - the report is how you see a change with a face before it lands\n",
                 job.str("id"),
                 hive_store::ui_report_setting(slug)
             );

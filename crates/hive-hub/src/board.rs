@@ -829,8 +829,18 @@ impl BoardData {
                 if resolved {
                     continue;
                 }
+                // TASK-129: the owner answers with one pick. An ask that
+                // names no answers, or none recommended, goes back to the
+                // project's lead, which writes them or decides it; only the
+                // loop's stop (a hard stop) stays the owner's whatever it says.
+                let options = hive_board::ask_options(body);
+                let decider =
+                    match question_decider(&kind, &summary, owner_away, major_updates_auto) {
+                        "owner" if !stop && !options.ready() => "lead",
+                        who => who,
+                    };
                 rows.push(object(
-                    "id thread_key area thread kind agent name session date summary body on_post stop stale thread_last decider",
+                    "id thread_key area thread kind agent name session date summary body on_post stop stale thread_last decider options recommended_why needs_options",
                     vec![
                         json!(id),
                         json!(key),
@@ -847,12 +857,10 @@ impl BoardData {
                         json!(stop),
                         json!(status == "stale"),
                         json!(last),
-                        json!(question_decider(
-                            &kind,
-                            &summary,
-                            owner_away,
-                            major_updates_auto
-                        )),
+                        json!(decider),
+                        json!(options.options),
+                        json!(options.why),
+                        json!(if options.ready() { String::new() } else { options.missing() }),
                     ],
                 ));
             }
@@ -868,7 +876,7 @@ impl BoardData {
                 "agents_deciding".into(),
                 json!({
                     "count": delegated,
-                    "note": format!("{delegated} more the agents are deciding (the lead while you are away, or a setting answers them)"),
+                    "note": format!("{delegated} more the agents are deciding (the lead: asks that name no answers to pick, and routine ones while you are away; or a setting answers them)"),
                 }),
             );
         }
@@ -2302,7 +2310,7 @@ mod tests {
             "owner",
             true,
             "Which provider pays?",
-            "Pick one.",
+            "Pick one.\n\nOption: Stripe - cards\nOption: Paddle - merchant of record\nRecommended: Stripe - fewer moving parts",
             "",
             "",
             "2026-09-06T08:01:00Z",
@@ -2395,7 +2403,7 @@ mod tests {
             "dependabot",
             true,
             "next needs 17.0.0 to fix #20, a major upgrade from 16.3.8: your call",
-            "Dependabot #20.\n\nYes: Upgrade it\nNo: Leave it to me\n\nYes queues the upgrade.",
+            "Dependabot #20.\n\nYes: Upgrade it\nNo: Leave it to me\nRecommended: Yes - it fixes the alert\n\nYes queues the upgrade.",
             "",
             "",
             "2026-09-06T07:00:00Z",
@@ -2427,7 +2435,7 @@ mod tests {
             "dependabot",
             true,
             "Dependabot #31: no patched version of node-forge exists yet",
-            "Yes: Look for a way around it\nNo: Keep watching",
+            "Yes: Look for a way around it\nNo: Keep watching\nRecommended: No - a fix is likely soon",
             "",
             "",
             "2026-09-06T07:01:30Z",
@@ -2465,7 +2473,12 @@ mod tests {
         assert_eq!(data.questions[0]["thread_key"], "evolution/loop-gate");
         assert_eq!(data.questions[1]["stop"], false);
         assert_eq!(data.questions[1]["kind"], "question");
-        assert_eq!(data.questions[1]["body"], "Pick one.");
+        assert!(
+            data.questions[1]["body"]
+                .as_str()
+                .unwrap()
+                .starts_with("Pick one.")
+        );
         assert_eq!(data.questions[3]["kind"], "finding");
         assert_eq!(data.questions[3]["stop"], false);
         assert_eq!(data.questions[3]["thread_key"], "api/dependabot");
@@ -2568,21 +2581,21 @@ mod tests {
             "question",
             "own",
             "Ship the rename?",
-            "Yes: Rename it\nNo: Keep it",
+            "Yes: Rename it\nNo: Keep it\nRecommended: Yes - nothing else uses the old name",
             "2026-09-06T08:01:00Z",
         );
         let lead = post(
             "handoff",
             "lead",
             "Run the queued cleanup?",
-            "The owner is away; the lead's call.",
+            "The owner is away; the lead's call.\n\nYes: Run it\nNo: Leave it\nRecommended: Yes - it is Tier 0",
             "2026-09-06T08:02:00Z",
         );
         let setting = post(
             "finding",
             "dependabot",
             "next needs 17.0.0 to fix #20, a major upgrade from 16.3.8: your call",
-            "Dependabot #20.\n\nYes: Upgrade it\nNo: Leave it to me",
+            "Dependabot #20.\n\nYes: Upgrade it\nNo: Leave it to me\nRecommended: No - the checks have not run on 17",
             "2026-09-06T08:03:00Z",
         );
 
@@ -2665,6 +2678,103 @@ mod tests {
         assert_eq!(h.summary(&view)["owner_questions"], 1);
         let org = h.org(std::slice::from_ref(&view));
         assert_eq!(org["totals"]["owner_questions"], 1);
+
+        // TASK-129: the owner's row carries its answers, recommended first.
+        let data = h.snapshot("one", "").unwrap();
+        let row = data
+            .questions
+            .iter()
+            .find(|q| str_key(q, "id") == own.id)
+            .unwrap();
+        assert_eq!(row["options"][0]["label"], "Rename it");
+        assert_eq!(row["options"][0]["recommended"], true);
+        assert_eq!(row["options"][1]["label"], "Keep it");
+        assert_eq!(row["recommended_why"], "nothing else uses the old name");
+        assert_eq!(row["needs_options"], "");
+    }
+
+    #[test]
+    fn owner_questions_without_answers_go_to_the_lead() {
+        let _serial = crate::test_helpers::serial();
+        let s = http::additions_store(false);
+        let repo = repo();
+        hive_board::add_project(
+            &s,
+            repo.path().to_str().unwrap(),
+            "One",
+            "",
+            false,
+            "",
+            "human",
+            "one",
+        )
+        .unwrap();
+        join(&s, "alpha");
+        let post = |thread: &str, summary: &str, body: &str, date: &str| {
+            hive_board::create_post(
+                &s,
+                hive_board::PostInput {
+                    kind: "question".into(),
+                    project: "one".into(),
+                    area: "api".into(),
+                    thread: thread.into(),
+                    agent: "alpha".into(),
+                    for_owner: true,
+                    summary: summary.into(),
+                    body: body.into(),
+                    date: date.into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        let ready = post(
+            "ready",
+            "Which sandbox?",
+            "Option: EU - the old suite's\nOption: US - billing's\nRecommended: US - billing uses it",
+            "2026-09-06T08:01:00Z",
+        );
+        let bare = post(
+            "bare",
+            "Which sandbox should the fixtures hit?",
+            "Two exist; tell me which.",
+            "2026-09-06T08:02:00Z",
+        );
+        let unmarked = post(
+            "unmarked",
+            "Ship it?",
+            "Yes: Ship it\nNo: Wait",
+            "2026-09-06T08:03:00Z",
+        );
+        let money = post(
+            "money",
+            "Raise compute.budget_credits to 500?",
+            "The queue is long.",
+            "2026-09-06T08:04:00Z",
+        );
+        let h = http::handler(&s);
+        let data = h.snapshot("one", "").unwrap();
+        let row = |id: &str| {
+            data.questions
+                .iter()
+                .find(|q| str_key(q, "id") == id)
+                .cloned()
+                .unwrap()
+        };
+        // The owner is present: only the ask that names its answers and a
+        // recommended one is the owner's; the rest are the lead's. A spend
+        // decision too: the lead may not take it (hive decide refuses), so
+        // it asks the owner again with the answers written out.
+        assert_eq!(str_key(&row(&ready.id), "decider"), "owner");
+        assert_eq!(str_key(&row(&bare.id), "decider"), "lead");
+        assert!(str_key(&row(&bare.id), "needs_options").contains("no answers"));
+        assert_eq!(str_key(&row(&unmarked.id), "decider"), "lead");
+        assert!(str_key(&row(&unmarked.id), "needs_options").contains("no recommended"));
+        assert_eq!(str_key(&row(&money.id), "decider"), "lead");
+        assert_eq!(
+            data.questions_meta["agents_deciding"]["count"],
+            serde_json::json!(3)
+        );
     }
 
     #[test]

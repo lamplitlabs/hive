@@ -128,9 +128,13 @@ decline with your own words - the same `hive record accept` the terminal
 runs, recorded as `human` with the words in the record's history - plus
 board proposals, compute requests and the questions only you can answer:
 posts an agent marked `--for-owner` and the evolution loop's "Evolution
-stopped; owner review needed" stops. A yes-or-no question shows **Yes** and
-**No**, and an open one shows a box for your answer
-(`hive decide <post> yes|no --words '...'` from the terminal). Among the
+stopped; owner review needed" stops. Every question shows its answers as
+buttons - **Yes** and **No** (or the post's words for them), or one per
+`Option:` line - with the one the asker recommends first and marked
+**Recommended**; nothing needs typing, and a note is optional
+(`hive decide <post> yes|no|<answer> --words '...'` from the terminal). A
+question with no answers, or none recommended, never shows here: it goes to
+the project's lead, which writes them or decides it. Among the
 questions the stops come first; a decision
 clears the planner's failed-gate and owner-review stops on the daemon's next
 tick, and a yes clears an instruction-shaped stop too. The same cards sit on
@@ -271,9 +275,11 @@ returns the task to *in progress*, the only backward move a task can make, and
 the lead takes it from there (a tapped *close* posts `POST
 /api/v1/tasks/<id>/status` `{status, words?}`, the words reaching the chat
 first so the lead reads why). Agents offer choices on their own messages with
-`hive task reply TASK-012 --choice "Keep both" --choice "Drop the old
-one=done"` (up to six; `=done` closes the task with that label as your words,
-`=amend` opens the brief, plain labels reply). A lead that stops a task with
+`hive task reply TASK-012 --choice "Keep both - nothing is removed" --choice
+"Drop the old one=done" --recommend "Keep both"` (two to six, exactly one
+recommended, shown first; `=done` closes the task with that label as your
+words, `=amend` opens the brief, plain labels reply). An agent's message that
+asks you something without `--choice` is refused. A lead that stops a task with
 no answers to pick gets them from the daemon on the next tick, in its own
 name and with its own reason (*Use your judgement*, *Good enough, close it*,
 *Change what I asked*), so no review is a blank you stare at. The daemon writes the stop to

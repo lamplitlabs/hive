@@ -1,6 +1,7 @@
 //! Hive: posts, agents, projects, jobs, decide, init, export, remove.
 
 pub mod agents;
+pub mod ask_options;
 pub mod asks;
 pub mod board;
 pub mod commands;
@@ -16,6 +17,7 @@ pub mod threads;
 pub mod write_transaction;
 
 pub use agents::*;
+pub use ask_options::*;
 pub use asks::*;
 pub use board::*;
 pub use commands::*;

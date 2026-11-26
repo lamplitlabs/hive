@@ -365,7 +365,7 @@ fn owner_answer_ends_review_and_choices_are_checked() {
         "demo-lead",
         "Two steps failed. How do we go on?",
         &[
-            Choice::reply("Try again another way"),
+            Choice::reply("Try again another way").recommended(),
             Choice::with_action("Good enough, close it", "done"),
             Choice::with_action("Change what I asked", "amend"),
         ],
@@ -400,25 +400,54 @@ fn owner_answer_ends_review_and_choices_are_checked() {
     assert_eq!(get(&s, &a.id).unwrap().0.status, "in_progress");
     assert_eq!(events(&s, "task.status").len(), evs.len());
     // Choices the hub could not show are refused.
-    assert!(check_choices(&[Choice::reply("")]).is_err());
-    assert!(check_choices(&[Choice::reply("a".repeat(MAX_CHOICE_LABEL + 1))]).is_err());
-    assert!(check_choices(&[Choice::with_action("x", "explode")]).is_err());
-    assert!(check_choices(&[Choice::reply("Yes"), Choice::reply("yes")]).is_err());
+    let other = || Choice::reply("Other").recommended();
+    assert!(check_choices(&[Choice::reply(""), other()]).is_err());
+    assert!(check_choices(&[Choice::reply("a".repeat(MAX_CHOICE_LABEL + 1)), other()]).is_err());
+    assert!(check_choices(&[Choice::with_action("x", "explode"), other()]).is_err());
+    assert!(check_choices(&[Choice::reply("Yes").recommended(), Choice::reply("yes")]).is_err());
     let many = (0..=MAX_CHOICES)
         .map(|i| Choice::reply(format!("c{i}")))
+        .map(|c| if c.label == "c0" { c.recommended() } else { c })
         .collect::<Vec<_>>();
     assert!(check_choices(&many).is_err());
+    let pair = [Choice::reply("y").recommended(), Choice::reply("n")];
+    assert!(send_message_with_choices(&s, "demo", "", "demo-lead", "x", &pair).is_err());
+    // TASK-129: a question offers two answers or more and names one
+    // recommended; a lone OK or an unmarked set is refused.
+    assert!(check_choices(&[Choice::reply("OK").recommended()]).is_err());
+    assert!(check_choices(&[Choice::reply("Yes"), Choice::reply("No")]).is_err());
     assert!(
-        send_message_with_choices(&s, "demo", "", "demo-lead", "x", &[Choice::reply("y")]).is_err()
+        check_choices(&[
+            Choice::reply("Yes").recommended(),
+            Choice::reply("No").recommended()
+        ])
+        .is_err()
     );
+    assert!(check_choices(&[Choice::reply("Yes").recommended(), Choice::reply("No")]).is_ok());
+    assert!(check_choices(&[]).is_ok());
+    // --recommend names one --choice by label; a leading * does the same;
+    // a label it does not name is refused.
+    let picked =
+        choices_from_flags_recommending(&["Ship it - merge now".into(), "Wait".into()], "ship it")
+            .unwrap();
+    assert_eq!(
+        picked
+            .iter()
+            .map(|c| (c.label.as_str(), c.note.as_str(), c.recommended))
+            .collect::<Vec<_>>(),
+        vec![("Ship it", "merge now", true), ("Wait", "", false)]
+    );
+    assert!(choices_from_flags_recommending(&["A".into(), "B".into()], "C").is_err());
+    assert!(choices_from_flags(&["A".into(), "B".into()]).is_err());
     // --choice values: a bare label replies; label=action names the action.
     let parsed = choices_from_flags(&[
-        "Ship it".into(),
+        "*Ship it".into(),
         "Close it=done".into(),
         "a=b".into(),
         "  ".into(),
     ])
     .unwrap();
+    assert!(parsed[0].recommended && !parsed[1].recommended);
     assert_eq!(
         parsed
             .iter()
@@ -1490,18 +1519,51 @@ fn commands_end_to_end() {
             "Try again another way",
             "--choice",
             "Good enough, close it=done",
+            "--recommend",
+            "Try again another way",
         ],
     )
     .unwrap();
     let text = out.string();
-    assert!(text.contains("[1] Try again another way\n"), "{text}");
+    assert!(
+        text.contains("[1] Try again another way  (recommended)\n"),
+        "{text}"
+    );
     assert!(
         text.contains("[2] Good enough, close it  (done)\n"),
         "{text}"
     );
     let (mut c, _) = ctx_for(&s, "demo-lead", "demo", false);
-    let err = run_cmd(&mut c, "msg", &["send", "no task", "--choice", "x"]).unwrap_err();
+    let err = run_cmd(
+        &mut c,
+        "msg",
+        &["send", "no task", "--choice", "*x", "--choice", "y"],
+    )
+    .unwrap_err();
     assert!(err.to_string().contains("belong to a task"), "{err}");
+    // An agent's question with no answers to pick is refused; a lone choice
+    // or one with none recommended too.
+    let (mut c, _) = ctx_for(&s, "demo-lead", "", false);
+    let err = run_cmd(&mut c, "task", &["reply", "TASK-001", "Shall I merge it?"]).unwrap_err();
+    assert!(err.to_string().contains("carries its answers"), "{err}");
+    let (mut c, _) = ctx_for(&s, "demo-lead", "", false);
+    let err = run_cmd(
+        &mut c,
+        "task",
+        &["reply", "TASK-001", "Shall I merge it?", "--choice", "OK"],
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("not a choice"), "{err}");
+    let (mut c, _) = ctx_for(&s, "demo-lead", "", false);
+    let err = run_cmd(
+        &mut c,
+        "task",
+        &[
+            "reply", "TASK-001", "Merge?", "--choice", "Yes", "--choice", "No",
+        ],
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("recommended"), "{err}");
     let (mut c, out) = ctx_for(&s, "", "", true);
     run_cmd(&mut c, "task", &["show", "TASK-001"]).unwrap();
     let show: serde_json::Value = serde_json::from_str(&out.string()).unwrap();

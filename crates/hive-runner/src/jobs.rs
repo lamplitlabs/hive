@@ -7664,7 +7664,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
                 "- {} owner/budget by borealis: for the owner: budget?",
                 q.str("id")
             ),
-            "These wait for the owner; do not answer them".to_string(),
+            "do not answer the rest".to_string(),
         ] {
             assert!(
                 present.contains(&want),
@@ -7710,6 +7710,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
                 thread: "budget".into(),
                 agent: crate::board::actor_agent(&s, "borealis".into()),
                 summary: "for the owner: budget?".into(),
+                body: "Option: 50 a month - the current cap\nOption: 100 a month - room for the evolve loop\nRecommended: 50 a month - spend has stayed under it".into(),
                 for_owner: true,
                 ..Default::default()
             },
@@ -8751,7 +8752,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             "finding",
             "dependabot",
             "Dependabot #30 (low): no patched version of hono exists yet",
-            "Yes: Look for a way around it\nNo: Keep watching\n",
+            "Yes: Look for a way around it\nNo: Keep watching\nRecommended: No - a patch is likely soon\n",
             true,
         );
         let lines = crate::lead::tend_lead(

@@ -37,7 +37,7 @@ pub fn register_commands() {
         cli_register(Command { name:"claim".into(), group:"agents".into(), summary:"shortcut: post a claim that expires after claim_hours".into(), usage:"hive claim --area A --thread T --summary S [--hours H] [--project SLUG] | hive claim sweep [--dry-run]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_claim, flags:Some(claim_flags) });
         cli_register(Command { name:"vote".into(), group:"agents".into(), summary:"shortcut: vote up or down on a suggestion or amendment".into(), usage:"hive vote POST_ID up|down --summary REASON [--body TEXT | --body-file F | < stdin] [--text-hash H]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_vote, flags:Some(vote_flags) });
         cli_register(Command { name:"thread".into(), group:"agents".into(), summary:"list, show, or resolve board threads".into(), usage:"hive thread list --project SLUG [--status open|stale|closed] [--area A] [--json]\n       hive thread show AREA/THREAD --project SLUG [--bodies]\n       hive thread resolve AREA/THREAD --project SLUG --as RESOLUTION --summary TEXT [--body TEXT|--body-file PATH]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_thread, flags:Some(thread_flags) });
-        cli_register(Command { name:"decide".into(), group:"human".into(), summary:"the human records yes or no on a proposal (a yes queues one job, WU-022)".into(), usage:"hive decide POST_ID yes|no [--words '...']".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_decide, flags:Some(decide_flags) });
+        cli_register(Command { name:"decide".into(), group:"human".into(), summary:"the human records yes or no on a proposal, or picks one of the answers a question names (a yes queues one job, WU-022)".into(), usage:DECIDE_USAGE.into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_decide, flags:Some(decide_flags) });
         cli_register(Command { name:"job".into(), group:"runner".into(), summary:"add, finish, or retry a job by hand".into(), usage:"hive job add --title T [--kind K] [--brief B] [--tier 0|1] [--priority N] [--source S] [--run-as AGENT] [--needs WORDS] [--project SLUG]\n       hive job finish JOB_ID done|failed|cancelled|blocked|queued [--result TEXT] [--branch B]\n       hive job retry JOB_ID [--as-new] [--brief TEXT] [--result TEXT]\n       hive job needs JOB_ID WORDS|-".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_job, flags:Some(job_flags) });
         cli_register(Command { name:"init".into(), group:"human".into(), summary:"register a checkout as a project, queue its onboarding job, import its environment recipe".into(), usage:"hive init [PATH] [--name N] [--remote URL] [--verify CMD] [--needs WORDS] [--brain] | hive init --store-only".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_init, flags:Some(init_flags) });
         cli_register(Command { name:"move".into(), group:"human".into(), summary:"point a project at the checkout it now lives in (a folder moved or cloned again); the slug and its history stay".into(), usage:"hive move SLUG PATH [--force]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_move, flags:Some(move_flags) });
@@ -91,7 +91,7 @@ pub fn post_flags(fs: &mut FlagSet) {
     fs.bool_var(
         "for-owner",
         false,
-        "reserve this post for the owner, not a worker job",
+        "reserve this post for the owner, not a worker job; the body names two or more answers (Yes:/No:/Option: lines) and one Recommended: line, or it goes to the lead",
     );
     fs.string_var(
         "to",
@@ -137,8 +137,16 @@ fn thread_flags(fs: &mut FlagSet) {
     fs.string_var("body", "", "the result body");
     fs.string_var("body-file", "", "read the result body from a file");
 }
+/// How `hive decide` is called: a yes or no, or one of the answers the ask
+/// names (`--option LABEL`, TASK-129). Words are an optional note.
+const DECIDE_USAGE: &str = "hive decide POST_ID yes|no [--words '...']\n       hive decide POST_ID --option 'LABEL' [--words '...']";
 fn decide_flags(fs: &mut FlagSet) {
-    fs.string_var("words", "", "the words that go with the answer");
+    fs.string_var("words", "", "an optional note that goes with the answer");
+    fs.string_var(
+        "option",
+        "",
+        "pick one of the answers the ask names (its Option:, Yes: or No: label)",
+    );
 }
 fn job_flags(fs: &mut FlagSet) {
     fs.string_var(
@@ -631,7 +639,20 @@ fn run_post(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
             ..Default::default()
         },
     )?;
-    print_post(c, &row)
+    print_post(c, &row)?;
+    // TASK-129: the owner answers with one pick, so an owner question that
+    // names no answers (or none recommended) goes to the lead instead. Say
+    // so where the asker reads it.
+    if row.for_owner && !c.json {
+        let missing = crate::ask_options::ask_options(&row.body).missing();
+        if !missing.is_empty() {
+            writeln!(
+                c.err,
+                "note: this question goes to the lead, not the owner: {missing}. Add `Yes: <label> - <what it does>` / `No: ...` or `Option: ...` lines and `Recommended: <label> - <why>` to the body."
+            )?;
+        }
+    }
+    Ok(())
 }
 /// `hive claim sweep [--dry-run]`: close open threads whose newest post is an
 /// expired claim, so reflect's STALE section lists only live work.
@@ -806,11 +827,12 @@ fn run_thread(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
     Ok(())
 }
 fn run_decide(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
-    if args.len() != 2 || (args[1] != "yes" && args[1] != "no") {
-        return Err(usage(
-            "decide",
-            "hive decide POST_ID yes|no [--words '...']",
-        ));
+    let option = fs.get_string("option");
+    let pick = !option.trim().is_empty();
+    if (pick && args.len() != 1)
+        || (!pick && (args.len() != 2 || (args[1] != "yes" && args[1] != "no")))
+    {
+        return Err(usage("decide", DECIDE_USAGE));
     }
     if !c.agent.is_empty() && c.agent != hive_store::HUMAN_AGENT {
         return Err(refuse_fix(
@@ -820,13 +842,23 @@ fn run_decide(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
             format!("hive vote {} up|down --summary REASON", args[0]),
         ));
     }
-    let d = decide(
-        store(c)?,
-        &args[0],
-        &args[1],
-        &fs.get_string("words"),
-        hive_store::HUMAN_AGENT,
-    )?;
+    let d = if pick {
+        decide_option(
+            store(c)?,
+            &args[0],
+            &option,
+            &fs.get_string("words"),
+            hive_store::HUMAN_AGENT,
+        )?
+    } else {
+        decide(
+            store(c)?,
+            &args[0],
+            &args[1],
+            &fs.get_string("words"),
+            hive_store::HUMAN_AGENT,
+        )?
+    };
     if c.json {
         write_json(&mut c.out, &d)?;
     } else {
