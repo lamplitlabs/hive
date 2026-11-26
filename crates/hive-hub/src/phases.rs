@@ -246,6 +246,101 @@ mod tests {
         .unwrap();
     }
 
+    /// The events that leave a task's pull request in `state`, as the
+    /// runner and the reviewer write them.
+    fn delivery_events(state: &str, number: i64) -> Vec<hive_tasks::LandEvent> {
+        let opened =
+            format!(r#"{{"task": "TASK-007", "number": {number}, "url": "u", "kind": "task"}}"#);
+        let of_pr = format!(r#"{{"number": {number}}}"#);
+        let ev = |seq: i64, action: &str, detail: &str| hive_tasks::LandEvent {
+            seq,
+            at: format!("2026-11-26T11:{seq:02}:00Z"),
+            actor: "daemon".into(),
+            action: action.into(),
+            detail: detail.into(),
+        };
+        let review = |action: &str| vec![ev(1, "land.pr", &opened), ev(2, action, &of_pr)];
+        match state {
+            "held" => vec![ev(
+                1,
+                "land.pr-held",
+                r#"{"task": "TASK-007", "note": "n"}"#,
+            )],
+            "pr_open" => vec![ev(1, "land.pr", &opened)],
+            "in_review" => review("review.queued"),
+            "needs_owner" => review("review.owner"),
+            "review_failed" => review("review.failed"),
+            "changes_requested" => review("review.changes"),
+            "merge_waiting" => review("review.merge-wait"),
+            "merge_asked" => review("review.ask"),
+            "merged" => vec![ev(1, "land.pr", &opened), ev(2, "land.merged", &opened)],
+            "closed" => vec![ev(1, "land.pr", &opened), ev(2, "land.pr-closed", &opened)],
+            other => panic!("no events for delivery state {other:?}"),
+        }
+    }
+
+    /// The cases the mock's test runs too (web/hub/mock/lifecycle-cases.json):
+    /// the hub's derivation places every one where the fixture says, so the
+    /// mock cannot drift from the hub without one of the two failing.
+    #[test]
+    fn the_shared_cases_place_each_task_where_the_mock_does() {
+        let path = hive_testutil::manifest_dir(env!("CARGO_MANIFEST_DIR"))
+            .join("../../web/hub/mock/lifecycle-cases.json");
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let cases = v["cases"].as_array().unwrap();
+        assert!(cases.len() >= 20);
+        let text = |v: &serde_json::Value, k: &str| v[k].as_str().unwrap_or_default().to_string();
+        for c in cases {
+            let task = hive_tasks::Task {
+                id: "TASK-007".into(),
+                project: "proj".into(),
+                status: text(&c["task"], "status"),
+                lead: text(&c["task"], "lead"),
+                created_at: "2026-11-26T09:00:00Z".into(),
+                ..hive_tasks::Task::default()
+            };
+            let jobs: Vec<hive_tasks::LifecycleJob> = c["jobs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|j| hive_tasks::LifecycleJob {
+                    id: text(j, "id"),
+                    kind: text(j, "kind"),
+                    status: text(j, "status"),
+                    branch: text(j, "branch"),
+                    created_at: "2026-11-26T10:00:00Z".into(),
+                    ..hive_tasks::LifecycleJob::default()
+                })
+                .collect();
+            let mut events = Vec::new();
+            if !task.lead.is_empty() {
+                events.push(hive_tasks::LandEvent {
+                    seq: 0,
+                    at: "2026-11-26T09:30:00Z".into(),
+                    actor: "daemon".into(),
+                    action: "task.lead".into(),
+                    detail: r#"{"job_id": "J-lead"}"#.into(),
+                });
+            }
+            if c["delivery"].is_object() {
+                events.extend(delivery_events(
+                    &text(&c["delivery"], "state"),
+                    c["delivery"]["number"].as_i64().unwrap_or(0),
+                ));
+            }
+            let l = hive_tasks::derive_lifecycle(&task, &jobs, &events);
+            let got = serde_json::to_value((l.phase, l.waits_on)).unwrap();
+            assert_eq!(
+                got,
+                serde_json::json!([c["phase"], c["waits_on"]]),
+                "{}: {}",
+                text(c, "name"),
+                l.note
+            );
+        }
+    }
+
     #[test]
     fn task_lifecycle_route() {
         let _serial = crate::test_helpers::serial();

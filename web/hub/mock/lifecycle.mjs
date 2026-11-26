@@ -39,45 +39,70 @@ export function taskLifecycle(detail) {
   if (d && d.state && d.state !== "none" && d.state !== "merged") left.review.push({ kind: "verdict", id: d.state, note: d.note || "", at: d.at });
   if (d && d.state === "merged") left.deliver.push({ kind: "merge", id: String(d.number), url: d.url, at: d.at });
 
+  // The hub's order (derive_lifecycle): a merge, the task's own end, a step
+  // at work, the pull request, a finished branch, the lead's sitting, the
+  // lead's turn; then the task's status has the last word.
+  const st = d && d.state && d.state !== "none" ? d.state : "";
+  const n = "pull request #" + (d ? d.number : "");
+  const active = jobs.filter((j) => RUNNING.has(j.status));
+  const delivering = jobs.some((j) => j.status === "done" && j.branch);
   let phase;
   let waits = "nobody";
   let note = "";
-  if (t.status === "done") phase = "done";
-  else if (t.status === "cancelled") phase = "cancelled";
-  else if (t.status === "open" && !t.lead) {
-    phase = "intake";
-    waits = "lead";
-    note = "waits for the project's lead to take it up";
-  } else if (!jobs.length) {
+  if (st === "merged") {
+    phase = "done";
+    note = n + " merged";
+  } else if (t.status === "done") phase = "done";
+  else if (active.length) {
+    phase = "build";
+    const at = active.find((j) => j.status === "leased" || j.status === "running");
+    const blocked = active.find((j) => j.status === "blocked");
+    waits = at ? "agent" : "runner";
+    note = at ? at.id + " is at work" : blocked ? blocked.id + " is blocked" : active.map((j) => j.id).join(", ") + " waits for a free slot";
+  } else if (st === "merge_waiting" || st === "merge_asked") {
+    phase = "deliver";
+    waits = st === "merge_waiting" ? "github" : "runner";
+    note = n + (st === "merge_waiting" ? ": the merge waits for its checks or GitHub" : ": the owner asked for the merge; the runner merges it");
+  } else if (st && st !== "held" && st !== "closed") {
+    phase = "review";
+    // The one rule for "waits on you", the Sessions list's (PR_NEEDS_OWNER).
+    [waits, note] =
+      st === "needs_owner" || st === "review_failed"
+        ? ["owner", n + " waits for the owner"]
+        : st === "changes_requested"
+          ? ["lead", n + ": the reviewer asked for changes"]
+          : ["reviewer", n + (st === "in_review" ? " is under review" : " is open for review")];
+  } else if (st === "closed") {
     phase = "shape";
     waits = "lead";
-    note = "the lead plans its first step";
-  } else if (d && d.state === "merged") {
-    phase = "done";
-    note = "pull request #" + d.number + " merged";
-  } else if (jobs.some((j) => RUNNING.has(j.status))) {
-    phase = "build";
-    const at = jobs.find((j) => j.status === "leased" || j.status === "running");
-    const blocked = jobs.find((j) => j.status === "blocked");
-    waits = at ? "agent" : "runner";
-    note = at ? at.id + " is at work" : blocked ? blocked.id + " is blocked" : jobs.filter((j) => j.status === "queued").map((j) => j.id).join(", ") + " waits for a free slot";
-  } else if (!d || !d.state || d.state === "none") {
-    phase = "verify";
-    waits = "runner";
-    note = "the runner checks the commits of " + jobs.filter((j) => j.status === "done").map((j) => j.id).join(", ");
-  } else if (d.state === "merge_waiting" || d.state === "merge_asked") {
-    phase = "deliver";
-    waits = d.state === "merge_waiting" ? "github" : "runner";
-    note = "pull request #" + d.number + (d.state === "merge_waiting" ? ": the merge waits for its checks or GitHub" : ": the owner asked for the merge; the runner merges it");
-  } else {
+    note = n + " was closed unmerged; the lead plans the next step";
+  } else if (delivering) {
+    // A held pull request is the runner's to try again, not the owner's turn.
     phase = "review";
-    const n = "pull request #" + d.number;
-    [waits, note] =
-      d.state === "needs_owner" || d.state === "review_failed" || d.state === "held"
-        ? ["owner", n + " waits for the owner"]
-        : d.state === "changes_requested"
-          ? ["lead", n + ": the reviewer asked for changes"]
-          : ["reviewer", n + (d.state === "in_review" ? " is under review" : " is open for review")];
+    waits = "runner";
+    note = st === "held" ? "the pull request could not be opened" + (d.note ? ": " + d.note : "") : "the runner opens the task's pull request";
+  } else if (leads.some((j) => RUNNING.has(j.status))) {
+    phase = "shape";
+    waits = "lead";
+    note = "the lead plans it in " + leads.find((j) => RUNNING.has(j.status)).id;
+  } else if (t.status === "open" && !t.lead && !(detail.jobs || []).length) {
+    phase = "intake";
+    waits = "lead";
+    note = "waits for the lead to take it up";
+  } else {
+    phase = "shape";
+    waits = "lead";
+    const failed = jobs.filter((j) => j.status === "failed").pop();
+    note = failed ? failed.id + " failed; the lead plans the next step" : "the lead plans its jobs";
+  }
+  if (t.status === "review" && phase !== "done") {
+    waits = "owner";
+    note = "the lead asked the owner";
+  }
+  if (t.status === "cancelled") {
+    phase = "cancelled";
+    waits = "nobody";
+    note = "cancelled";
   }
   const end = phase === "done" || phase === "cancelled";
   const idx = PATH.indexOf(phase);
