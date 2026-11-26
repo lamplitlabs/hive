@@ -157,6 +157,15 @@ pub(crate) fn pin_per_project(s: &hive_store::Store, n: i32) {
         .expect("pin per project");
 }
 
+/// Tests that measure the share itself drop the pin and read the fleet.
+#[cfg(test)]
+pub(crate) fn unpin_per_project(s: &hive_store::Store) {
+    s.conn()
+        .expect("conn")
+        .execute("DELETE FROM meta WHERE key = ?", [PIN_KEY])
+        .expect("unpin per project");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
