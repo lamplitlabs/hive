@@ -145,10 +145,12 @@ def wordmark(x, y, cap=108, stroke=17, ink="#f3f7ff", accent="url(#gw)", gap=0.3
 
 
 MONO = "ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace"
-TAGLINE = "THE SELF-IMPROVING AGENT HARNESS"
+# The line under the word, in two rows: Hive improves the projects it works on,
+# its own source among them (TASK-127).
+TAGLINE = ("THE AGENT HARNESS THAT IMPROVES", "YOUR PROJECTS, AND ITSELF")
 SUBLINE = "open source  \u00b7  one binary  \u00b7  your own machines"
 DESCRIPTION = ("The Hive mark: a hexagon cut into three brackets around a core, with a node in each gap. "
-               "Beside it the word HIVE and the line: the self-improving agent harness.")
+               "Beside it the word HIVE and the line: the agent harness that improves your projects, and itself.")
 
 # The lockup on its own box: the mark, the word, two lines.
 LOCK_W, LOCK_H = 840, 224
@@ -158,8 +160,9 @@ def lockup():
     ms = LOCK_H / 256
     wx = LOCK_H + 72
     word, width = wordmark(wx, 10)
-    text = (f'<text x="{f(wx)}" y="168" fill="#cfe3ff" font-family="{MONO}" font-size="21" font-weight="600" letter-spacing="4.3">{TAGLINE}</text>'
-            f'<text x="{f(wx)}" y="202" fill="#7f93b5" font-family="{MONO}" font-size="17" letter-spacing="1.4">{SUBLINE}</text>')
+    text = "".join(f'<text x="{f(wx)}" y="{150 + 27 * i}" fill="#cfe3ff" font-family="{MONO}" font-size="21" font-weight="600" letter-spacing="4.3">{line}</text>'
+                   for i, line in enumerate(TAGLINE))
+    text += f'<text x="{f(wx)}" y="212" fill="#7f93b5" font-family="{MONO}" font-size="17" letter-spacing="1.4">{SUBLINE}</text>'
     return f'<g transform="scale({f(ms)})" filter="url(#glow)">{mark("url(#gm)")}</g>{word}{text}', wx, width
 
 

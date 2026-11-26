@@ -1,13 +1,13 @@
 <p align="center">
-  <img src=".github/assets/hive-logo.svg" alt="Hive: the self-improving agent harness" width="760">
+  <img src=".github/assets/hive-logo.svg" alt="Hive: the agent harness that improves your projects, and itself" width="760">
 </p>
 
 <p align="center">
-  <strong>The self-improving agent harness.</strong>
+  <strong>The agent harness that improves your projects, and itself.</strong>
 </p>
 
 <p align="center">
-  Hive is an open-source harness for coding agents. It runs on your own machine as one binary, improves itself under rules you write, and pairs more machines when the work needs them.
+  Hive is an open-source harness for coding agents. It runs on your own machine as one binary. It does the tasks you give it, keeps a project's standing work going with automations, and improves every project it works on, its own source included, under rules you write. It pairs more machines when the work needs them.
 </p>
 
 <p align="center">
@@ -23,16 +23,29 @@
 
 ## What Hive is
 
-**A harness of its own.** Hive runs coding agents on a harness built into
-the binary: a tool loop with limits, deny rules, hooks, MCP servers, skills,
-helpers and sub-sessions. You give a project's lead agent a task in a
-console that runs on your own machine, watch the agents work on it as a
-conversation, and answer the questions only you can answer. The agents plan
-the work, do it in throwaway clones, test it, and deliver it as pull
-requests that a review agent reads before they merge.
+**Tasks as conversations.** You give a project's lead agent a task in a
+console that runs on your own machine. The lead cuts it into steps and
+hands them to agents, and the whole task is one conversation you can
+steer. [Give a task and steer it](docs/how-to/tasks.md).
 
-**Self-improvement under a constitution.** Between tasks the agents keep
-the project healthy and propose changes to it. This is
+**Pull requests with a reviewer.** The agents do the work in throwaway
+clones and test it. Finished work becomes a pull request that a review
+agent reads, then merges or hands to you.
+[Review and merge the work](docs/how-to/pull-requests.md).
+
+**Automations.** A project keeps its standing work as files under
+`.hive/automations/`: schedules, checks, watches and skill runs, one file
+each. They are reviewed and merged like any other file, and every machine
+that tends the project applies them from the default branch.
+[Run work on a schedule](docs/how-to/schedules.md).
+
+**Role leads.** Give one concern of a project, such as its docs, its
+tests or its security, an agent of its own that looks after it on a
+cadence. [Seat role leads on a project](docs/how-to/role-leads.md).
+
+**Self-improvement under a constitution.** Hive improves each project it
+works on, and runs the same loop on its own source. Between tasks the
+agents keep the project healthy and propose changes to it. This is
 RSI (recursive self-improvement) under rules: agents post suggestions and
 vote on each other's, and a suggestion must name a check that fails on the
 default branch today and passes with the change. When you turn the loop
@@ -42,6 +55,7 @@ repository, archives the result and delivers what was kept as a pull
 request. The constitution is yours: hard stops, paths the loop may never
 touch, and a kill switch (`hive stop`). Agents may amend parts of it by an
 informed vote; some parts no vote can touch.
+[Turn on the self-improvement loop](docs/how-to/self-improvement-loop.md).
 
 **Many machines.** `hive pair ADMIN@HOST --name NAME` sets up a Linux
 machine over the SSH login of an admin there. Any other machine, a Mac
@@ -51,6 +65,10 @@ model login of its own before it takes work;
 [Machines](docs/machines.md) says what each way needs. A project says what
 its jobs need (`macos`, `xcode`, `gpu`, `docker`) and the queue sends each
 job to a machine that offers it.
+
+**A harness of its own.** Every agent runs on a harness built into the
+binary: a tool loop with limits, deny rules, hooks, MCP servers, skills,
+helpers and sub-sessions. [The harness](docs/harness.md).
 
 It is one binary (`hive`), one store (the SQLite file `~/.hive/hive.sqlite`)
 and one console (`http://127.0.0.1:8765`, this computer only). There is no

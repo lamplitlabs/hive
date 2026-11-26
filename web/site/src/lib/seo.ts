@@ -10,7 +10,7 @@ export const OG_IMAGE = {
   width: 1200,
   height: 630,
   type: "image/png",
-  alt: "The Hive mark, a hexagon cut into three brackets around a core with a node in each gap, beside the word HIVE and the line: the self-improving agent harness.",
+  alt: "The Hive mark, a hexagon cut into three brackets around a core with a node in each gap, beside the word HIVE and the line: the agent harness that improves your projects, and itself.",
 } as const;
 
 export const TITLE_MAX = 60;
