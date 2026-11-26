@@ -223,6 +223,7 @@ import {
   foldedEntries,
   listEntries,
   prMood,
+  prWaitLine,
   relShort,
   reportVerb,
   sessionWords,
@@ -1642,6 +1643,7 @@ function PrRow({ pr, project }: { pr: PrState; project: string }) {
   const [merge, setMerge] = useState(false);
   const m = prMood(pr.state);
   const word = m ? m.word : pr.state === "merged" ? "Merged" : pr.state === "closed" ? "Closed" : "";
+  const waits = prWaitLine(pr.state, pr.note);
   const tone: Tone = m ? m.tone : pr.state === "merged" ? "ok" : "neutral";
   const name = "PR #" + pr.number;
   return (
@@ -1662,7 +1664,14 @@ function PrRow({ pr, project }: { pr: PrState; project: string }) {
       >
         {name}
       </a>
-      <span className={cn("min-w-0 truncate", TONE_TEXT[tone])}>{word}</span>
+      <span
+        className={cn("min-w-0 truncate", TONE_TEXT[tone])}
+        title={waits || undefined}
+        data-testid={waits ? "list-pr-wait" : undefined}
+      >
+        {word}
+        {waits ? <span className="text-muted-foreground">{" \u00b7 " + waits}</span> : null}
+      </span>
       {pr.can_merge && project ? (
         <>
           <Button

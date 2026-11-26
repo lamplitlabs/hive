@@ -81,6 +81,8 @@ export function deliveryView(d: DeliveryInput | null | undefined): DeliveryView 
     }
     case "merge_asked":
       return prLine(d, "Merging ", "\u2026", "neutral");
+    case "merge_waiting":
+      return prLine(d, "Approved: ", d.note ? " \u2014 " + sentence(d.note.replace(/^approved;\s*/i, "")) : " merges soon.", "neutral");
     case "changes_requested": {
       const tail = (d.note ? ": " + sentence(d.note) : ".") + (d.follow_up ? " Follow-up " + d.follow_up + " is queued." : "");
       return prLine(d, "Changes requested on ", tail, "neutral");
