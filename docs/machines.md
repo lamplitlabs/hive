@@ -111,6 +111,35 @@ same words does not ask again. While a rented machine is on its way the log
 says so (`machine wanted: compute request CR-012 is provisioning; waiting
 for the machine`) and nothing else is asked for.
 
+**When a request fails.** A request that fails before its machine is ready
+is not followed by another on the next tick. The daemon waits first: 5
+minutes after one failure, then 15, 45 and 135 minutes, then 6 hours, for as
+long as requests fail one after another. Each failed request counts, whoever
+made it and whatever its reason, back to 48 hours before the newest one. A
+request that got its machine ends the run; one you denied changes nothing.
+The log says until when, and you are asked nothing, since the daemon asks
+again by itself: `the last 2 request(s) failed before a machine was ready
+(CR-012: …); the daemon asks again after …`. After the wait the daemon asks
+what the compute worker checks before it calls the provider: a Linux `hive`
+for the size's architecture, a `compute.max_hours_per_day` above zero, a
+provider this build has. While one of them would fail the next request it
+makes none, and the log says why: `the daemon rents none (CR-012 failed
+before a machine was ready and the next request would fail too: …)`. It
+tells you too, as for any machine it may not rent, and it asks on the first
+tick the checks pass. Both lines begin `machine wanted:` when a job needs a
+machine no paired one is, and `hands wanted:` when every slot is busy.
+
+The wait and the look at the worker's checks hold only the daemon's own
+requests. One you make is filed whatever the last one did. From the console
+it goes to the compute worker, which fails it for the same reason while the
+cause stands. `hive compute request` has a check of its own: it is refused
+before it is filed while no Linux `hive` can be sent (`compute request
+refused before a machine: …`). Measured before this rule: 11,034 requests in
+under two hours, up to 243 a minute, each failed for want of a Linux `hive`
+and replaced on the next tick; and 56 in a row that each bought a machine,
+failed 5.6 minutes later on average and released it, 2.8 machine-hours for
+nothing.
+
 **What a rented machine has.** It starts from the image: git, Python 3,
 build tools, mise. Everything else a project's jobs need comes from the
 project's environment recipe (`docs/context/environment.md`, `hive env
@@ -126,6 +155,30 @@ amistio-template … pin the tool in tools:` - and rents for the next waiting
 project instead. Measured before this rule: CR-064 lacked `cargo` for the
 brain, was released after 30 idle minutes, and CR-065 was rented for the
 same job within the minute.
+
+**When a rented machine goes.** The daemon releases it when the hours it
+was asked for are up, counted from the moment it was ready, or after 30
+minutes without a run, whichever comes first. It does not release a machine
+with a run in flight, and it stops no run. So once its hours are up a rented
+machine takes no new work: the runs in flight on it are its last, and it is
+released when they end. Until then the daemon log and the request's card say
+so (`compute CR-012: its 4 hour(s) are up: hands-cr-012 takes no new work
+and is released when its last run ends`), and no second machine is rented:
+the one that is finishing still counts against `compute.max_vms` and as the
+open request. A machine can still run past its hours by the length of that
+last run, and the day's `compute.max_hours_per_day` counts the hours asked
+for, not the hours run.
+
+Once it is released nothing waits before the next request. A queue that
+still waits gets a fresh machine on the daemon's usual terms, for another
+four hours, and again when those are up, until the day's
+`compute.max_hours_per_day` is reached. So a queue that used to keep one
+machine busy long past its hours now gets a new machine each time the hours
+are up: over a day fewer hours are rented once the cap binds, and more
+machines are bought, each with its own start. Measured before this rule: a
+machine asked for 4 hours was released after 21.9, and another after 12.1;
+17 of the first one's 22 runs began after its hours were up, because the
+queue leased to it again each time a run ended.
 
 ```bash
 hive settings set machine.labels gpu,android          # what this machine offers, beyond its OS and chip and what it finds
@@ -319,8 +372,9 @@ commands behind one route, `POST /api/v1/compute/executors`, told apart by
 Each way records what its command would: `executor.add`, `executor.probe`,
 `pair.applied`, `compute.requested`. The request rows `GET /api/v1/compute`
 lists carry a `note`: the daemon's last word on each (the provisioning step
-in progress, why it failed, why its machine was released; empty once a
-machine is ready), which is what the card on the Machines page shows under
+in progress, why it failed, that its hours are up while a last run
+finishes, why its machine was released; empty while a ready machine is
+inside its hours), which is what the card on the Machines page shows under
 the reason. The hub serving one project
 (`hive hub --project`) takes requests for that project only.
 
@@ -753,3 +807,8 @@ project/area/thread/summary/agent, earliest kept), drops and recreates the post
 immutability triggers from their stored definitions, verifies they are present,
 and writes a `post.remove.duplicates` event. Human and worker findings are left
 alone.
+
+A removed executor keeps its row in the store, with the status `removed`.
+`hive executor list` leaves such rows out. The `executors` line of
+`hive status` counts them at its end instead of listing them
+(`local active (0/5 busy), 2 removed`), and works out no note for them.

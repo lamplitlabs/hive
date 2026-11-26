@@ -756,11 +756,13 @@ pub(crate) fn needs_wanted(
 pub(crate) const AUTO_COMPUTE_HOURS: i32 = 4;
 
 /// Why `auto_compute` rented nothing: a request is open already (a machine
-/// is coming, or `pending` waits for the owner), or the caps or the queue
-/// said no.
+/// is coming, or `pending` waits for the owner), the last request failed and
+/// the daemon waits before the next (it asks again by itself, so the owner
+/// is not asked), or the caps or the queue said no.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum NoAutoCompute {
     Open { id: String, status: String },
+    Pause(String),
     Why(String),
 }
 
@@ -768,7 +770,7 @@ impl std::fmt::Display for NoAutoCompute {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Open { id, status } => write!(f, "compute request {id} is {status}"),
-            Self::Why(why) => f.write_str(why),
+            Self::Pause(why) | Self::Why(why) => f.write_str(why),
         }
     }
 }
@@ -869,6 +871,68 @@ fn recipe_changed_since(s: &hive_store::Store, project: &Row, at: &str) -> bool 
         .unwrap_or(false)
 }
 
+/// How far back from the newest failure the failures in a row count. An
+/// older one says nothing about today, and a cause that still stands has
+/// eight of the pause's six-hour steps inside this, so its run never looks
+/// shorter than it is.
+pub(crate) const FAILED_RENTALS_HOURS: i64 = 48;
+
+/// Why the daemon does not ask for a machine again yet: the last request
+/// failed before a machine was ready. First the pause a failed job's
+/// recovery waits (`failure::recover_backoff`: 5 minutes, then 15, 45, 135,
+/// then 6 hours), counted from the last of the failures in a row; the
+/// daemon ends it by itself. Then the worker's own checks, which need no
+/// request to be asked: while they would fail the next one (no hands
+/// binary, a cap that allows nothing) none is made, and that is the
+/// owner's to change. The failures count whoever asked and whatever each
+/// said, back to `FAILED_RENTALS_HOURS` before the newest: what stops a
+/// machine before it is ready (the toolchain, the provider's login, a
+/// pairing step) is the hub's, not one project's, and the reasons carry
+/// each request's own names. Measured on one hub: 11,034 requests in under
+/// two hours, up to 243 a minute, each failed for want of a hands binary
+/// and replaced on the next tick, which an approved request wakes at once;
+/// before that, 56 back to back that each bought a machine, failed 5.6
+/// minutes later on average and released it, 2.8 machine-hours in all. A
+/// failed request gives its hours back, so no cap held either.
+pub(crate) fn rental_failed_lately(s: &hive_store::Store, now: &str) -> Option<NoAutoCompute> {
+    let conn = s.conn().ok()?;
+    // Newest first, and more of them than the pause has steps. A request
+    // the owner denied says nothing about whether a machine can be had, so
+    // it ends neither the run of failures nor the pause.
+    let rows = crate::util::must_rows(
+        &conn,
+        "SELECT id, status, executor, note, updated_at FROM compute_requests WHERE status != 'denied' ORDER BY rowid DESC LIMIT 8",
+        &[],
+    );
+    let last = rows.first()?;
+    let since = crate::util::must_iso(&last.str("updated_at"))
+        - chrono::Duration::hours(FAILED_RENTALS_HOURS);
+    let failed = rows
+        .iter()
+        .take_while(|r| {
+            r.str("status") == "failed"
+                && r.str("executor").is_empty()
+                && crate::util::must_iso(&r.str("updated_at")) >= since
+        })
+        .count();
+    if failed == 0 {
+        return None;
+    }
+    let id = last.str("id");
+    let due = crate::failure::recover_due(last.str("updated_at"), failed as i32 - 1);
+    if crate::util::must_iso(now) < crate::util::must_iso(&due) {
+        return Some(NoAutoCompute::Pause(format!(
+            "the last {failed} request(s) failed before a machine was ready ({id}: {}); the daemon asks again after {due}",
+            crate::util::trunc(&last.str("note"), 200)
+        )));
+    }
+    crate::compute::would_fail_before_provider(s, AUTO_COMPUTE_HOURS, now).map(|why| {
+        NoAutoCompute::Why(format!(
+            "{id} failed before a machine was ready and the next request would fail too: {why}"
+        ))
+    })
+}
+
 /// Rents a machine for a waiting queue when the owner pre-authorised it:
 /// `compute.auto_approve` within `compute.max_vms` and
 /// `compute.max_hours_per_day`, one open request at a time, and only for a
@@ -877,7 +941,8 @@ fn recipe_changed_since(s: &hive_store::Store, project: &Row, at: &str) -> bool 
 /// (every slot here busy, or a need no paired machine meets) and opens the
 /// request's reason. Until now the daemon only posted "hands wanted" to an
 /// owner who may be away for the day while the caps said the machine could
-/// be rented.
+/// be rented. A request that failed before a machine was ready is not
+/// followed by the next at once (`rental_failed_lately`).
 pub(crate) fn auto_compute(
     s: &hive_store::Store,
     waiting: &str,
@@ -956,6 +1021,9 @@ pub(crate) fn auto_compute(
     }
     if job.0.is_empty() {
         return Err(why(repeats.join("; ")));
+    }
+    if let Some(no) = rental_failed_lately(s, now) {
+        return Err(no);
     }
     let reason = format!(
         "{waiting}; {} ({}) is first in line",
@@ -2890,6 +2958,16 @@ pub(crate) fn daemon(
                                     say(&o, line);
                                 }
                             }
+                            // The daemon asks again by itself: no question either.
+                            Err(NoAutoCompute::Pause(why)) => {
+                                if let Some(line) = idle_log.line(
+                                    "needs-rent",
+                                    &format!("machine wanted: {why}"),
+                                    std::time::Instant::now(),
+                                ) {
+                                    say(&o, line);
+                                }
+                            }
                             Err(why) => {
                                 if let Some(line) = idle_log.line(
                                     "needs-rent",
@@ -3092,7 +3170,27 @@ pub(crate) fn daemon(
                                 say(&o, line);
                             }
                         }
+                        // The daemon asks again by itself: no question either.
+                        Err(NoAutoCompute::Pause(why)) => {
+                            if let Some(line) = idle_log.line(
+                                "hands",
+                                &format!("hands wanted: {why}"),
+                                std::time::Instant::now(),
+                            ) {
+                                say(&o, line);
+                            }
+                        }
                         Err(why) => {
+                            // Said whether or not the question below is
+                            // new: with one open already nothing else
+                            // names the reason.
+                            if let Some(line) = idle_log.line(
+                                "hands",
+                                &format!("hands wanted: the daemon rents none ({why})"),
+                                std::time::Instant::now(),
+                            ) {
+                                say(&o, line);
+                            }
                             let post = hands_wanted(
                                 s,
                                 crate::board::brain_project(c),
@@ -4302,6 +4400,396 @@ mod tests {
         let third = auto_compute(&s, WAITED, HANDS_WANTED_MINUTES, TEST_NOW, "daemon")
             .expect("rents once the recipe changed");
         assert_eq!(third.project, "proj");
+    }
+
+    /// A hub whose daemon rents on its own from a provider the test fakes,
+    /// with one task that has waited long enough to rent for.
+    fn renting_hub(s: &hive_store::Store) -> crate::test_helpers_provider::ComputeHarness {
+        let h = crate::test_helpers_provider::new_compute_harness(
+            s,
+            &[
+                ("compute.provider", "azure"),
+                ("compute.azure.resource_group", "hive-hands"),
+                ("compute.azure.location", "westeurope"),
+                ("compute.azure.vm_size", "Standard_B2ms"),
+                ("compute.auto_approve", "1"),
+            ],
+        );
+        queued_job(s, "j-waits", "proj", "task", "owner");
+        exec1(
+            s,
+            "UPDATE jobs SET created_at = ? WHERE id = 'j-waits'",
+            &[&crate::util::plus_minutes(TEST_NOW, -31)],
+        );
+        h
+    }
+
+    /// The renting half of one daemon tick at `now`: the daemon asks for a
+    /// machine when it may, and the compute worker takes that request to
+    /// its end. The request as the worker left it, or why none was made.
+    fn renting_tick(
+        s: &hive_store::Store,
+        h: &crate::test_helpers_provider::ComputeHarness,
+        now: &str,
+    ) -> Result<hive_tasks::ComputeRequest, NoAutoCompute> {
+        let at = hive_store::Store::open(hive_store::Options {
+            home: s.home.clone(),
+            now: now.into(),
+            ..Default::default()
+        })
+        .unwrap();
+        let req = auto_compute(
+            &at,
+            "1 job(s) waited 31 min with every slot on this machine busy or held",
+            HANDS_WANTED_MINUTES,
+            now,
+            "daemon",
+        )?;
+        let cancel = hive_bus::CancellationToken::new();
+        let worker = crate::compute::new_compute_worker(
+            &cancel,
+            &at,
+            crate::compute::ComputeOpts {
+                actor: "daemon".into(),
+                hub_home: h.hub_home.clone(),
+            },
+        );
+        worker.tick(&cancel, now);
+        worker.wait(Duration::from_secs(60));
+        cancel.cancel();
+        Ok(hive_tasks::get_compute(&at, &req.id).unwrap())
+    }
+
+    /// One request a tick is what a hub measured: 11,034 in under two hours,
+    /// each failed before a machine was ready and replaced on the next tick.
+    #[test]
+    fn a_request_that_fails_before_a_machine_is_ready_is_asked_again_after_a_growing_pause() {
+        let _serial = crate::test_helpers::serial();
+        let _lock = crate::test_helpers_provider::provider_test_lock();
+        let s = new_store();
+        let h = renting_hub(&s);
+        // The provider fails the same way every time it is asked.
+        let _fake = crate::test_helpers_provider::install_fake(
+            crate::azure::set_run_az,
+            Box::new(|_, _, _| Err(anyhow::anyhow!("the provider's sign-in has expired"))),
+        );
+        // A tick every fifteen seconds for an hour.
+        let mut asked = Vec::new();
+        for tick in 0..240 {
+            let minutes = f64::from(tick) / 4.0;
+            let now = crate::util::plus_minutes(TEST_NOW, minutes);
+            if let Ok(req) = renting_tick(&s, &h, &now) {
+                assert_eq!(req.status, "failed", "{req:?}");
+                asked.push(minutes);
+            }
+        }
+        assert_eq!(
+            asked,
+            [0.0, 5.0, 20.0],
+            "the minutes at which the daemon asked: one request per pause (5 min, then 15, then 45), not one per tick"
+        );
+        // The rest of the ladder, looked at a tick before each step and on
+        // it: 135 minutes, then six hours for as long as the cause stands,
+        // the third day included.
+        let mut due = 20.0 + 45.0;
+        for pause in [135.0].into_iter().chain([360.0; 11]) {
+            let tick =
+                |minutes: f64| renting_tick(&s, &h, &crate::util::plus_minutes(TEST_NOW, minutes));
+            let early = tick(due - 0.25);
+            assert!(
+                matches!(early, Err(NoAutoCompute::Pause(_))),
+                "asked before minute {due}: {early:?}"
+            );
+            let req = tick(due).unwrap_or_else(|why| panic!("not asked at minute {due}: {why}"));
+            assert_eq!(req.status, "failed", "{req:?}");
+            due += pause;
+        }
+        assert!(due > 48.0 * 60.0, "{due}");
+    }
+
+    #[test]
+    fn a_request_the_workers_own_checks_would_fail_again_is_not_asked_for() {
+        let _serial = crate::test_helpers::serial();
+        let _lock = crate::test_helpers_provider::provider_test_lock();
+        let s = new_store();
+        let h = renting_hub(&s);
+        let az = crate::test_helpers_provider::new_fake_az();
+        let _fake = crate::test_helpers_provider::install_fake(crate::azure::set_run_az, {
+            let az = az.clone();
+            Box::new(move |ctx, args, timeout| az.run(ctx, args, timeout))
+        });
+        // No linux hive to pair a machine with: the worker fails the request
+        // before it asks the provider for anything.
+        let had = crate::pair::set_hands_binary(Box::new(|arch| {
+            Err(anyhow::anyhow!("no linux/{arch} hive binary to ship"))
+        }));
+        let first = renting_tick(&s, &h, TEST_NOW).expect("the first request");
+        assert_eq!(first.status, "failed", "{first:?}");
+        assert!(first.note.ends_with("; no machine was bought"), "{first:?}");
+        // On the next tick the pause holds the daemon; once it is over, and
+        // a day later still, the worker's own check does. No request is
+        // made, and the line says why.
+        let tick =
+            |minutes: f64| renting_tick(&s, &h, &crate::util::plus_minutes(TEST_NOW, minutes));
+        assert_eq!(
+            tick(0.25),
+            Err(NoAutoCompute::Pause(
+                "the last 1 request(s) failed before a machine was ready (CR-001: no linux/amd64 hive binary to ship; no machine was bought); the daemon asks again after 2026-09-06T10:05:00Z".into()
+            ))
+        );
+        for minutes in [5.0, 20.0, 24.0 * 60.0] {
+            assert_eq!(
+                tick(minutes),
+                Err(NoAutoCompute::Why(
+                    "CR-001 failed before a machine was ready and the next request would fail too: no linux/amd64 hive binary to ship; no machine was bought".into()
+                )),
+                "after {minutes} min"
+            );
+        }
+        assert_eq!(
+            count(&s, "SELECT COUNT(*) AS n FROM compute_requests", &[]),
+            1
+        );
+        assert!(
+            !az.has("vm create"),
+            "the provider was asked: {:?}",
+            az.calls()
+        );
+        // The binary is there: the daemon asks on its next tick.
+        let _ = crate::pair::set_hands_binary(had);
+        let second = tick(24.0 * 60.0 + 0.25).expect("asked once the binary is there");
+        assert_eq!(
+            (second.status.as_str(), second.executor.as_str()),
+            ("ready", "hands-cr-002"),
+            "{second:?}"
+        );
+    }
+
+    /// The pause line for the `failed` requests in a row that ended with
+    /// `last`, asked again at `due`.
+    fn pause_line(failed: usize, last: &hive_tasks::ComputeRequest, due: &str) -> NoAutoCompute {
+        NoAutoCompute::Pause(format!(
+            "the last {failed} request(s) failed before a machine was ready ({}: {}); the daemon asks again after {due}",
+            last.id,
+            crate::util::trunc(&last.note, 200)
+        ))
+    }
+
+    /// The costly failure: the machine is bought, a later step fails and it
+    /// is released. A hub measured 56 of those back to back.
+    #[test]
+    fn a_request_that_fails_after_its_machine_was_made_is_followed_by_the_pause_too() {
+        let _serial = crate::test_helpers::serial();
+        let _lock = crate::test_helpers_provider::provider_test_lock();
+        let s = new_store();
+        let h = renting_hub(&s);
+        let az = crate::test_helpers_provider::new_fake_az();
+        let _fake = crate::test_helpers_provider::install_fake(crate::azure::set_run_az, {
+            let az = az.clone();
+            Box::new(move |ctx, args, timeout| {
+                if args.join(" ").starts_with("vm run-command invoke") {
+                    return Ok((1, String::new(), "RunCommand is disabled here".into()));
+                }
+                az.run(ctx, args, timeout)
+            })
+        });
+        let tick =
+            |minutes: f64| renting_tick(&s, &h, &crate::util::plus_minutes(TEST_NOW, minutes));
+        let first = tick(0.0).expect("the first request");
+        assert_eq!(first.status, "failed", "{first:?}");
+        assert!(
+            first.note.ends_with("; what was created is released"),
+            "{first:?}"
+        );
+        assert_eq!(az.deleted(), vec!["hive-cr-001"]);
+        assert_eq!(
+            tick(0.25),
+            Err(pause_line(1, &first, "2026-09-06T10:05:00Z"))
+        );
+        assert_eq!(
+            az.deleted(),
+            vec!["hive-cr-001"],
+            "a second machine was bought inside the pause"
+        );
+    }
+
+    #[test]
+    fn a_denied_request_ends_neither_the_pause_nor_the_run_of_failures() {
+        let _serial = crate::test_helpers::serial();
+        let _lock = crate::test_helpers_provider::provider_test_lock();
+        let s = new_store();
+        let h = renting_hub(&s);
+        let _fake = crate::test_helpers_provider::install_fake(
+            crate::azure::set_run_az,
+            Box::new(|_, _, _| Err(anyhow::anyhow!("the provider's sign-in has expired"))),
+        );
+        let tick =
+            |minutes: f64| renting_tick(&s, &h, &crate::util::plus_minutes(TEST_NOW, minutes));
+        let first = tick(0.0).expect("the first request");
+        assert_eq!(first.status, "failed", "{first:?}");
+        // Inside the pause an agent asks by hand for a machine the owner
+        // has to approve, and the owner says no.
+        s.set_setting(hive_store::HUMAN_AGENT, "compute.auto_approve", "0")
+            .unwrap();
+        let by_hand =
+            hive_tasks::request_compute(&s, "proj", "aurora", "", 2, "asked by hand").unwrap();
+        assert_eq!(by_hand.status, "pending", "{by_hand:?}");
+        hive_tasks::deny(&s, &by_hand.id, "not now", hive_store::HUMAN_AGENT).unwrap();
+        s.set_setting(hive_store::HUMAN_AGENT, "compute.auto_approve", "1")
+            .unwrap();
+        // The pause stands, and the next failure is the second in a row.
+        assert_eq!(
+            tick(2.0),
+            Err(pause_line(1, &first, "2026-09-06T10:05:00Z"))
+        );
+        let second = tick(5.0).expect("asked again when the pause was over");
+        assert_eq!(second.status, "failed", "{second:?}");
+        assert_eq!(
+            tick(5.25),
+            Err(pause_line(2, &second, "2026-09-06T10:20:00Z"))
+        );
+    }
+
+    #[test]
+    fn failures_older_than_two_days_do_not_lengthen_the_pause() {
+        let _serial = crate::test_helpers::serial();
+        let _lock = crate::test_helpers_provider::provider_test_lock();
+        let s = new_store();
+        let h = renting_hub(&s);
+        let _fake = crate::test_helpers_provider::install_fake(
+            crate::azure::set_run_az,
+            Box::new(|_, _, _| Err(anyhow::anyhow!("the provider's sign-in has expired"))),
+        );
+        // Five requests failed one after another two months ago, and none
+        // has been made since.
+        let long_ago = hive_store::Store::open(hive_store::Options {
+            home: s.home.clone(),
+            now: crate::util::plus_hours(TEST_NOW, -60.0 * 24.0),
+            ..Default::default()
+        })
+        .unwrap();
+        for _ in 0..5 {
+            let old =
+                hive_tasks::request_compute(&long_ago, "proj", "aurora", "", 2, "an old wait")
+                    .unwrap();
+            hive_tasks::set_compute_status(&long_ago, &old.id, "failed", "", "daemon").unwrap();
+        }
+        let tick =
+            |minutes: f64| renting_tick(&s, &h, &crate::util::plus_minutes(TEST_NOW, minutes));
+        let first = tick(0.0).expect("asked: failures that old hold nothing");
+        assert_eq!(first.status, "failed", "{first:?}");
+        // Today's failure is the first of its run: five minutes, not six hours.
+        assert_eq!(
+            tick(0.25),
+            Err(pause_line(1, &first, "2026-09-06T10:05:00Z"))
+        );
+    }
+
+    /// The every-slot-busy path with the owner's question open already: the
+    /// reason the daemon rents nothing used to ride only on the line of a
+    /// new question, so with one open nothing said it.
+    #[test]
+    fn a_starved_queue_says_why_no_machine_is_rented_when_the_owner_was_asked_already() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
+        let fixed = new_store();
+        new_bare_repo(&fixed);
+        join(&fixed, "aurora");
+        exec1(
+            &fixed,
+            "UPDATE projects SET brain = 1 WHERE slug = 'proj'",
+            &[],
+        );
+        for (k, v) in [("capacity", "2"), ("daemon.sweep", "off")] {
+            fixed.set_setting(hive_store::HUMAN_AGENT, k, v).unwrap();
+        }
+        crate::jobs::add_job(
+            &fixed,
+            "proj".into(),
+            "task".into(),
+            "Waits behind the load".into(),
+            "fake worker only".into(),
+            0,
+            100,
+            "test".into(),
+            hive_store::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        // Saturated for the whole test: nothing is leased, the queue is
+        // short of hands.
+        let _saturated = crate::daemon_load::pin_pressure(crate::daemon_load::Pressure {
+            load1: Some(40.0),
+            ..crate::daemon_load::CALM
+        });
+        let _now = hive_testutil::setenv("HIVE_NOW", TEST_NOW);
+        let s = hive_store::Store::open(hive_store::Options {
+            home: fixed.home.clone(),
+            create: false,
+            read_only: false,
+            skip_records: false,
+            now: String::new(),
+        })
+        .unwrap();
+        // One daemon whose clock jumps 31 minutes the first time it idles,
+        // so its queue has starved for half an hour on the loops after.
+        let starved_half_an_hour = || {
+            let later = crate::util::plus_minutes(&s.now(), 31);
+            let out = OutBuf::new();
+            let result = daemon(
+                &hive_bus::CancellationToken::new(),
+                &s,
+                DaemonOpts {
+                    interval: 1,
+                    max_loops: 6,
+                    out: Some(out.writer()),
+                    worker_cmd: "sh -c 'echo SUMMARY: ok'".into(),
+                    sleep: Some(std::sync::Arc::new(move |_| {
+                        // The test holds hive_testutil::env_lock for the whole body.
+                        unsafe {
+                            std::env::set_var("HIVE_NOW", &later);
+                        }
+                        true
+                    })),
+                    ..Default::default()
+                },
+            );
+            assert_eq!(result, "done", "{}", out.string());
+            out.string()
+        };
+        let questions = || {
+            count(
+                &fixed,
+                "SELECT COUNT(*) AS n FROM posts WHERE kind = 'question' AND thread = 'hands-wanted'",
+                &[],
+            )
+        };
+        // Not pre-authorised: the owner is asked.
+        let out = starved_half_an_hour();
+        assert!(
+            out.contains(" job(s) waited 31 min with every slot busy or held"),
+            "{out}"
+        );
+        assert_eq!(questions(), 1, "{out}");
+        // Pre-authorised now, but the last request failed and the worker's
+        // checks would fail the next: no new question, and the log says why.
+        for (k, v) in [("compute.auto_approve", "1"), ("compute.max_vms", "1")] {
+            fixed.set_setting(hive_store::HUMAN_AGENT, k, v).unwrap();
+        }
+        let failed =
+            hive_tasks::request_compute(&fixed, "proj", "aurora", "", 4, "an earlier wait")
+                .unwrap();
+        hive_tasks::set_compute_status(&fixed, &failed.id, "failed", "", "daemon").unwrap();
+        let out = starved_half_an_hour();
+        assert_eq!(questions(), 1, "{out}");
+        assert!(
+            out.contains(&format!(
+                "hands wanted: the daemon rents none ({} failed before a machine was ready and the next request would fail too: cap: 0 machine-hour(s) today against compute.max_hours_per_day=0)",
+                failed.id
+            )),
+            "{out}"
+        );
     }
 
     #[test]
@@ -7781,6 +8269,20 @@ mod tests {
                 reqs[0].str("id"),
                 reqs[0].str("status")
             )) || reqs[0].str("status") == "pending",
+            "{out}"
+        );
+        // The request fails before a machine is ready: the daemon does not
+        // ask again on the next tick, and says until when it waits.
+        let id = reqs[0].str("id");
+        hive_tasks::set_compute_status(&s, &id, "failed", "", "daemon").unwrap();
+        hive_tasks::note_compute(&s, &id, "the provider said no").unwrap();
+        let out = once_daemon(&s, opts());
+        assert_eq!(requests().len(), 1, "{out}");
+        assert!(
+            out.contains(&format!(
+                "machine wanted: the last 1 request(s) failed before a machine was ready ({id}: the provider said no); the daemon asks again after {}",
+                crate::util::plus_minutes(TEST_NOW, 5)
+            )),
             "{out}"
         );
     }

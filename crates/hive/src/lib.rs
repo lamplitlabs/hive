@@ -12,6 +12,11 @@ use std::sync::{Arc, Mutex, Once};
 // in rodata as one literal, which the pair-hands inspection greps out of a hand's binary.
 include!(concat!(env!("OUT_DIR"), "/build_info_const.rs"));
 
+// The version decision `build.rs` makes for that block. The build script compiles the file
+// itself; here it is compiled for its tests only.
+#[cfg(test)]
+mod version_stamp;
+
 /// One writer shared between the runner and the command's `Context`. Lines
 /// stream through as they are written, which `hive daemon` and `hive hub`
 /// need for their service logs.
@@ -812,6 +817,24 @@ mod tests {
         let code = run(&["--json", "version"], &mut out, &mut errb);
         if code != 0 || !s(&out).contains("\"version\":") {
             panic!("version --json: {code} {:?}", s(&out));
+        }
+    }
+
+    /// The stamp `build.rs` gave this very build. Whatever release tags the
+    /// checkout holds, the build is not behind the release its `Cargo.toml`
+    /// names, so `hive update` never offers a build the release it was built
+    /// from (`version_stamp::source_version`).
+    #[test]
+    fn this_build_is_stamped_no_older_than_the_workspace_version() {
+        let info = hive_cli::parse_build_info(BUILD_INFO_TEXT).expect("the stamp parses");
+        let stamped = hive_cli::build_version(&info);
+        let workspace = format!("v{}", env!("CARGO_PKG_VERSION"));
+        // `dev`, the stamp of a build outside a git checkout, is behind nothing.
+        if hive_cli::update::parse_semver(&stamped).is_some() {
+            assert!(
+                !hive_cli::update::is_newer(&workspace, &stamped),
+                "stamped {stamped}, behind the workspace version {workspace}"
+            );
         }
     }
 
