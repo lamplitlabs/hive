@@ -282,7 +282,12 @@ forge's own gate is not bypassed: a failing or still running check, a
 draft, a merge GitHub blocks or a head that moved since the hub showed it
 is refused (the daemon log says *could not be merged for the owner:
 <reason>*), and the ask stands - each pass tries again until the pull
-request is ready or settled on GitHub. The same
+request is ready or settled on GitHub. The ask is for the head the hub
+showed when you pressed it: once Hive records a newer head (a push, a head
+found moved while a merge waited, a review queued at it), the ask lapses -
+the daemon log says *not merged for the owner: Merge was pressed at <sha>,
+the pull request is at <sha> now* once - and the new head is reviewed on
+its own; press Merge again to take it. The same
 hand-over is a question on the project's board, marked for you, on the
 `review` thread - *Merge pull request #n: <title>?* with the reasons, the
 review and the ways to merge it - and a message on the task's conversation
@@ -371,8 +376,9 @@ command exits 0 with *Merge of #n waits: …* and the job finishes:
   `gh pr view` that reads the pull request before it - answered 5xx, an
   internal error (*Something went wrong*), a rate limit (429, or a 403 that
   says *rate limit*), *Base branch was modified*, lost its connection
-  (*error connecting*, *connection refused*, *connection reset*, `EOF`) or
-  did not finish in time. The merge is tried again on the recovery
+  (*error connecting*, *connection refused*, *connection reset*, *network
+  is unreachable*, *no route to host*, *broken pipe*, `EOF`) or did not
+  finish in time. The merge is tried again on the recovery
   back-off - 5, 15, 45 and 135 minutes after each failure, then every 6
   hours - with the same gate as the first time.
 
@@ -396,7 +402,11 @@ forge (default 5), or `review.merge_wait_hours` hours since the verdict
 (default 6) - for running checks as for the forge - the wait ends: the pull
 request is handed to you (`review.owner`, its reason the bound and the
 forge's last answer) and the project's lead is told once, by a finding on
-the `runner/review` thread that mentions it and quotes that answer. A pull
+the `runner/review` thread that mentions it and quotes that answer. A forge
+wait that is already past its hours when a pass reaches it (the machine
+slept, the daemon was down) but has tries left makes one last try first,
+as a checks wait at its bound merges when its checks passed: merged when
+the forge takes it, handed to you as above when it fails again. A pull
 request stacked on the one that waited still waits below it, and is
 reviewed when the one below merges.
 
