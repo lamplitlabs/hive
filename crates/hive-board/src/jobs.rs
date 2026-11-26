@@ -739,9 +739,35 @@ pub struct Decision {
     pub words: String,
     pub decided_at: String,
     pub decided_by: String,
+    /// The model and provider that decided (ADR-072 part 5); empty for the
+    /// human.
+    pub decided_model: String,
+    pub decided_provider: String,
     pub result: crate::posts::Post,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub job: Option<Job>,
+}
+
+/// Who answered for a lead's decision: the decide role's model and provider
+/// (ADR-072), or, for the lead's own `DECIDE:` lines, the lead's run model
+/// and the hub's provider. `role` is set when the decide role answered.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DecidedBy {
+    pub model: String,
+    pub provider: String,
+    pub role: bool,
+}
+
+impl DecidedBy {
+    /// What the lead's own run decides on: `light_model` (the lead's run
+    /// model) and the hub's `provider`.
+    pub fn lead_run(s: &hive_store::Store) -> Self {
+        Self {
+            model: s.run_model("lead"),
+            provider: s.setting("provider", ""),
+            role: false,
+        }
+    }
 }
 
 pub fn lead_name(slug: &str) -> String {
@@ -801,6 +827,25 @@ pub fn decide(
     words: &str,
     decided_by: &str,
 ) -> Result<Decision> {
+    let by = if decided_by.is_empty() || decided_by == hive_store::HUMAN_AGENT {
+        DecidedBy::default()
+    } else {
+        DecidedBy::lead_run(s)
+    };
+    decide_with(s, post_id, answer, words, decided_by, by)
+}
+
+/// [`decide`] with the model and provider that answered named: the decide
+/// role passes its own. The human's decision records neither, whatever `by`
+/// says.
+pub fn decide_with(
+    s: &hive_store::Store,
+    post_id: &str,
+    answer: &str,
+    words: &str,
+    decided_by: &str,
+    by: DecidedBy,
+) -> Result<Decision> {
     if answer != "yes" && answer != "no" {
         return Err(refuse(2, "The answer is yes or no"));
     }
@@ -837,13 +882,26 @@ pub fn decide(
     } else {
         words
     };
-    let body = if decided_by == hive_store::HUMAN_AGENT {
+    let human = decided_by == hive_store::HUMAN_AGENT;
+    let by = if human { DecidedBy::default() } else { by };
+    let mut body = if human {
         format!("The human answered **{answer}**.\n\n{said}\n\nProposal: {post_id}\n")
     } else {
         format!(
             "The owner is away (owner.presence = away); **{decided_by}** answered **{answer}** on the owner's behalf.\n\n{said}\n\nProposal: {post_id}\n"
         )
     };
+    if by.role {
+        let model = if by.model.is_empty() {
+            "the provider's default model"
+        } else {
+            &by.model
+        };
+        body.push_str(&format!(
+            "\nAnswered by the decide role (ADR-072): {model} on {}.\n",
+            by.provider
+        ));
+    }
     let post = create_decision_result_conn(
         s,
         &tx,
@@ -856,14 +914,19 @@ pub fn decide(
     )?;
     let now = s.now();
     tx.execute(
-        "INSERT INTO decisions (post_id, project, answer, words, decided_at, decided_by, result_post) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        params![post_id, target.project, answer, words, now, decided_by, post.id],
+        "INSERT INTO decisions (post_id, project, answer, words, decided_at, decided_by, result_post, decided_model, decided_provider) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        params![post_id, target.project, answer, words, now, decided_by, post.id, by.model, by.provider],
     )?;
     let mut detail = serde_json::Map::new();
     detail.insert("answer".into(), json!(answer));
     detail.insert("result".into(), json!(post.id));
-    if decided_by != hive_store::HUMAN_AGENT {
+    detail.insert("decided_model".into(), json!(by.model));
+    detail.insert("decided_provider".into(), json!(by.provider));
+    if !human {
         detail.insert("on_behalf".into(), json!("owner-away"));
+    }
+    if by.role {
+        detail.insert("via".into(), json!("decide-role"));
     }
     event_conn(
         &tx,
@@ -880,6 +943,8 @@ pub fn decide(
         words: words.into(),
         decided_at: now,
         decided_by: decided_by.into(),
+        decided_model: by.model.clone(),
+        decided_provider: by.provider.clone(),
         result: post.clone(),
         job: None,
     };
@@ -2143,6 +2208,21 @@ mod tests {
         assert_eq!(d.result.agent, "human");
         assert!(d.job.is_none());
         assert_eq!(d.decided_by, "human");
+        // The human's row names no model and no provider (ADR-072).
+        assert_eq!(
+            (d.decided_model.as_str(), d.decided_provider.as_str()),
+            ("", "")
+        );
+        let row: (String, String) = s
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT decided_model, decided_provider FROM decisions WHERE post_id = ?",
+                [&sug.id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row, (String::new(), String::new()));
         assert!(d.result.summary.starts_with("declined: Cache the build"));
         assert!(d.result.body.contains("(no words recorded)"));
         assert_eq!(
@@ -2391,9 +2471,33 @@ mod tests {
             err_what(decide(&s, &sug.id, "yes", "", &lead_name("other"))),
             "only the proposal project's lead decides for the owner"
         );
+        s.set_setting("human", "light_model", "lead-light").unwrap();
         let d = decide(&s, &sug.id, "yes", "ship it", &lead_name(&p.slug)).unwrap();
         assert_eq!(d.result.agent, lead_name(&p.slug));
         assert_eq!(d.decided_by, lead_name(&p.slug));
+        // A lead's DECIDE line names the lead's run model and the hub's
+        // provider, on the row and on the event (ADR-072).
+        assert_eq!(d.decided_model, "lead-light");
+        assert_eq!(d.decided_provider, s.setting("provider", ""));
+        let (model, provider, detail): (String, String, String) = s
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT d.decided_model, d.decided_provider, e.detail FROM decisions d \
+                 JOIN events e ON e.action = 'decide' AND e.subject = d.post_id WHERE d.post_id = ?",
+                [&sug.id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(model, "lead-light");
+        assert_eq!(provider, "copilot");
+        let detail: serde_json::Value = serde_json::from_str(&detail).unwrap();
+        assert_eq!(detail["decided_model"], "lead-light");
+        assert_eq!(detail["decided_provider"], "copilot");
+        assert!(
+            detail.get("via").is_none(),
+            "the lead's own line, not the role"
+        );
         assert!(
             d.result
                 .body

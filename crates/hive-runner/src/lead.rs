@@ -66,6 +66,11 @@ pub(crate) struct OwnerQuestion {
 /// owner is away. Mirrors the hub's `OWNER_ASK_KINDS`.
 pub(crate) const OWNER_ASK_DECIDE_KINDS: &[&str] = &["finding", "handoff", "suggestion"];
 
+/// The yes/no rubric for a routine ask addressed to the owner: the lead's
+/// brief gives it while the owner is away, and the decide role (ADR-072,
+/// `crate::decide`) answers by it.
+pub(crate) const ROUTINE_ASK_RUBRIC: &str = "A finding whose advisory names no fixed version is a no (keep watching) unless the package can be dropped or replaced inside the project's checks. A handoff or suggestion that is Tier 0 or 1 work inside the constitution and the accepted decisions is a yes; one that is stale, already done, or needs the owner's knowledge is a no with the reason. Major dependency upgrades are not listed: the `dependencies.major_updates` setting decides those, never you.";
+
 static ASK_MEANING_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r"(?m)^[ \t]*\**(Yes|No)\**:[ \t]*(.+?)[ \t]*$").expect("ask meaning regex")
 });
@@ -417,7 +422,7 @@ pub(crate) fn write_lead_owner_questions_section(
         if asks > 0 {
             let _ = write!(
                 b,
-                "A finding, handoff or suggestion marked \"for the owner\" above is your call while the owner is away: end the report with one `DECIDE: <post-id> yes|no <reason>` line for each. Yes queues the work the post's Yes line names as a job recorded as your decision; no closes it with your reason - read the full post first (`hive show POST-ID`). A finding whose advisory names no fixed version is a no (keep watching) unless the package can be dropped or replaced inside the project's checks. A handoff or suggestion that is Tier 0 or 1 work inside the constitution and the accepted decisions is a yes; one that is stale, already done, or needs the owner's knowledge is a no with the reason. Major dependency upgrades are not listed: the `dependencies.major_updates` setting decides those, never you. Leave none for the owner.\n\n"
+                "A finding, handoff or suggestion marked \"for the owner\" above is your call while the owner is away: end the report with one `DECIDE: <post-id> yes|no <reason>` line for each. Yes queues the work the post's Yes line names as a job recorded as your decision; no closes it with your reason - read the full post first (`hive show POST-ID`). {ROUTINE_ASK_RUBRIC} Leave none for the owner.\n\n"
             );
         }
     } else {

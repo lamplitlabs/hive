@@ -1303,18 +1303,44 @@ fn compute_auto_approve_under_caps_else_proposal() {
         ),
         ("approved", "human", "go ahead")
     );
-    let no = deny(&s, &r2.id, "not now", "human").unwrap();
+    s.set_setting("human", "light_model", "lead-light").unwrap();
+    let no = deny(&s, &r2.id, "not now", "demo-lead").unwrap();
     assert_eq!(no.status, "denied");
-    let (answer, result): (String, String) = s
+    let (answer, result, model, provider): (String, String, String, String) = s
         .conn()
         .unwrap()
         .query_row(
-            "SELECT answer, result_post FROM decisions WHERE post_id = ?",
+            "SELECT answer, result_post, decided_model, decided_provider FROM decisions WHERE post_id = ?",
             [&r1.proposal_post],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .unwrap();
     assert_eq!(answer, "yes");
+    // The human's compute decision names no model or provider; an agent's
+    // names its model and the hub's provider, on the row and the event
+    // (ADR-072).
+    assert_eq!((model.as_str(), provider.as_str()), ("", ""));
+    let (model, provider): (String, String) = s
+        .conn()
+        .unwrap()
+        .query_row(
+            "SELECT decided_model, decided_provider FROM decisions WHERE post_id = ?",
+            [&r2.proposal_post],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert!(!model.is_empty(), "the agent's model or the light model");
+    assert_eq!(provider, s.setting("provider", ""));
+    let ev = events(&s, "decide");
+    let denied: serde_json::Value = serde_json::from_str(
+        &ev.iter()
+            .find(|e| e.subject == r2.proposal_post)
+            .map(|e| e.detail.clone())
+            .unwrap_or_default(),
+    )
+    .unwrap_or_default();
+    assert_eq!(denied["decided_model"], model.as_str(), "{ev:?}");
+    assert_eq!(denied["decided_provider"], provider.as_str());
     assert!(!result.is_empty());
     let (resolution, rsum): (String, String) = s
         .conn()
