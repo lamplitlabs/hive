@@ -61,8 +61,8 @@ pub(crate) fn fleet_waits_sql() -> String {
 }
 
 /// One pass: for every project with an owner-driven work job queued and
-/// no lane open to it - its work lanes full, or its per-project share
-/// slots - asks the youngest fleet run in the way to hold. Returns one log
+/// no lane open to it - its work lanes full, or every slot of the fleet
+/// taken - asks the youngest fleet run in the way to hold. Returns one log
 /// line per run asked; a run already asked, or past its harness, is not
 /// asked twice and makes no line. `_fits`, the daemon's restart window, is
 /// no longer consulted: owner-driven work fits every window, so a run in
@@ -136,14 +136,34 @@ pub(crate) fn yield_lanes_if_admitted(
     if waiting.is_empty() {
         return pass;
     }
-    let limit = crate::jobs::parallel_per_project(s).max(1);
+    // The owner's work passes its project's share (`lease_job`, TASK-136),
+    // so the share puts no run in its way; a full fleet does: every slot
+    // taken, a fleet run of the owner's project gives its slot up.
+    let taken = crate::util::must_one(
+        &conn,
+        &format!(
+            "SELECT COUNT(*) AS n FROM jobs k JOIN projects kp ON kp.slug = k.project WHERE kp.status = 'active' AND {}",
+            crate::jobs::OCCUPIED_JOB_SQL
+        ),
+        &[],
+    )
+    .int("n");
+    let fleet_full = taken >= crate::capacity::fleet(s).total.max(1);
     let mut seen = std::collections::BTreeSet::new();
     for owner in waiting {
         let slug = owner.str("project");
         if !seen.insert(slug.clone()) {
             continue;
         }
-        let lanes = crate::jobs::project_lanes(s, &slug).lanes.max(1);
+        // The lanes stand in the owner's way only where they are narrowed
+        // (its checks take turns and fewer fit the commit cap than the
+        // share) or where its own work is at its bound (owner_work_bound).
+        // The plain share does not: the owner's job leases past it, and a
+        // fleet run asked to hold at a share of one gave up a lane the
+        // owner's task did not need.
+        let lanes = crate::jobs::project_lanes(s, &slug);
+        let narrowed = (lanes.lanes < lanes.base).then_some(lanes.lanes.max(1));
+        let bound = crate::jobs::owner_work_bound(s);
         let occupied = must_rows(
             &conn,
             &format!(
@@ -154,9 +174,11 @@ pub(crate) fn yield_lanes_if_admitted(
         );
         let is_work = |k: &Row| crate::jobs::WORK_KINDS.contains(&k.str("kind").as_str());
         let work_held = occupied.iter().filter(|k| is_work(k)).count() as i32;
-        let in_the_way: Vec<Row> = if work_held >= lanes {
+        let lanes_held =
+            narrowed.is_some_and(|n| work_held >= n) || bound.is_some_and(|b| work_held >= b);
+        let in_the_way: Vec<Row> = if lanes_held {
             occupied.into_iter().filter(|k| is_work(k)).collect()
-        } else if occupied.len() as i32 >= limit {
+        } else if fleet_full {
             occupied
         } else {
             continue;
@@ -416,6 +438,37 @@ mod tests {
     }
 
     #[test]
+    fn no_fleet_run_is_asked_to_hold_at_the_plain_share_while_slots_are_free() {
+        // Review of PR 276: the owner's work leases past its project's
+        // share, so a share of one is no lane in its way. A fleet run of
+        // the owner's project was still asked to hold the tick the owner's
+        // task was queued, although slots were free and the task leased
+        // anyway.
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        s.set_setting(hive_store::HUMAN_AGENT, "capacity", "4")
+            .unwrap();
+        assert_eq!(crate::jobs::parallel_per_project(&s), 1);
+        for name in ["aurora", "borealis"] {
+            join(&s, name);
+        }
+        let fleet = queue(&s, "improve", "suggestion:abc");
+        assert_eq!(lease(&s, "aurora", Vec::new()).str("id"), fleet);
+        let _run = running(&s, &fleet, "aurora", "2026-09-01T01:00:00Z");
+        let task = queue(&s, "task", "task:TASK-001");
+        let pass = yield_lanes_if_admitted(
+            &s,
+            crate::test_helpers::TEST_NOW,
+            "daemon",
+            &OwnerAdmission::default(),
+        );
+        assert!(pass.asked.is_empty(), "{pass:?}");
+        assert!(!hold_requested(&s, &fleet));
+        assert_eq!(lease(&s, "borealis", Vec::new()).str("id"), task);
+    }
+
+    #[test]
     fn the_owners_queued_work_holds_the_youngest_fleet_run_in_its_lane_once() {
         let _serial = crate::test_helpers::serial();
         let s = crate::test_helpers::new_store();
@@ -560,6 +613,9 @@ mod tests {
         let s = crate::test_helpers::new_store();
         crate::test_helpers::new_bare_repo(&s);
         crate::capacity::pin_per_project(&s, 2);
+        // Two slots in the fleet: a hold is asked only once both are taken.
+        s.set_setting(hive_store::HUMAN_AGENT, "capacity", "2")
+            .unwrap();
         for name in ["aurora", "borealis", "cinder"] {
             join(&s, name);
         }
@@ -572,7 +628,7 @@ mod tests {
         assert!(!hold_requested(&s, &fleet));
         assert_eq!(lease(&s, "borealis", Vec::new()).str("id"), task);
         running(&s, &task, "borealis", "2026-09-01T01:05:00Z");
-        // Both lanes held, one by the owner's own work: a second task asks
+        // Both slots held, one by the owner's own work: a second task asks
         // the fleet's run to hold - never the owner's, though it is younger.
         let second = queue(&s, "task", "task:TASK-002");
         let lines = yield_lanes_to_owner(&s, crate::test_helpers::TEST_NOW, "daemon", &[]);
@@ -594,11 +650,15 @@ mod tests {
         let s = crate::test_helpers::new_store();
         crate::test_helpers::new_bare_repo(&s);
         crate::capacity::pin_per_project(&s, 2);
+        s.set_setting(hive_store::HUMAN_AGENT, "capacity", "2")
+            .unwrap();
         for name in ["aurora", "borealis", "cinder"] {
             join(&s, name);
         }
         // Two slots, both held by the fleet: one improve, one research. The
-        // owner's task has a work lane but no slot.
+        // owner's task has a work lane but no slot: the daemon leases nothing
+        // while every slot is taken (lease_job itself no longer bounds the
+        // owner's work by the share, TASK-136).
         let fleet = queue(&s, "improve", "suggestion:abc");
         let research = queue(&s, "reflect", "research:proj:1");
         assert_eq!(lease(&s, "aurora", Vec::new()).str("id"), fleet);
@@ -606,7 +666,6 @@ mod tests {
         assert_eq!(lease(&s, "borealis", Vec::new()).str("id"), research);
         running(&s, &research, "borealis", "2026-09-01T01:10:00Z");
         let task = queue(&s, "task", "task:TASK-001");
-        assert!(lease(&s, "cinder", Vec::new()).0.is_empty());
         let lines = yield_lanes_to_owner(&s, crate::test_helpers::TEST_NOW, "daemon", &[]);
         assert_eq!(lines.len(), 1, "{lines:?}");
         // The youngest fleet run in the way is the research run.
@@ -659,9 +718,8 @@ mod tests {
         assert_eq!(lease_as(&role.agent).str("id"), sitting);
         let run = running(&s, &sitting, &role.agent, "2026-11-03T12:27:00Z");
         let task = queue(&s, "task", "task:TASK-055");
-        // The one slot is the sitting's: the task waits, the sitting is
-        // asked to hold.
-        assert!(lease_as("aurora").0.is_empty());
+        // The one slot (`capacity` 1) is the sitting's: the task waits for
+        // it, the sitting is asked to hold.
         let lines = yield_lanes_to_owner(&s, crate::test_helpers::TEST_NOW, "daemon", &[]);
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(hold_requested(&s, &sitting));
