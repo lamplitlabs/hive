@@ -799,9 +799,14 @@ impl BoardData {
                 // A later answer in the thread settles a question; a
                 // finding on a running thread (one security thread holds
                 // many) only its own answer or the owner's decision.
+                // The loop's flat-fixture pause is the owner's like its
+                // stop: an agent's answer does not resume the loop
+                // (hive-evolve flat_gate), so it does not fold the row away.
+                let flat = kind == "question" && summary == hive_store::EVOLUTION_FLAT_SUMMARY;
                 if decided.contains(&id)
-                    || answered.contains(&id)
-                    || (kind == "question" && later_hub_answer_date(thread_posts, i))
+                    || (!flat && answered.contains(&id))
+                    || (!flat && kind == "question" && later_hub_answer_date(thread_posts, i))
+                    || (flat && flat_pause_reviewed(thread_posts, i))
                 {
                     continue;
                 }
@@ -857,11 +862,9 @@ impl BoardData {
                 // a `Recommended:` line gets the watcher's own answers: it
                 // is the owner's and is never handed to the lead for lacking
                 // them (PR #278 review).
-                let options = if major {
-                    hive_board::ask_options(&hive_board::with_security_major_answers(body))
-                } else {
-                    hive_board::ask_options(body)
-                };
+                let options = hive_board::ask_options(&hive_board::with_default_owner_answers(
+                    &kind, &summary, body, major,
+                ));
                 let decider = match question_decider(&hard_stop, major, major_updates_auto) {
                     "owner" if !stop && !options.ready() => "lead",
                     who => who,
@@ -1406,6 +1409,24 @@ pub(crate) fn later_hub_kind(posts: &[&PostRow], index: usize, kinds: &[&str]) -
     posts[index + 1..]
         .iter()
         .any(|post| want.contains(str_key(post, "kind").as_str()))
+}
+
+/// Whether an answer that resumes the loop's flat-fixture pause follows the
+/// question at `index`: the owner's, or the loop's own heal or self-review
+/// (the same rule as hive-evolve flat_gate's review).
+fn flat_pause_reviewed(posts: &[&PostRow], index: usize) -> bool {
+    let date = str_key(posts[index], "date");
+    let id = str_key(posts[index], "id");
+    posts[index + 1..].iter().any(|post| {
+        let agent = str_key(post, "agent");
+        let summary = str_key(post, "summary");
+        str_key(post, "kind") == "answer"
+            && (str_key(post, "date") > date || str_key(post, "on_post") == id)
+            && (hive_store::human_actor(&agent)
+                || summary.starts_with("Evolution healed:")
+                || summary.starts_with("Evolution resumed:")
+                || summary.starts_with("Reviewed by the loop:"))
+    })
 }
 
 pub(crate) fn later_hub_answer_date(posts: &[&PostRow], index: usize) -> bool {

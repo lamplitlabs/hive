@@ -192,7 +192,7 @@ export function hardStopOf(r: Pick<ForYouRow, "section" | "title" | "text" | "ha
   if (r.hardStop) {
     const why = r.hardStop.toLowerCase();
     if (/money|spend|budget|compute/.test(why)) return "money";
-    if (/destructive|irreversible|undone/.test(why)) return "destructive";
+    if (/destructive|irreversible|undone|delet/.test(why)) return "destructive";
     if (/credential/.test(why)) return "credentials";
     if (/publication/.test(why)) return "publication";
     return "owner";

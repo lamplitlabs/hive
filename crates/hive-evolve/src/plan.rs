@@ -1862,7 +1862,7 @@ mod tests {
                 area: "evolution".into(),
                 thread: "loop-gate".into(),
                 on: question.clone(),
-                agent: "tester".into(),
+                agent: hive_store::HUMAN_AGENT.into(),
                 summary: "Reviewed: run 3 more cycles".into(),
                 date: stamp(1),
                 ..Default::default()

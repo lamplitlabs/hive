@@ -1027,11 +1027,12 @@ pub fn decide_option(
         .ok_or_else(|| refuse(2, format!("No post {}", py_repr(post_id))))?;
     // An older major-upgrade finding names no answers; the hub shows it
     // with the watcher's own, so a pick reads the same ones.
-    let body = if crate::owner_asks::is_security_major_finding(&*s.conn()?, post_id) {
-        crate::owner_asks::with_security_major_answers(&target.body)
-    } else {
-        target.body.clone()
-    };
+    let body = crate::owner_asks::with_default_owner_answers(
+        &target.kind,
+        &target.summary,
+        &target.body,
+        crate::owner_asks::is_security_major_finding(&*s.conn()?, post_id),
+    );
     let options = crate::ask_options::ask_options(&body);
     let Some(picked) = options.find(option).cloned() else {
         let names = options
@@ -1243,7 +1244,7 @@ fn decision_decider(
     if is_stop_question(target) {
         return Err(refuse(
             2,
-            "a stop question from the evolution loop is the owner's alone (ADR-043)",
+            "a stop or pause question from the evolution loop is the owner's alone (ADR-043)",
         ));
     }
     let what = tier2_proposal(&target.summary, &target.body);
@@ -1316,8 +1317,13 @@ fn decision_marker_re() -> &'static regex::Regex {
     })
 }
 
+/// The improvement loop's stop, or its flat-fixture pause: the owner's
+/// alone, and the decision itself is what the loop reads, so it queues no
+/// job.
 fn is_stop_question(p: &crate::posts::Post) -> bool {
-    p.kind == "question" && p.summary == hive_store::EVOLUTION_STOP_SUMMARY
+    p.kind == "question"
+        && (p.summary == hive_store::EVOLUTION_STOP_SUMMARY
+            || p.summary == hive_store::EVOLUTION_FLAT_SUMMARY)
 }
 
 pub fn decision_job(
@@ -2788,7 +2794,7 @@ mod tests {
                 "looks fine",
                 &lead_name(&p.slug)
             )),
-            "a stop question from the evolution loop is the owner's alone (ADR-043)"
+            "a stop or pause question from the evolution loop is the owner's alone (ADR-043)"
         );
         let d = decide(
             &s,

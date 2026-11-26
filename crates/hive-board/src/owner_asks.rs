@@ -11,29 +11,52 @@
 use std::sync::LazyLock;
 
 /// Each hard stop with the words that put an ask there, lowercased.
-/// Matched on word boundaries against the ask's summary and body.
+/// Matched on word boundaries against the ask's summary and body once the
+/// path-like tokens are gone. The list is the net, not the rule: an ask
+/// names its hard stop on a `Hard stop: <class>` line ([`EXPLICIT`]), and
+/// the briefs tell agents to write one.
 static HARD_STOP_WORDS: LazyLock<Vec<(&'static str, regex::Regex)>> = LazyLock::new(|| {
     [
         (
             "money",
-            r"\b(spend money|spends money|(raise|increase|lift|the|a|monthly|spending|cloud|azure) budget|billing|billed|invoice\w*|payment\w*|pay for|purchas\w*|subscription\w*|credit card|costs? money|compute requests?|paid plan)\b|[$€£]\s?\d",
+            r"\b(spend money|spends money|(raise|increase|lift|the|a|monthly|spending|cloud|azure) budget|billing|billed|invoice\w*|payment\w*|pay for|purchas\w*|subscription\w*|credit card|costs? money|compute requests?|paid (plan|tier|account|seat|version|service)s?|buy|buys|buying|bought|rent|rents|rented|renting|rental|usd|eur|gbp|dollars?|euros?|per month|a month|monthly (fee|cost|price|bill)s?)\b|[$€£]\s?\d",
         ),
         (
             "a destructive or irreversible act",
-            r"\b(irreversibl\w*|destructive|force[- ]push\w*|rm -rf|drop (table|database)|wipe\w*|purg(e|es|ed|ing)|deallocat\w*|delete (the |a |this |that )?(repo|repository|database|account|project|bucket|resource group|vm|machine|history|backup)s?|data migrations?|rewrite (the )?history|cannot be undone|can't be undone)\b",
+            r"\b(irreversibl\w*|destructive|force[- ]push\w*|push (-f|--force)|rm -rf|drop (the |a |an |this |that )?(\w+ )?(tables?|databases?|columns?|schemas?)|wipe\w*|purg(e|es|ed|ing)|deallocat\w*|(delete|deletes|deleting|destroy|destroys|destroying) (the |a |an |this |that |these |those |all |every |old |stale |remote |unused |our |its )*([\w.-]+ )?(repo|repository|repositories|databases?|accounts?|projects?|buckets?|resource groups?|vms?|machines?|history|backups?|branch|branches|tags?|releases?|tables?|users?|volumes?|disks?|data)\b|push (origin )?--delete|data migrations?|rewrite (the )?history|cannot be undone|can't be undone)\b",
         ),
         (
             "credentials",
-            r"\b(credentials?|secrets?|passwords?|api[- ]keys?|(access|api|deploy|repository|repo|personal) tokens?|(the|a|your) token (that|to|which|for)|ssh keys?|signing keys?|private keys?)\b",
+            r"\b(credentials?|secrets?|passwords?|api[- ]keys?|(access|api|deploy|repository|repo|personal) tokens?|(the|a|your) token (that|to|which|for)|ssh keys?|signing keys?|private keys?|(github |personal access )?pats?|(rotate|rotates|rotating|revoke|revokes|revoking|regenerate|regenerating) (the |a |an |our |its |your )?(\w+ )?(tokens?|keys?|pats?|certificates?|certs?)|\w*_(api_key|secret|secret_key|access_key|password|auth_token|access_token|api_token)|(github|gh|npm|pypi|cargo|openai|anthropic|azure|aws|hf|huggingface)_token)\b",
         ),
         (
             "publication",
-            r"\b(publish\w*|publication|deploy\w*|go live|goes live|(to|in|into) production|public repo\w*|make (it |the \w+ )?public|app store|play store|release (v?\d|to )|tag v?\d)\b",
+            r"\b(publish\w*|publication|deploy\w*|go live|goes live|go public|(to|in|into|on) (production|prod)|ship (it |this |that )?to (users|customers)|public repo\w*|make (it|\w+ [\w-]+|\w+ [\w-]+ [\w-]+) public|app store|play store|(cut|ship|tag|publish) (the |a |our )?(v?\d+(\.\d+)*|new|next|first) release|release (v?\d|to )|tag v?\d|(send|sends|sending|sent) (an? |the |our |this |that )?(\w+ )?(e-?mails?|newsletters?|announcements?)|e-?mail (the|all|every|our) (users|customers|subscribers|list)|mailing list|press release|announce\w*)\b",
+        ),
+        (
+            "a Tier 2 decision",
+            r"\b(tier[- ]?2|owner[- ]only|project('s)? goal|hive goal set|(change|changes|set|reset|rewrite|replace|amend|edit|update) (the |this |our |its )?goal|(amend|amends|amending|change|changes|edit|edits|update|updates|rewrite|rewrites)\w* (to )?(the |its |our )?constitution|constitution(al)? (amendment|change)s?|relicens\w*|(change|changes|changing|switch|switches|switching|move|moves|moving) (the |our |its )?licen[cs]e|licen[cs]e (change|switch)\w*)\b",
         ),
     ]
     .into_iter()
     .map(|(why, re)| (why, regex::Regex::new(re).expect("hard stop regex")))
     .collect()
+});
+
+/// An explicit `Hard stop: <class>` line (or a summary that opens with
+/// one): always honoured, whatever the other words say.
+static EXPLICIT: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"(?im)^[ \t>*-]*(?:question:\s*)?hard[ -]stop:[ \t]*([^\n|]*)")
+        .expect("explicit hard stop regex")
+});
+
+/// Money written as an amount: `$26/month`, `40 USD`, `€5`. Tested on the
+/// text before the path-like tokens go, since `$26/month` is one of them.
+static AMOUNT: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(
+        r"(?i)[$€£]\s?\d|\b\d+([.,]\d+)?\s?(usd|eur|gbp|dollars?|euros?)\b|\b(usd|eur|gbp)\s?\d",
+    )
+    .expect("amount regex")
 });
 
 /// The line the runner opens a worker's `QUESTION:` post with. It says
@@ -52,6 +75,25 @@ pub fn hard_stop_ask(kind: &str, summary: &str, body: &str) -> String {
     if kind == "question" && summary == hive_store::EVOLUTION_STOP_SUMMARY {
         return "the evolution loop stopped (ADR-043)".into();
     }
+    if kind == "question" && summary == hive_store::EVOLUTION_FLAT_SUMMARY {
+        return "the evolution loop paused (flat fixtures)".into();
+    }
+    if let Some(c) = EXPLICIT.captures(&format!("{summary}\n{body}")) {
+        // The class is the line's first words, before any explanation.
+        let class = c[1]
+            .split([';', ',', '.', '(', '\u{2014}'])
+            .next()
+            .unwrap_or_default()
+            .split(" - ")
+            .next()
+            .unwrap_or_default()
+            .trim();
+        return if class.is_empty() {
+            "names a hard stop".into()
+        } else {
+            format!("names a hard stop: {}", class.to_lowercase())
+        };
+    }
     let what = crate::jobs::owner_only_proposal(summary, body);
     if !what.is_empty() {
         return what;
@@ -62,6 +104,9 @@ pub fn hard_stop_ask(kind: &str, summary: &str, body: &str) -> String {
     // A path names a file, not an act: `deploy/azure/main.bicep` or
     // `scripts/publish.sh` in a routine handoff is not a publication.
     let body = body.replace(WORKER_QUESTION_PREAMBLE, "");
+    if AMOUNT.is_match(&format!("{summary}\n{body}")) {
+        return "is about money".into();
+    }
     let text = PATH_TOKEN
         .replace_all(&format!("{summary}\n{body}").to_lowercase(), " ")
         .into_owned();
@@ -127,6 +172,26 @@ pub fn with_security_major_answers(body: &str) -> String {
     format!("{}\n\n{SECURITY_MAJOR_ANSWERS}", body.trim_end())
 }
 
+/// The answers of the improvement loop's flat-fixture pause
+/// (hive-evolve flat_gate): the owner's call, like the loop's stop.
+pub const FLAT_PAUSE_ANSWERS: &str = "Yes: Run more cycles - the loop plans again with the fixtures as they are and asks again after as many tied cycles\nNo: Keep it paused - the loop waits until a fixture whose score moves is enabled\nRecommended: No - more tied cycles cost worker runs and teach nothing until a fixture tells variants apart\n";
+
+/// `body` with the answers the owner picks from when the asker wrote
+/// none ready to pick: the watcher's for a major upgrade (`major`), the
+/// loop's for its flat-fixture pause. Any other body comes back as it is.
+pub fn with_default_owner_answers(kind: &str, summary: &str, body: &str, major: bool) -> String {
+    if major {
+        return with_security_major_answers(body);
+    }
+    if kind == "question"
+        && summary == hive_store::EVOLUTION_FLAT_SUMMARY
+        && !crate::ask_options::ask_options(body).ready()
+    {
+        return format!("{}\n\n{FLAT_PAUSE_ANSWERS}", body.trim_end());
+    }
+    body.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,6 +223,97 @@ mod tests {
         let own =
             "Dependabot #20.\n\nYes: Upgrade it\nNo: Leave it to me\nRecommended: No - not yet";
         assert_eq!(with_security_major_answers(own), own);
+    }
+
+    /// The classes the PR #278 review found the word list missed, one line
+    /// each, and the explicit `Hard stop:` line that is always honoured.
+    #[test]
+    fn the_hard_stop_net_catches_the_classes_and_the_explicit_line_wins() {
+        for (text, want) in [
+            ("Move to the $26/month plan?", "is about money"),
+            ("It costs 40 USD a month.", "is about money"),
+            ("Buy a domain for the site?", "is about money"),
+            ("Rent a GPU box for the evals?", "is about money"),
+            ("Switch to the paid tier of the API?", "is about money"),
+            ("Rotate the GitHub PAT?", "is about credentials"),
+            ("Put OPENAI_API_KEY in the recipe?", "is about credentials"),
+            ("Ship to prod tonight?", "is about publication"),
+            ("Make this repo public?", "is about publication"),
+            ("Cut the 1.0 release?", "is about publication"),
+            ("Send an e-mail to the beta users?", "is about publication"),
+            (
+                "Delete the old branches?",
+                "is about a destructive or irreversible act",
+            ),
+            (
+                "Run git push --force on main?",
+                "is about a destructive or irreversible act",
+            ),
+            (
+                "Drop the events table?",
+                "is about a destructive or irreversible act",
+            ),
+            (
+                "Delete the v0 tags and releases?",
+                "is about a destructive or irreversible act",
+            ),
+            ("Change the project goal?", "is about a Tier 2 decision"),
+            (
+                "Amend the constitution for the new loop?",
+                "is about a Tier 2 decision",
+            ),
+            (
+                "Tier 2: move the store to Postgres?",
+                "is about a Tier 2 decision",
+            ),
+            (
+                "Owner-only: rename the product?",
+                "is about a Tier 2 decision",
+            ),
+            (
+                "Switch the licence to Apache-2.0?",
+                "is about a Tier 2 decision",
+            ),
+        ] {
+            assert_eq!(hard_stop_ask("question", text, ""), want, "{text}");
+        }
+        // Routine words stay the lead's.
+        for text in [
+            "Delete the unused helper?",
+            "Fix the production build warning?",
+            "Raise the test timeout to 30 s?",
+            "Bump the patch release notes wording?",
+        ] {
+            assert_eq!(hard_stop_ask("question", text, ""), "", "{text}");
+        }
+        // The explicit line is the rule; the words are only the net.
+        assert_eq!(
+            hard_stop_ask(
+                "question",
+                "Go ahead with it?",
+                "Why: see the thread.\nHard stop: money\n"
+            ),
+            "names a hard stop: money"
+        );
+        assert_eq!(
+            hard_stop_ask("question", "Hard stop: credentials - the deploy key", ""),
+            "names a hard stop: credentials"
+        );
+        // The loop's flat-fixture pause is the owner's like its stop.
+        assert_eq!(
+            hard_stop_ask("question", hive_store::EVOLUTION_FLAT_SUMMARY, ""),
+            "the evolution loop paused (flat fixtures)"
+        );
+        let answered = with_default_owner_answers(
+            "question",
+            hive_store::EVOLUTION_FLAT_SUMMARY,
+            "paused",
+            false,
+        );
+        assert!(
+            crate::ask_options::ask_options(&answered).ready(),
+            "{answered}"
+        );
     }
 
     #[test]
