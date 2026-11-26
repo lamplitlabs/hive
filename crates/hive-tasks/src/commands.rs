@@ -1635,6 +1635,10 @@ pub fn run_compute(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()>
             if c.json {
                 return hive_cli::write_json(&mut c.out, &RequestOut { request: &r });
             }
+            let landing = machine_landing_line(store(c)?)?;
+            if !landing.is_empty() {
+                printf(c, format_args!("{landing}\n"))?;
+            }
             if r.status == "approved" {
                 printf(
                     c,

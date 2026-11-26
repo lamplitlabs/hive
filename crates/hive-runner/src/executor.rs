@@ -548,6 +548,71 @@ pub(crate) fn add_executor(
     Ok(executor_row(s, &name))
 }
 
+/// The event a run writes against its machine (subject: the executor name;
+/// detail: `job`, `run`, `clone`) when the run's commits could not be fetched
+/// from it, neither by `git fetch ssh://` nor as a bundle, and the clone was
+/// kept there (TASK-133).
+pub(crate) const FETCH_FAILED_EVENT: &str = "executor.fetch-failed";
+/// The event that says a fetch from the machine worked again after a
+/// [`FETCH_FAILED_EVENT`].
+pub(crate) const FETCH_OK_EVENT: &str = "executor.fetch-ok";
+
+/// Whether the brain has seen a fetch from `name` fail and nothing since
+/// says it is fixed: a later fetch from it that worked
+/// ([`FETCH_OK_EVENT`]), the owner activating it, or a re-pairing that
+/// refreshed its hand. Such a machine takes no run that changes code - its
+/// commits could not come back (TASK-133; 34 runs on rented machines failed
+/// that way between 2026-11-01 and 2026-11-26).
+pub(crate) fn fetch_broken(s: &hive_store::Store, name: &str) -> bool {
+    if name.is_empty() || name == LOCAL_EXECUTOR {
+        return false;
+    }
+    let Ok(conn) = s.conn() else {
+        return false;
+    };
+    let last = must_one(
+        &conn,
+        "SELECT action FROM events WHERE subject = ? AND action IN (?, ?, 'executor.active', 'executor.update') ORDER BY seq DESC LIMIT 1",
+        &[&name, &FETCH_FAILED_EVENT, &FETCH_OK_EVENT],
+    );
+    last.str("action") == FETCH_FAILED_EVENT
+}
+
+/// Writes down that a fetch from `name` worked, when it was marked broken.
+pub(crate) fn note_fetch_ok(s: &hive_store::Store, name: &str, now: &str, job: &str) {
+    if !fetch_broken(s, name) {
+        return;
+    }
+    if let Ok(conn) = s.conn() {
+        event_at(
+            &conn,
+            now,
+            "runner",
+            FETCH_OK_EVENT,
+            name,
+            json!({"job": job}),
+        );
+    }
+}
+
+/// The jobs whose clones are kept on `name` because their commits could not
+/// be fetched, and whose job has not landed since: the probe's sweep and
+/// its stale-key check leave them be.
+pub(crate) fn kept_clones(s: &hive_store::Store, name: &str) -> BTreeSet<String> {
+    let Ok(conn) = s.conn() else {
+        return BTreeSet::new();
+    };
+    must_rows(
+        &conn,
+        "SELECT DISTINCT json_extract(e.detail, '$.job') AS job FROM events e WHERE e.action = ? AND e.subject = ? AND json_valid(e.detail) AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id = json_extract(e.detail, '$.job') AND j.status = 'done')",
+        &[&FETCH_FAILED_EVENT, &name],
+    )
+    .iter()
+    .map(|r| r.str("job"))
+    .filter(|j| !j.is_empty())
+    .collect()
+}
+
 #[allow(dead_code)]
 pub(crate) fn executor_running(s: &hive_store::Store, name: &str, now: &str) -> i32 {
     let horizon = plus_minutes(now, -f64::from(2 * setting_int(s, "minutes_per_job") + 15));
@@ -2007,8 +2072,14 @@ pub(crate) fn probe_executor(
                     .cloned()
                     .unwrap_or_else(|| "-".to_string());
                 let conn = s.conn().unwrap();
+                let kept = kept_clones(s, name);
                 for job_id in keys.split(',') {
                     if job_id.is_empty() || job_id == "-" || !JOB_DIR_RE.is_match(job_id) {
+                        continue;
+                    }
+                    // A kept clone (its commits not fetched yet) keeps its
+                    // job directory, the run key with it.
+                    if kept.contains(job_id) {
                         continue;
                     }
                     let live = must_one(
@@ -2106,8 +2177,14 @@ pub(crate) fn sweep_executor_jobs(
 ) -> Vec<String> {
     let mut swept = Vec::new();
     let conn = s.conn().unwrap();
+    // A clone whose commits were never fetched is the run's only copy of
+    // its work: it stays until it is fetched or the machine is released.
+    let kept = kept_clones(s, &r.str("name"));
     for job_id in jobs.split(',') {
         if job_id.is_empty() || job_id == "-" || !JOB_DIR_RE.is_match(job_id) {
+            continue;
+        }
+        if kept.contains(job_id) {
             continue;
         }
         let live = must_one(
