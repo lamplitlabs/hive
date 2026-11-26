@@ -24,7 +24,8 @@ export interface DeliveryInput {
 
 // A line is text parts with an optional link; the component renders them.
 // `canMerge` offers the Merge button: the reviewer left the pull request to
-// the owner, or its review failed and someone has to decide.
+// the owner, its review failed and someone has to decide, or the reviewer's
+// approved merge waits and the owner may make it now.
 export interface DeliveryView {
   before: string;
   link: { href: string; text: string } | null;
@@ -34,7 +35,7 @@ export interface DeliveryView {
 }
 
 // The states whose Merge the hub accepts, for a hub older than `can_merge`.
-const MERGEABLE = new Set(["needs_owner", "review_failed"]);
+const MERGEABLE = new Set(["needs_owner", "review_failed", "merge_waiting"]);
 
 function prLink(d: DeliveryInput): { href: string; text: string } | null {
   const text = d.number ? "PR #" + d.number : "the pull request";
@@ -82,7 +83,7 @@ export function deliveryView(d: DeliveryInput | null | undefined): DeliveryView 
     case "merge_asked":
       return prLine(d, "Merging ", "\u2026", "neutral");
     case "merge_waiting":
-      return prLine(d, "Approved: ", d.note ? " \u2014 " + sentence(d.note.replace(/^approved;\s*/i, "")) : " merges soon.", "neutral");
+      return prLine(d, "Approved: ", d.note ? " \u2014 " + sentence(d.note.replace(/^approved;\s*/i, "")) : " merges soon.", "neutral", canMerge);
     case "changes_requested": {
       const tail = (d.note ? ": " + sentence(d.note) : ".") + (d.follow_up ? " Follow-up " + d.follow_up + " is queued." : "");
       return prLine(d, "Changes requested on ", tail, "neutral");
