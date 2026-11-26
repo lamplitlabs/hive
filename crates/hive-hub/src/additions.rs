@@ -272,6 +272,9 @@ impl Handler {
             self.addition_task_activity(w, r, &parts[1]);
             return;
         }
+        if self.addition_task_lifecycle_route(w, r, &parts) {
+            return;
+        }
         let merge = parts.len() == 4 && parts[2] == "pr" && parts[3] == "merge";
         if (parts.len() > 3 && !merge)
             || (parts.len() == 3

@@ -22,6 +22,7 @@ export type CanvasKind =
   | "links"
   | "steps"
   | "brief"
+  | "lifecycle"
   | "evidence";
 
 export interface CanvasTab {
@@ -60,6 +61,7 @@ export const KIND_LABEL: Record<CanvasKind, string> = {
   links: "Links",
   steps: "Steps",
   brief: "Brief",
+  lifecycle: "Lifecycle",
   evidence: "Evidence",
 };
 
