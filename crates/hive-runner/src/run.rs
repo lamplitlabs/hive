@@ -1282,12 +1282,17 @@ pub(crate) fn run_job(
             }
         ));
     }
+    // The model this run is started with (`--model`), empty for the
+    // provider's default or a custom worker command: the lead's `DECIDE:`
+    // lines record it, not the setting (ADR-072 part 5).
+    let mut ran_model = String::new();
     if agent != crate::util::HUMAN_AGENT {
         let mut model =
             crate::exec::worker_model(s, &job.str("kind"), &model_class, agent_spec.as_ref());
         if !o.worker_cmd.is_empty() {
             model.clear();
         }
+        ran_model = model.clone();
         let a = crate::board::agent_row(&c, agent.to_string());
         let kind = if is_nil(&a) {
             "worker".to_string()
@@ -2878,7 +2883,8 @@ pub(crate) fn run_job(
                 parsed.votes.len()
             ));
         }
-        let decided = apply_result_decisions(s, job.clone(), parsed.clone(), &mut log);
+        let decided =
+            apply_result_decisions_ran(s, job.clone(), parsed.clone(), &mut log, &ran_model);
         if !parsed.decisions.is_empty()
             && job.str("kind") == crate::lead::LEAD_KIND
             && !job
@@ -3362,11 +3368,25 @@ pub(crate) fn err_message(err: &anyhow::Error) -> String {
     err.to_string()
 }
 
+#[cfg(test)]
 pub(crate) fn apply_result_decisions(
     s: &hive_store::Store,
     job: Row,
     rep: Report,
     log: &mut RunLog,
+) -> i32 {
+    apply_result_decisions_ran(s, job, rep, log, &s.run_model(crate::lead::LEAD_KIND))
+}
+
+/// The lead's `DECIDE:` lines of a finished run, recorded under the lead's
+/// name with `ran_model`, the model the run was started with, and the hub's
+/// provider.
+pub(crate) fn apply_result_decisions_ran(
+    s: &hive_store::Store,
+    job: Row,
+    rep: Report,
+    log: &mut RunLog,
+    ran_model: &str,
 ) -> i32 {
     if rep.decisions.is_empty()
         || is_nil(&job)
@@ -3489,7 +3509,11 @@ pub(crate) fn apply_result_decisions(
                 continue;
             }
         }
-        if let Err(e) = hive_board::decide(s, &d.post_id, &d.answer, &d.reason, &lead) {
+        let by = hive_board::DecidedBy {
+            model: ran_model.to_string(),
+            ..hive_board::DecidedBy::lead_run(s)
+        };
+        if let Err(e) = hive_board::decide_with(s, &d.post_id, &d.answer, &d.reason, &lead, by) {
             log.add(format!(
                 "decision skipped: {}: {}",
                 d.post_id,

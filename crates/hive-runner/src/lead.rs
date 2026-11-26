@@ -1357,7 +1357,13 @@ pub(crate) fn tend_lead(
     if away.is_some() {
         // While the owner is away, the findings, handoffs and suggestions
         // addressed to the owner are the lead's to decide too.
-        owner_questions.extend(owner_addressed_asks(s, slug.clone()));
+        // Less the ones the decide role (ADR-072) still holds: while it is
+        // on and not in an outage, an ask costs one small call, not also a
+        // lead run. What it passes, fails on or may not answer comes back
+        // here on a later pass.
+        let asks = owner_addressed_asks(s, slug.clone());
+        let held = crate::decide::held_by_role(s, &slug, &asks, &now);
+        owner_questions.extend(asks.into_iter().filter(|q| !held.contains(&q.id)));
     }
     let mut away_question_count = 0;
     if away.is_some() {
