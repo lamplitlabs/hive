@@ -106,9 +106,12 @@ report shows the change, or an hour after the ask for the owner to merge
 ([Before/after reports](reports.md)). The first push of a branch is a plain `--force` (the branch is Hive's
 own); a push onto an open pull request is `--force-with-lease` against the
 commit the last push left there, so a branch someone moved on the forge is
-not overwritten. A pass opens at most ten pull requests per project
-(GitHub's secondary rate limit is on creations; the rest wait a tick), and
-reads every open one.
+not overwritten. After a hold for a failed push or forge call, and until
+the work is delivered, a try reads the branch on the upstream first and
+forces nothing ([When delivery fails](#when-delivery-fails)). A pass opens at most ten pull requests per project
+(GitHub's secondary rate limit is on creations; the rest wait a tick),
+tries at most three held deliveries again, the oldest hold first ([When
+delivery fails](#when-delivery-fails)), and reads every open one.
 
 The measured share: of the 260 landings on one machine in the seven days
 before this flow, 22 (8%) were task work and 238 were everything else -
@@ -474,7 +477,7 @@ them at `GET /api/v1/events?project=X&action=land.*`.
 | `land.evidence` | the pass after a merge read which files the pull request changed: the merge commit on the default branch against its first parent, or the pull request's base against its head when the history no longer holds that merge; the Code delivered report counts source changes from it | `project`, `number`, `merged_seq` (the `land.merged` it completes), `sha`, `code_delivery`, `work` |
 | `land.pr-closed` | the poll found it closed unmerged, or the pass closed an experiment's pull request | the same, without `merged_at`; when the pass closed it, `reason` (`superseded`: its change is on the default branch, in `superseded_by`; `stale`: no push for three days and it could not be brought up to date) and `head_sha` |
 | `land.pr-rebuilt` | a pull request stacked on one closed unmerged was rebuilt on the new base without the closed one's commits, force-pushed and retargeted | `project`, `kind`, `number`, `url`, `head`, `old_base`, `base` (the new one), `from` (the head before), `to` (the new head), `commits` (its own), `dropped` (`number` of the closed pull request, `commits` it took with it); the matching `land.pr` carries `rebuilt` true and `retargeted_from`. A rebuild that conflicts is a `land.pr-held` with `closed`, `base` and `files` instead |
-| `land.pr-held` | a branch could not be delivered this pass | `project`, `task`, `job` or `head` (with `conversation`, `experiment`, `archive` when they apply), `work` (the branch and commit it tried; a task's branches each with its commit, and the pull request they would stack on), `note` (why) |
+| `land.pr-held` | a branch could not be delivered this pass; written again each time a push or forge call that is tried again fails | `project`, `task`, `job` or `head` (with `conversation`, `experiment`, `archive` when they apply), `work` (the branch and commit it tried; a task's branches each with its commit, and the pull request they would stack on), `note` (why); `tries` on a hold for a failure on the way to the forge (how many such holds this work has had in a row, which sets the wait before the next try); `pushed` on a task's hold whose try pushed the branch before a later step failed (the commit it pushed, by which the next try knows the branch on the upstream as Hive's own) |
 | `land.merge-broken` | a task's job branches merged onto its base without a conflict, but the merged tree does not compile (`landing.merge_check`), and a job was queued to make them compile together | `project`, `task`, `tip` (the merged commit that failed), `base`, `jobs`, `branches` (the job branches merged this pass), `errors` (cargo's error lines, at most 20), `follow_up` (the fix job) |
 | `land.rebase` | a task's job branch conflicted with the task's base and a job was queued to bring it over | `project`, `task`, `job`, `branch`, `sha`, `files` (the paths left unmerged), `follow_up` (the rebase job), `base` (the default branch, or the branch of the pull request the task's stacks on) |
 | `land.fast-forward` | the local default branch moved to the upstream, or could not | `project`, `branch`, `upstream`, `behind`, `ok`; `from`, `to`, `how` (`checkout`, `ref`) when it moved; `why` when it could not; a diverged branch is recorded once for each pair of tips, with `why`, `from`, `to` and `ahead` |
@@ -509,25 +512,161 @@ each failure sets going:
          ↓                                              │ land.pr-held │
 ┌──────────────────┐ no ┌───────────────────┐ no, again │              │
 │ the merged tree  │ ─→ │ fix job           │ ────────→ │              │
-│ compiles?        │    │ land.merge-broken │           │              │
-└────────┬─────────┘    └───────────────────┘           │              │
-         │ yes, or not checked                          │              │
-         ↓                                              │              │
-┌──────────────────┐ no                                 │              │
-│ push and gh pr   │ ─────────────────────────────────→ │              │
-│ create succeed?  │                                    │              │
-└────────┬─────────┘                                    └──────────────┘
-         │ yes
+│ compiles?        │    │ land.merge-broken │           └──────────────┘
+└────────┬─────────┘    └───────────────────┘
+         │ yes, or not checked
          ↓
- pull request (land.pr)
+┌──────────────────┐ no                                 ┌──────────────┐
+│ push and gh pr   │ ─────────────────────────────────→ │ held, tried  │
+│ create succeed?  │ ←───────────────────────────────── │ again after  │
+└────────┬─────────┘         5 min, then longer         │ the wait     │
+         │ yes                                          │              │
+         ↓                                              │ land.pr-held │
+ pull request (land.pr)                                 └──────────────┘
 ```
 
 A branch the pass cannot deliver is held with `land.pr-held` and the reason in
-`note`, shown on the task's conversation and on the hub's row, and tried again
-only when the work changes (a new job of the task finishes, a branch of it
-appears or moves to a new commit) or when you propose the branch by hand with `hive land
---branch` - a hold is not retried blind every tick, because the reasons below
-do not clear by themselves:
+`note`, shown on the task's conversation and on the hub's row. How long the
+hold stands depends on what it is about:
+
+- **The work itself**: a conflict, a merged tree that does not compile, a
+  branch that is gone, a follow-up that is not built on its pull request, a
+  push the upstream answered and rejected, a pull request with nothing to
+  show. The hold stands until the work changes (a new job of the task
+  finishes, a branch of it appears or moves to a new commit) or you propose
+  the branch by hand with `hive land --branch`. It is not retried blind
+  every tick: these reasons do not clear by themselves.
+- **The way to the forge**: the push, a fetch, a `gh` call or the push
+  credential failed. No commit of the work repairs that; an account, a
+  remote or a network does. So the pass tries the same work again after a
+  wait, and the wait grows with the tries that failed in a row: 5 minutes
+  after the first hold, 15 after the second, 45 after the third, 135 after
+  the fourth, and 6 hours after every later one. These are the pauses of a
+  failed job's recovery ([Failed jobs and
+  recovery](recovery.md#failed-jobs-and-recovery)). A hold younger than its
+  wait is not tried. A try that fails writes a new hold, which carries the
+  count as `tries`; a hold without one counts as the first. So an outage of
+  minutes heals within minutes, and a fault that lasts is tried four times
+  a day, not every tick. The count is of one piece of work failing in a
+  row. A delivery that goes through ends it, and so does a change of the
+  work: a new commit is new work, tried at once and counted from one.
+  Before this such a hold stood like the others: three finished jobs stood
+  for a day after an account was repaired, and nine after a remote was.
+
+**A few tries again a pass, the oldest first.** Holds tend to stop standing
+together: the forge comes back for every held work at once, and a new pull
+request moves the top of the stack every held job would build on, which
+changes their hold keys all at once. On 26 November one new pull request
+released 38 holds of one project together, and each would have opened a
+pull request of its own. So a pass tries at most 3 held works again (a task,
+a job or a conversation branch whose newest delivery event is a hold and
+whose own branches have not moved since), those with the oldest holds first,
+and leaves the rest for the next pass. The log says `<slug>: N held
+deliveries wait for a later pass (3 are tried again a pass, the oldest hold
+first)`. Work never held, and work whose commits changed since its hold, is
+new work and is not bounded by this; the 10 pull requests a pass may open
+([above](#what-is-delivered-and-when)) still bound everything.
+
+**A job a newer one repeats is not tried again.** Two finished jobs repeat
+one piece of work when they come from the same source - a job and its retry,
+two sittings of one schedule, two answers to one suggestion; a security job's
+work is its manifest, whatever alerts it answered. A held job whose work a
+newer finished job with commits repeats (one still waiting, or one
+delivered already) is held for that instead of being tried again:
+`B is not tried again: job J finished later on the same work (SOURCE); run
+hive land --branch B to propose this one by hand`. That hold is about the
+work and stands until the work changes. A fix of a pull request (`pr-fix:`)
+and a job with no source repeat nothing. Of the 40 jobs ever held on
+azure-compliance, the project of 26 November, nine were security updates of two manifests (five
+of one, four of the other) and six were three items of lead sittings, two
+each; every one of them would have opened a pull request of its own.
+
+After such a hold, and until the work is delivered, no try forces the
+branch onto the upstream as the first push of a branch does. A try before
+it may have pushed the branch before the call that failed: `gh pr create`
+comes after the push, and its answer can be lost once the pull request is
+open. And somebody may have pushed onto the branch during the wait. So the
+try reads the branch on the upstream first, as it reads the head of an open
+pull request. The holds read for this are every hold of the work since its
+last `land.pr`, `land.merged` or `land.pr-closed`, however many: each
+refusal below is a hold of its own, and the stack's top moving writes a new
+one, so a window of the newest few (64 were read at first) would let the
+forge hold fall out of it and the next try push with a plain force over the
+commits those refusals said it would not push over. For a branch that is
+pushed as it is - a job's, a
+conversation's, an experiment's:
+
+- not there: the branch is pushed, and the push is refused should the
+  branch have appeared meanwhile;
+- there, with nothing the local branch has not: the push leases on what was
+  read, and changes nothing when the two are the same commit;
+- there, with commits the local branch has not: nothing is pushed. The hold
+  reads `B on origin is at SHA, which the branch here is not built on, and
+  a try after a failed one does not push over it: take those commits into
+  B, or delete B on origin and run hive land --branch B`. It is about the
+  work and stands until the work changes. A change that leaves those
+  commits out is held the same way; with them in the branch, it goes out on
+  top of them.
+
+A task's branch is built for its pull request, and what it holds does not
+say whose it is: a build stacked on a pull request that has since closed
+holds the task's commits and that one's too, and once a rebase job has
+replaced the task's branches it holds none of them. So for a task Hive goes
+by its own record. The hold of a try whose push went through, written
+because `gh` failed after it, names the commit that was pushed (`pushed`).
+The next try reads the branch on the upstream:
+
+- not there: the branch is built and pushed as for a first delivery, and
+  the push is refused should the branch have appeared meanwhile;
+- at the commit a try since pushed, or at the last push of the task's own
+  pull request once that is closed (it keeps its branch on the upstream,
+  and the task's next round has the same name for its own): the branch is
+  Hive's own. When nothing has changed - the same branches at the same
+  commits, the same pull request below, a base that has not moved - it is
+  left as it is and the pull request opens on it. Otherwise it is built
+  anew on the base as it is now, as a first delivery builds it, and
+  replaced, leasing on the commit that was read;
+- at any other commit: nothing is pushed. The hold reads `hive/task-T on
+  origin holds commits Hive did not put there (it is at SHA), and a try
+  after a failed one does not push over them: delete hive/task-T on origin
+  once nothing there is wanted; the task's pull request opens when its work
+  next changes`. It is about the work and stands until the work changes.
+
+A kept experiment is the experiment lane's to deliver, not the pass's
+([Evolve](self-improvement.md#evolve)). Its hold is written, counted and
+waited for in the same way. The lane tries again on its own schedule
+(`lane.retry_minutes`, or `lane.short_retry_minutes` after a failure it
+reads as transient), and a try made while the hold stands makes no call to
+the forge: it is told the branch `was delivered at SHA already`. So a forge
+that stays down is asked eight times in the lane's one day, however often
+the lane tries, and after that day the lane gives the experiment up as it
+did. Before this the first hold stood for good, every later try was told
+the same, and one failed push lost a kept experiment.
+
+The pass tells the two apart by how the note begins: `push of`, `fetch of`,
+`gh pr` (and `gh` not installed, or not naming the pull request it opened)
+and `push credential:` are the way to the forge (a follow-up's fetch reads
+`pull request #N: fetch of`), and a hold with any other note stands until
+the work changes. Two answers of the forge are about the work, so their
+notes begin otherwise:
+
+- a push that was turned down for what it is, is held as `origin/main
+  rejected the push of B to B: ...`: one git refused itself (`!
+  [rejected]`: a lease that no longer holds), and one the upstream refused
+  for a rule of the repository (`! [remote rejected]` with `hook declined`,
+  `push declined due to`, `refusing to allow` or `non-fast-forward` as its
+  reason). The reason is the text inside the status line's final
+  parentheses only: the line also names the branches, and a branch named
+  `fix/non-fast-forward` must not turn every passing trouble of its push
+  into a standing hold. The upstream reports its own passing trouble under
+  the same mark - a ref it could not lock, objects it could not store - and
+  any other reason stays a failed push, tried again after the wait;
+- `gh pr create` answering `No commits between` the two branches is held as
+  `nothing to open a pull request for: gh pr create failed: ...`.
+
+The same push or call would get the same answer four times a day for ever.
+
+The reasons, one by one:
 
 - **A task's branch does not merge onto the default branch**: the branch was
   cut before something else landed on the same lines, or two jobs of one task
@@ -560,14 +699,24 @@ do not clear by themselves:
   770cf7ea, 2026-11-10). A check that cannot run (cargo missing, a
   registry out of reach, past its 20 minutes) never holds the work; the
   delivery line says it was skipped.
-- **The push was refused**: a credential that cannot be resolved
-  ([Credentials](#credentials)), a branch protection, a network that is down.
-  The note carries git's words with secrets removed.
+- **The push could not be made**: a credential that cannot be resolved (the
+  note begins `push credential:`, [Credentials](#credentials)), a network
+  that is down, a forge that does not answer. The note carries git's words
+  with secrets removed. The push is tried again after the wait.
+- **The upstream rejected the push**: a branch protection or another rule of
+  the repository, a hook that declined it (a file that is too large, a
+  secret in it), a lease that no longer holds because somebody pushed to
+  the branch. The note begins with the upstream (`origin/main rejected the
+  push of ...`) and carries git's words. The hold stands until the work
+  changes. A rejection for the upstream's own trouble (it could not lock
+  the branch or store the objects) is a push that could not be made.
 - **`gh` could not open or read the pull request**: no account that can see
   the repository, a rate limit, GitHub down. The note names the account and
-  the command that failed. The work is held like any other: the pass does not
-  try it again until the work changes (a job of the task brings new commits,
-  or the project's newest open pull request changes).
+  the command that failed. The call is tried again after the wait. An
+  answer that there are no commits between the branches is about the work
+  (`nothing to open a pull request for: ...`), and that hold stands; the
+  same words in an answer that GitHub cannot find the head (`Head sha can't
+  be blank`) are not.
 - **The branch is gone**: a job whose branch no longer exists in the checkout
   is held once and forgets the branch, so it is not asked about again.
 - **A follow-up is not built on the pull request**: a `pr-fix` job's branch
