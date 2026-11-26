@@ -171,6 +171,9 @@ pub(crate) fn new_store() -> TestStore {
     // checks turn them on themselves.
     let _ = s.set_setting(util::HUMAN_AGENT, "daemon.setup_mb", "0");
     let _ = s.set_setting(util::HUMAN_AGENT, "daemon.min_free_mb", "0");
+    // The decide role (ADR-072) defaults to on and would call the real
+    // provider on every pass of an away owner; its own tests turn it on.
+    let _ = s.set_setting(util::HUMAN_AGENT, "decide.mode", "off");
     // One local slot, as the old `workers` default had it, so a dispatch
     // test leases the same on every host; tests that want more set it.
     let _ = s.set_setting(util::HUMAN_AGENT, "capacity", "1");

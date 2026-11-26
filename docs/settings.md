@@ -14,6 +14,8 @@ Each section below is one family: the settings that share the part of their name
 | `amend_quorum` | `40` | distinct sessions an amendment needs; may be raised by vote, lowered only by a human |
 | `capacity` | `auto` | how many runs this machine takes at once: auto (the default) works it out from the hardware - the smaller of the physical cores and one run per 3 GB of RAM - and backs off live under load or low memory; a number caps this machine at that many (0 keeps it idle while remote hands work); every paired machine sizes itself the same way and the fleet adds them up. To pause the fleet use hive stop |
 | `claim_hours` | `4` | hours a board claim stays active before it is treated as stale |
+| `decide_model` | empty | the model of the decide role (ADR-072): one call with no tools that answers yes, no or pass on a routine ask the lead may decide; empty means measure_model, then light_model |
+| `decide_provider` | empty | the model provider of the decide role, one of the provider choices; empty means provider, the hub's own. Only the decide role reads it: runs that change code and reviews stay on provider |
 | `expiry_days` | `14` | days a suggestion may wait for votes before it expires |
 | `jobs_per_day` | `2` | distinct jobs the fleet may start per UTC day on every executor together, a hard stop until midnight once reached; the owner's own tasks, answers and lead sittings run past it; 0 or none means no daily cap |
 | `light_model` | empty | the model of the light runs - lead, answer, ballot, reflect, onboard and clean jobs, the sealed held-out call and the login check; empty means worker_model |
@@ -142,6 +144,13 @@ Each section below is one family: the settings that share the part of their name
 | `daemon.transcript_keep_days` | `14` | days a harness session's step transcript is kept after the session ends - its harness_steps rows, its harness.step notification events and its HIVE_HOME/harness/\<session\>.json file - before the sweep removes them in small batches; the session row (counts, tokens, cost, submission) stays for good; 0 keeps every transcript |
 | `daemon.unfit_reprobe_minutes` | `60` | minutes before the daemon re-probes an executor/project held by an unfit mark while queued work waits; repeated failures double this wait up to 24h, and 0 turns the daemon re-probe off |
 | `daemon.vacuum_free_mb` | `256` | megabytes of free pages the store may hold before the sweep gives them back to the file system: a store in incremental auto-vacuum mode frees a slice each pass, one that is not is converted with one full VACUUM only while no run or harness session is in flight and the disk has room for a copy; 0 never vacuums |
+
+## decide
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `decide.mode` | `on` | the decide role (ADR-072): on - each daemon pass asks decide_model for a yes, no or pass on every open routine ask the lead may decide, and a yes or a no is decided under the lead's name; shadow - the answer is recorded as a decide.shadow event and the lead still decides; off - no call, the lead decides as before. A pass, an error, a late or unreadable answer leaves the ask to the lead |
+| `decide.timeout_seconds` | `30` | seconds the decide role waits for its answer before the ask is left to the lead (the request deadline) |
 
 ## dependencies
 

@@ -330,13 +330,32 @@ fn decide_compute(
                 &cur.proposal_post,
                 resolution,
             )?;
-            tx.execute("INSERT INTO decisions (post_id, project, answer, words, decided_at, decided_by, result_post) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                params![cur.proposal_post, cur.project, answer, words, now, actor, result_id])?;
+            // Which model and provider decided (ADR-072 part 5): an agent's
+            // answer names its own model and the hub's provider; the human's
+            // row stays empty.
+            let (model, provider) = if hive_store::human_actor(actor) {
+                (String::new(), String::new())
+            } else {
+                let own: String = tx
+                    .query_row("SELECT model FROM agents WHERE name = ?", [actor], |r| {
+                        r.get(0)
+                    })
+                    .optional()?
+                    .unwrap_or_default();
+                let model = if own.trim().is_empty() {
+                    s.light_model()
+                } else {
+                    own.trim().to_string()
+                };
+                (model, s.setting("provider", ""))
+            };
+            tx.execute("INSERT INTO decisions (post_id, project, answer, words, decided_at, decided_by, result_post, decided_model, decided_provider) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                params![cur.proposal_post, cur.project, answer, words, now, actor, result_id, model, provider])?;
             tx.event(
                 actor,
                 "decide",
                 &cur.proposal_post,
-                hive_store::Detail::json(json!({"answer": answer, "result": result_id}))?,
+                hive_store::Detail::json(json!({"answer": answer, "result": result_id, "decided_model": model, "decided_provider": provider}))?,
             )?;
         }
     }
