@@ -222,7 +222,7 @@ number (`7` or `#7`); `--json` gives the same as data.
 | `hive review show <n>` | one pull request from the forge: title and url, `<head> -> <base>  by <author>  <state>  +<added> -<deleted>`, `Kind: Hive task T` (or job, experiment, proposed; `not a Hive pull request` for one Hive did not open), either `May be merged by the reviewer when correct, safe, in scope and green.` (followed by `Read with extra care: …` for a large or mostly-deleting change) or `For the owner (do not merge):` with the reasons, the files with their counts, and the body |
 | `hive review diff <n>` | the diff against the base, from the forge |
 | `hive review checkout <n>` | inside a job clone: fetches the pull request's head onto `review/pr-<n>` from the project's local repository, or from the upstream's `refs/pull/<n>/head` when the local branch is not at the head GitHub has, checks it out and prints `review/pr-<n> at <sha> (<head>)`; refused in the project's own checkout |
-| `hive review merge <n> [--by owner]` | merges on the forge (`gh pr merge --merge --delete-branch`; the branch is kept while another open pull request is based on it) as the account that works for the repository and prints `Merged #<n> (<url>) as <by>`; refuses, whoever asks, a head that moved since the review was queued, a draft, a failing or pending check and a merge GitHub blocks (`mergeStateStatus` `DIRTY`, `BLOCKED`, `BEHIND`), with the reason and no `review.failed`; refuses when reasons exist unless `--by owner` (`--by` takes no other value), which is what the hub's **Merge** button comes to. `--by owner` is the answer to a hand-off, so it is accepted after `review.owner` and after `review.changes` as well as before any verdict; a merged pull request takes no second one. Records `review.merged`, or `review.failed` when `gh` could not merge |
+| `hive review merge <n> [--by owner]` | merges on the forge (`gh pr merge --merge --delete-branch`; the branch is kept while another open pull request is based on it) as the account that works for the repository and prints `Merged #<n> (<url>) as <by>`; refuses, whoever asks, a head that moved since the review was queued, a draft, a failing or pending check and a merge GitHub blocks (`mergeStateStatus` `DIRTY`, `BLOCKED`, `BEHIND`), with the reason and no `review.failed`; refuses when reasons exist unless `--by owner` (`--by` takes no other value), which is what the hub's **Merge** button comes to. `--by owner` is the answer to a hand-off, so it is accepted after `review.owner` and after `review.changes` as well as before any verdict; a merged pull request takes no second one. Records `review.merged`, or `review.failed` when `gh` could not merge; the reviewer's merge (not `--by owner`) that meets only running checks, or a 5xx, internal error, rate limit or dropped connection from GitHub (on the merge or on the read before it), keeps the verdict as `review.merge-wait` and the daemon merges it later ([When an approved merge waits](#when-an-approved-merge-waits)) |
 | `hive review changes <n> --note "…"` | asks for the changes on GitHub, queues the follow-up job and records `review.changes`; `--note` is required, since it becomes the follow-up's brief |
 | `hive review owner <n> --note "…"` | comments the findings on the pull request and hands it to you: `review.owner`, a question on the project's board, a message on the task; `--note` is required |
 
@@ -357,6 +357,63 @@ view` fails for every account) is not queued; the daemon log says `review
 all is the delivery's own `land.pr-held` ([When delivery
 fails](landing.md#when-delivery-fails)).
 
+## When an approved merge waits
+
+The reviewer's `hive review merge <n>` is a verdict, and a forge that cannot
+take it yet for a reason that passes does not undo it. Two cases keep the
+verdict and record `review.merge-wait` instead of `review.failed`; the
+command exits 0 with *Merge of #n waits: …* and the job finishes:
+
+- **A check still runs.** Nothing failed yet (`statusCheckRollup` has only
+  queued or running checks besides the green ones). Every pass reads the
+  pull request again; it is merged as soon as the checks pass.
+- **GitHub failed the merge for a passing reason.** `gh pr merge` - or the
+  `gh pr view` that reads the pull request before it - answered 5xx, an
+  internal error (*Something went wrong*), a rate limit (429, or a 403 that
+  says *rate limit*), *Base branch was modified*, lost its connection
+  (*error connecting*, *connection refused*, *connection reset*, `EOF`) or
+  did not finish in time. The merge is tried again on the recovery
+  back-off - 5, 15, 45 and 135 minutes after each failure, then every 6
+  hours - with the same gate as the first time.
+
+Neither queues another review job or asks you. Every retry reads the pull
+request again and judges it afresh: your rule first (`review.merge` set to
+`ask` while it waited, a guarded path, a missing report hands it to you, as
+at the verdict), then the forge's gate. A head that moved on the forge is
+never merged: `review.again` puts the pull request back at *open* and the
+new head is reviewed. A pull request merged or closed on GitHub meanwhile
+ends the wait when the landing poll records it. A failed read waits only
+when it passes; a 401, 403 or 404 hands the pull request to you. Anything
+else at the retry - a check that failed, a conflict (`DIRTY`), a rule of the
+repository (`BLOCKED`, `BEHIND`), a draft, or a merge error that does not
+pass (*not mergeable*, 4xx) - hands the pull request to you as
+`review.owner`, its reason the refusal and its note *<reviewer> approved pull
+request #n and its merge waited; it cannot go through now: …*. At the verdict
+itself those are refused or failed exactly as before.
+
+**The wait is bounded.** After `review.merge_wait_tries` failures of the
+forge (default 5), or `review.merge_wait_hours` hours since the verdict
+(default 6) - for running checks as for the forge - the wait ends: the pull
+request is handed to you (`review.owner`, its reason the bound and the
+forge's last answer) and the project's lead is told once, by a finding on
+the `runner/review` thread that mentions it and quotes that answer. A pull
+request stacked on the one that waited still waits below it, and is
+reviewed when the one below merges.
+
+Your own Merge (`hive review merge <n> --by owner`, the hub's button) never
+waits: it is refused or fails with the reason. The hub offers it while a
+reviewer's merge waits (the task's sheet and the pull request's row show
+**Merge**), and the daemon makes it as yours on its next pass, ahead of the
+retry.
+
+What is waited for is one line: the Sessions page shows it on the pull
+request's row (*Approved, merge waits · The merge waits for the checks still
+running (ci/build)* or *· GitHub refused the merge (HTTP 502: Bad Gateway);
+retried at <time> (attempt 2)*), a task's sheet reads *Approved: PR #n — …*,
+and the daemon log prints `review <slug>: #n approved; …` once when the wait
+starts or changes and `review <slug>: #n merged after waiting (…)` when it
+ends.
+
 ## Events
 
 Every event's subject is the project slug; `hive watch --project X --action
@@ -369,8 +426,10 @@ lists them at `GET /api/v1/events?project=X&action=review.*`.
 | `review.merged` | the pull request was merged by `hive review merge` or for a Merge you pressed | `project`, `number`, `url`, `by` (the reviewing agent, or `owner`), `job` when a job ran the command, `head_sha` (the head merged), `checks` (how many reported), `no_checks` with a `note` when none did although the project has workflows |
 | `review.changes` | the reviewer asked for changes | `project`, `number`, `url`, `note`, `follow_up` (the job queued) |
 | `review.owner` | the pull request was handed to you | `project`, `number`, `url`, `reasons`, `note` |
-| `review.failed` | a review job ended without a verdict, or a `gh` call of a verdict failed | `project`, `number`, `url`, `error`, `job` when it was the job's ending |
+| `review.failed` | a review job ended without a verdict, or a `gh` call of a verdict failed for a reason that does not pass | `project`, `number`, `url`, `error`, `job` when it was the job's ending |
 | `review.ask` | you pressed **Merge** in the hub | `project`, `number`, `action: merge`, `task` when pressed on a task |
+| `review.merge-wait` | the reviewer said merge and the merge waits ([When an approved merge waits](#when-an-approved-merge-waits)); recorded again at each failed retry | `project`, `number`, `url`, `by`, `reviewer`, `head_sha`, `waiting` (`checks` or `forge`), `error` (the forge's last answer), `attempt` (failures of the forge so far), `due` (the next try; empty while checks run), `since` (when the wait began), `note` (the one line shown) |
+| `review.again` | a waiting merge found the head moved on the forge: nothing merged, the pull request is open for review again | `project`, `number`, `url`, `head_sha` (the new head), `was` (the head approved), `note` |
 
 The delivery's own events - `land.pr`, `land.merged`, `land.pr-closed`,
 `land.pr-held` - are listed with [Delivery](landing.md#events); a merge
@@ -380,7 +439,8 @@ The hub reads both sets to place a pull request: `land.pr` puts it at *open*,
 `review.queued` at *in review* (or *needs your review* when it carries
 reasons), `review.owner` at *needs your review*, `review.ask` at *merging*,
 `review.changes` at *changes requested*, `review.failed` at *review failed*,
-and `review.merged`, `land.merged` or `land.pr-closed` settle it
+`review.merge-wait` at *approved, merge waits* (with its note and a
+**Merge** for you), `review.again` at *open*, and `review.merged`, `land.merged` or `land.pr-closed` settle it
 ([Sessions](console.md#sessions)).
 
 ## Settings
@@ -390,8 +450,10 @@ and `review.merged`, `land.merged` or `land.pr-closed` settle it
 | `review.merge` | `auto` | `auto`: the reviewer merges a pull request no reason holds back; `ask`: every pull request is handed to you with the reviewer's findings, and the reviewer merges nothing (the hub's label: *Who merges a reviewed pull request*) |
 | `review.max_files` | `20` | a pull request changing more files than this is read file by file; the reviewer still merges one whose every file the title and body explain (size alone hands nothing to you); generated paths are not counted |
 | `review.max_lines` | `600` | the same for a pull request adding and deleting more lines than this together; generated paths are not counted |
+| `review.merge_wait_tries` | `5` | how many times the forge may fail a reviewer's approved merge (refuse it, or not be read, for a passing reason) before the wait ends and the pull request goes to you ([When an approved merge waits](#when-an-approved-merge-waits)) |
+| `review.merge_wait_hours` | `6` | how many hours an approved merge may wait, for its checks or for the forge, before the wait ends the same way |
 
 `hive settings set review.merge ask` sets one; the rest of the settings are in
 [self-improvement.md](self-improvement.md#evolution-runner-caps). An evolve
-variant cannot set any of the three: they are off the variant allowlist, so
+variant cannot set any of them: they are off the variant allowlist, so
 the loop changes how an agent reviews, never what it may merge.

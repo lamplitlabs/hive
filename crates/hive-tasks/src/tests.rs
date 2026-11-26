@@ -4223,6 +4223,30 @@ fn pr_trail(events: &[(&str, &str)]) -> Vec<LandEvent> {
 }
 
 #[test]
+fn an_approved_merge_that_waits_reads_merge_waiting_with_what_it_waits_for() {
+    let opened = r#"{"project":"demo","kind":"task","task":"TASK-1","number":7,"url":"https://github.com/o/r/pull/7","head":"hive/task/TASK-1","base":"main","title":"Add the page","opened":true}"#;
+    let queued = r#"{"project":"demo","number":7,"job":"JOB-rev","kind":"task","reasons":[]}"#;
+    let wait = r#"{"project":"demo","number":7,"waiting":"forge","attempt":1,"due":"2026-10-31T13:10:00Z","note":"approved; GitHub refused the merge (HTTP 502); retried at 2026-10-31T13:10:00Z (attempt 2)"}"#;
+    let merged = r#"{"project":"demo","number":7,"by":"reviewer"}"#;
+    let p = pr_state_of(&pr_trail(&[
+        ("land.pr", opened),
+        ("review.queued", queued),
+        ("review.merge-wait", wait),
+    ]));
+    assert_eq!(p.state, "merge_waiting");
+    assert!(p.note.contains("retried at 2026-10-31T13:10:00Z"), "{p:?}");
+    assert!(p.can_merge, "the owner may merge it now rather than wait");
+    let p = pr_state_of(&pr_trail(&[
+        ("land.pr", opened),
+        ("review.queued", queued),
+        ("review.merge-wait", wait),
+        ("review.merged", merged),
+    ]));
+    assert_eq!(p.state, "merged");
+    assert!(p.note.is_empty(), "{p:?}");
+}
+
+#[test]
 fn a_pull_requests_state_is_its_newest_event() {
     let opened = r#"{"project":"demo","kind":"task","task":"TASK-1","number":7,"url":"https://github.com/o/r/pull/7","head":"hive/task/TASK-1","base":"main","title":"Add the page","opened":true}"#;
     let queued = r#"{"project":"demo","number":7,"job":"JOB-rev","kind":"task","reasons":[]}"#;

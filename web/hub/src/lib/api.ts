@@ -1810,13 +1810,14 @@ export interface Conversation {
 
 // A pull request Hive opened on the project's forge and where its review
 // stands (GET /projects/{slug}/prs, and on conversations and tasks). The
-// reviewer agent merges the simple ones; `needs_owner` and `review_failed`
-// are the two the owner decides with Merge (`can_merge`).
+// reviewer agent merges the simple ones; `needs_owner`, `review_failed` and
+// `merge_waiting` are the ones the owner may merge (`can_merge`).
 export type PrReviewState =
   | "pr_open"
   | "in_review"
   | "needs_owner"
   | "merge_asked"
+  | "merge_waiting"
   | "changes_requested"
   | "review_failed"
   | "merged"
@@ -2807,6 +2808,7 @@ export type TaskDeliveryState =
   | "in_review"
   | "needs_owner"
   | "merge_asked"
+  | "merge_waiting"
   | "changes_requested"
   | "review_failed"
   | "merged"

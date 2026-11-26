@@ -21,7 +21,7 @@ test("a task's pull request: open links PR #N, merged links it, held names the n
   assert.equal(deliveryView(null), null);
 });
 
-test("the review states read as one sentence each and only two offer Merge", () => {
+test("the review states read as one sentence each and only three offer Merge", () => {
   const cases = [
     [{ state: "in_review" }, "PR #7 is being reviewed.", "neutral", false],
     [
@@ -32,6 +32,13 @@ test("the review states read as one sentence each and only two offer Merge", () 
     ],
     [{ state: "needs_owner", can_merge: true }, "Needs your review: PR #7.", "warn", true],
     [{ state: "merge_asked" }, "Merging PR #7\u2026", "neutral", false],
+    [
+      { state: "merge_waiting", note: "approved; the merge waits for the checks still running (ci/build)" },
+      "Approved: PR #7 \u2014 the merge waits for the checks still running (ci/build).",
+      "neutral",
+      true,
+    ],
+    [{ state: "merge_waiting" }, "Approved: PR #7 merges soon.", "neutral", true],
     [
       { state: "changes_requested", note: "tests missing", follow_up: "JOB-9" },
       "Changes requested on PR #7: tests missing. Follow-up JOB-9 is queued.",

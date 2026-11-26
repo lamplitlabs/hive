@@ -321,7 +321,10 @@ review job runs, then *Needs your review: PR #n — <reasons>. <the review>*
 with a **Merge** button (it records `review.ask`; the daemon's next pass
 merges the pull request on GitHub as you), *Changes requested on PR #n:
 <note>. Follow-up <job> is queued.*, *The review of PR #n failed: <why>* (the
-Merge button again), *Merging PR #n…* and *Merged*; a branch the pass could
+Merge button again), *Merging PR #n…*, *Approved: PR #n — <what the merge
+waits for>* (the reviewer said merge and its checks still run or GitHub
+answered 5xx; the Merge button lets you merge it now; [When an approved merge waits](review.md#when-an-approved-merge-waits))
+and *Merged*; a branch the pass could
 not deliver shows its `land.pr-held` note
 (`delivery` on `GET /api/v1/tasks/<id>`; [Delivery](landing.md), [The
 reviewer](review.md)). Once the pull request is open, `delivery.pipeline`
@@ -425,7 +428,8 @@ stopped for you - counted in the tab title with the sessions that
 wait - *Waiting for its pull request* once its steps are done, then the
 pull request's own word: *Pull request open*, *In review*, *Needs your
 review* when the reviewer handed it to you, *Changes requested*, *Merging*,
-*Review failed* - *Planned*, *Done*, *Cancelled*) - with
+*Approved, merge waits* followed by the one line it waits for, *Review
+failed* - *Planned*, *Done*, *Cancelled*) - with
 the steps the lead cut as lines under it the way sub-sessions sit under
 their parent: the agent on each (a dashed circle until one takes it), its
 state (*Waiting*, *Starting*, *Working*; a done step whose branch is not

@@ -38,11 +38,12 @@ export function relShort(d: string, now: number): string {
 
 // Where a pull request's review stands (PrState.state from the hub): the
 // reviewer agent reads every pull request Hive opens, merges the simple ones
-// and hands the rest to the owner. Two states are the owner's turn; four are
-// the reviewer's or the daemon's; merged and closed leave the entry to its
+// and hands the rest to the owner. Two states are the owner's turn; five are
+// the reviewer's or the daemon's (merge_waiting: approved, the merge waits
+// for its checks or for GitHub); merged and closed leave the entry to its
 // own status.
 export const PR_NEEDS_OWNER = new Set(["needs_owner", "review_failed"]);
-export const PR_IN_REVIEW = new Set(["pr_open", "in_review", "merge_asked", "changes_requested"]);
+export const PR_IN_REVIEW = new Set(["pr_open", "in_review", "merge_asked", "merge_waiting", "changes_requested"]);
 
 export const NEEDS_REVIEW: Mood = { word: "Needs your review", tone: "wait", pip: "waiting", dot: "bg-warn" };
 
@@ -66,11 +67,23 @@ export function prMood(state: string | undefined | null): Mood | null {
       return { word: "In review", tone: "run", pip: "busy", dot: "bg-primary" };
     case "merge_asked":
       return { word: "Merging", tone: "run", pip: "busy", dot: "bg-primary" };
+    case "merge_waiting":
+      return { word: "Approved, merge waits", tone: "neutral", pip: "waiting", dot: "bg-primary/50" };
     case "changes_requested":
       return { word: "Changes requested", tone: "neutral", pip: "curious", dot: "bg-primary/50" };
     default:
       return null;
   }
+}
+
+// The one line a pull request row on the Sessions page shows after its word
+// when the reviewer approved it and the merge waits: what it waits for (the
+// checks still running, or GitHub and when the merge is tried again), from
+// the review.merge-wait event's note. Empty in every other state.
+export function prWaitLine(state: string | undefined | null, note: string | undefined | null): string {
+  if (state !== "merge_waiting") return "";
+  const n = (note || "").trim().replace(/^approved;\s*/i, "");
+  return n ? n.charAt(0).toUpperCase() + n.slice(1) : "";
 }
 
 // The section a pull request puts its entry in, or null when the entry's own
