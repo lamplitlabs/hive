@@ -236,7 +236,7 @@ may rule on any open suggestion without waiting for its reviewer.
 
 - **Your message says *Sent · nobody has picked it up yet*.** Two minutes
   passed and no run of the lead took it. Most often the runner is off or
-  paused, or no model provider is connected. Home says which
+  paused, or no model provider is connected. Sessions says which
   ([Set up your first project](first-project.md),
   [Troubleshooting](troubleshooting.md)).
 - **A command prints `A project is needed`.** `hive task new` needs

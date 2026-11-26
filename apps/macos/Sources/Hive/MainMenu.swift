@@ -7,14 +7,13 @@ import AppKit
 enum MainMenu {
     /// The sidebar's order (web/hub/src/components/shell/app-shell.tsx).
     static let routes: [(title: String, path: String, key: String)] = [
-        ("Home", "/", "1"),
-        ("Chat", "/chat/", "2"),
-        ("Tasks", "/tasks/", "3"),
-        ("Votes", "/votes/", "4"),
-        ("Records", "/records/", "5"),
-        ("Runs", "/harness/", "6"),
-        ("Machines", "/compute/", "7"),
-        ("Connections", "/connections/", "8"),
+        ("Sessions", "/chat/", "1"),
+        ("Tasks", "/tasks/", "2"),
+        ("Votes", "/votes/", "3"),
+        ("Records", "/records/", "4"),
+        ("Runs", "/harness/", "5"),
+        ("Machines", "/compute/", "6"),
+        ("Connections", "/connections/", "7"),
     ]
 
     static func build() -> NSMenu {
@@ -171,7 +170,7 @@ enum MainMenu {
             menu.addItem(item(route.title, #selector(ConsoleWindowController.goToRoute(_:)), route.key, represented: route.path))
         }
         menu.addItem(.separator())
-        menu.addItem(item("For You", #selector(ConsoleWindowController.showForYou(_:))))
+        menu.addItem(item("Decisions Only You Can Make", #selector(ConsoleWindowController.showForYou(_:))))
         menu.addItem(item("Code Delivered", #selector(ConsoleWindowController.goToRoute(_:)), represented: "/code-deliveries/"))
         menu.addItem(.separator())
         // The page answers ⌘K and ⌘J itself first (the web view is offered

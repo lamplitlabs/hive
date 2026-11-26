@@ -81,9 +81,12 @@ function qs(
 }
 
 export const hrefs = {
+  // The console opens on Sessions (TASK-129: Home and For you went); "/" is
+  // the same page.
   home: () => "/",
-  // Everything that waits on the owner, across projects; `project` narrows to one.
-  forYou: (f: { project?: string } = {}) => "/for-you/" + qs({ project: f.project }),
+  // The strip of asks only the owner may answer (money, what can't be
+  // undone, credentials, publication), at the top of Sessions.
+  hardStops: () => "/chat/#hard-stops",
   // The over-time metrics that used to sit at the foot of Home.
   insights: (f: { project?: string; range?: string } = {}) =>
     "/insights/" + qs({ project: f.project, range: f.range }),

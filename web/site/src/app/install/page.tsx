@@ -114,7 +114,7 @@ export default function InstallPage() {
           it. It serves the console and nothing more: the runner, which plans jobs and starts agents, is started separately (step 5).
         </p>
         <p>
-          On a new machine, Home shows the card <strong>Set up Hive</strong> with three steps, in this order: <strong>Connect a model provider</strong>,{" "}
+          On a new machine, Sessions, where the console opens, shows the card <strong>Set up Hive</strong> with three steps, in this order: <strong>Connect a model provider</strong>,{" "}
           <strong>Add a project</strong> and <strong>Keep Hive running</strong>. Steps 3 to 5 below are those three; this page gives the command for a
           terminal as well.
         </p>
@@ -171,7 +171,7 @@ export default function InstallPage() {
         <p>
           The button in the console hands the console over to the service by itself. After <code>hive service install</code> in a terminal, stop the{" "}
           <code>hive hub</code> you started by hand: the service&apos;s console cannot take the address while the first one holds it, and tries again
-          every 30 seconds. When the card is gone, Home shows a notice with a button: <strong>Start runner</strong> while no runner runs,{" "}
+          every 30 seconds. When the card is gone, Sessions shows a notice with a button: <strong>Start runner</strong> while no runner runs,{" "}
           <strong>Keep Hive running</strong> while one runs in a terminal only.
         </p>
         <p>
@@ -192,8 +192,8 @@ export default function InstallPage() {
 
         <H2 id="decide">7. Say yes or no</H2>
         <p>
-          What needs your yes or no waits on the <strong>For you</strong> page, and Home shows the first five under <strong>Needs you</strong>: a
-          question, a proposal, a request for more machines, a hard stop. A yes-or-no question shows two buttons and an open one an answer box, with the agents&apos;
+          What needs your yes or no waits on its project&apos;s <strong>For you</strong> tab: a question, a proposal, a request for more
+          machines, a hard stop. The hard stops (money, what cannot be undone, credentials, publication) also wait on <strong>Sessions</strong>. A yes-or-no question shows two buttons and an open one an answer box, with the agents&apos;
           reasoning beside them. Each waits for your answer, and everything else carries on. There is one exception: when the self-improvement loop pauses
           because its fixtures tell nothing apart and a day passes with no answer, it answers that one question itself (
           <Link href={`${PAGES.rsi.path}#stops`}>Hard stops and the kill switch</Link>).

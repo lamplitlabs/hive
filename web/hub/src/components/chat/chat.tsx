@@ -253,6 +253,7 @@ import {
 import type { ActionItem } from "@/lib/transcript";
 import { invalidate, useApi, useNow } from "@/lib/use-api";
 import { ReferencePicker } from "@/components/reference-picker";
+import { SessionsAlerts, SessionsLanding } from "@/components/sessions/landing";
 import { cn } from "@/lib/utils";
 
 // ----- words ----------------------------------------------------------------
@@ -1449,6 +1450,10 @@ export function ChatPageClient() {
           The session list did not load.
         </ErrorNotice>
       ) : null}
+      {/* The console opens here ("/" forwards to /chat/, TASK-129): what is
+          broken and what only the owner may decide sit over the page, each
+          only when there is any. */}
+      {opened ? null : <SessionsAlerts />}
       <Split list={listNode} listOnMobile={!opened} fill={opened}>
         {task ? (
           <TaskView
@@ -1469,15 +1474,18 @@ export function ChatPageClient() {
         ) : (
           <Pane
             main={
-              <NewConversation
-                projects={projects.data}
-                onCreated={(c) => open(c.id)}
-                onTaskCreated={(t) => openTask(t)}
-                busyElsewhere={
-                  rows.filter((c) => (c.live?.status || c.status) === "running")
-                    .length
-                }
-              />
+              <div className="grid min-w-0 gap-8">
+                <NewConversation
+                  projects={projects.data}
+                  onCreated={(c) => open(c.id)}
+                  onTaskCreated={(t) => openTask(t)}
+                  busyElsewhere={
+                    rows.filter((c) => (c.live?.status || c.status) === "running")
+                      .length
+                  }
+                />
+                <SessionsLanding />
+              </div>
             }
           />
         )}

@@ -4,7 +4,7 @@ import { CHORD_MS, GO, SHORTCUTS, SHORTCUT_GROUPS, groupedShortcuts, isCommandKe
 
 test("the shortcut list names every documented shortcut once", () => {
   const keys = SHORTCUTS.map((s) => s.keys);
-  for (const k of ["G H", "G F", "G S", "G T", "⌘K", "⌘J", "?", "J / K", "Enter", "Y / N", "Esc"]) assert.ok(keys.includes(k), k);
+  for (const k of ["G S", "G T", "⌘K", "⌘J", "?", "J / K", "Enter", "Y / N", "Esc"]) assert.ok(keys.includes(k), k);
   assert.equal(new Set(keys).size, keys.length, "no duplicates");
   for (const s of SHORTCUTS) {
     assert.ok(s.what, s.keys + " says what");
@@ -15,7 +15,7 @@ test("the shortcut list names every documented shortcut once", () => {
 test("groupedShortcuts groups by where, in the fixed order, dropping empty groups", () => {
   const g = groupedShortcuts();
   assert.deepEqual(g.map((x) => x.where), [...SHORTCUT_GROUPS]);
-  assert.equal(g[0].items.length, 4, "four G-chords");
+  assert.equal(g[0].items.length, 2, "two G-chords");
   const custom = groupedShortcuts([{ keys: "X", what: "x", where: "Elsewhere" }, { keys: "Enter", what: "Open", where: "In a list" }]);
   assert.deepEqual(custom.map((x) => x.where), ["In a list", "Elsewhere"]);
 });
@@ -28,17 +28,17 @@ test("keyChips splits chords, alternatives and the command key", () => {
   assert.deepEqual(keyChips("?"), [{ kind: "key", text: "?" }]);
 });
 
-test("G then H/F/S/T goes to Home, For you, Sessions, Tasks", () => {
+test("G then S/T goes to Sessions, Tasks; H and F went with Home and For you", () => {
   assert.deepEqual(matchChord(null, "g", false, false), { pending: "g" });
   assert.deepEqual(matchChord(null, "G", false, false), { pending: "g" }, "shift makes no difference");
-  assert.deepEqual(matchChord("g", "h", false, false), { go: "/" });
-  assert.deepEqual(matchChord("g", "f", false, false), { go: "/for-you/" });
+  assert.equal(matchChord("g", "h", false, false), null);
+  assert.equal(matchChord("g", "f", false, false), null);
   assert.deepEqual(matchChord("g", "s", false, false), { go: "/chat/" });
   assert.deepEqual(matchChord("g", "t", false, false), { go: "/tasks/" });
   assert.deepEqual(matchChord("g", "T", false, false), { go: "/tasks/" });
   assert.equal(matchChord("g", "x", false, false), null, "an unknown second key drops the chord");
   assert.equal(matchChord("g", "g", false, false), null, "G G is nothing");
-  assert.equal(GO.h, "/");
+  assert.deepEqual(Object.keys(GO).sort(), ["s", "t"]);
 });
 
 test("⌘K searches and ⌘J asks, even inside a field", () => {

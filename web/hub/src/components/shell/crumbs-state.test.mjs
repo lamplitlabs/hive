@@ -10,10 +10,10 @@ const q = (s = "") => new URLSearchParams(s);
 const projects = [{ slug: "demo-app", name: "Demo App" }, { slug: "plain" }];
 
 test("home and plain pages name themselves", () => {
-  assert.deepEqual(defaultCrumbs("/", q()), [{ label: "Home", href: "/" }]);
+  assert.deepEqual(defaultCrumbs("/", q()), [{ label: "Sessions", href: "/chat/" }], "the console opens on Sessions");
   assert.deepEqual(defaultCrumbs("/records/", q()), [{ label: "Records", href: "/records/" }]);
   assert.deepEqual(defaultCrumbs("/records", q()), [{ label: "Records", href: "/records/" }], "a missing trailing slash is the same page");
-  assert.deepEqual(defaultCrumbs("/for-you/", q()), [{ label: "For you", href: "/for-you/" }]);
+  assert.deepEqual(defaultCrumbs("/for-you/", q()), [{ label: "Page not found" }], "For you is gone");
   assert.deepEqual(defaultCrumbs("/insights/", q()), [{ label: "Insights", href: "/insights/" }]);
   assert.deepEqual(defaultCrumbs("/settings/", q()), [{ label: "Settings", href: "/settings/" }]);
   assert.deepEqual(defaultCrumbs("/harness/", q()).map((c) => c.label), ["Runs"]);

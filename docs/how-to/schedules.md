@@ -226,7 +226,7 @@ repository keeps. After the check's first run, its `STATE` is `green` and
 ## When something goes wrong
 
 - **A schedule never fires.** The runner queues the jobs and runs the
-  scripts, so nothing happens while it is off or paused. Home then says
+  scripts, so nothing happens while it is off or paused. Sessions then says
   **Runner is off** or **Runner is paused: nothing new starts**, with the
   button that fixes it. In a terminal, `hive status` has a `daemon` line
   that starts with `alive` while the runner runs. The runner also tends

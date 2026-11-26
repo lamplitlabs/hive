@@ -187,7 +187,7 @@ terminal, `hive lead list --project my-app` shows the seat as `active`, and
   role, paused ones included. Look at it with `hive lead show LEAD-001`, or
   end it first.
 - **The lead never sits.** The runner queues and runs the sittings, so
-  nothing happens while it is off or paused: Home then says **Runner is
+  nothing happens while it is off or paused: Sessions then says **Runner is
   off** or **Runner is paused: nothing new starts**. A sitting also waits
   while `jobs_per_day` is reached (the `runs today` line of `hive status`)
   and while the lead is paused.
