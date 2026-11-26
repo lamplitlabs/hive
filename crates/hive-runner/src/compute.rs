@@ -437,6 +437,8 @@ impl ComputeWorker {
                     let worker = self.clone();
                     let id = req.id.clone();
                     self.start(&id, move || worker.release(&c, req, &why));
+                } else {
+                    self.say_past_hours(&req, now);
                 }
             }
         }
@@ -598,32 +600,21 @@ impl ComputeWorker {
                 req.id, m.executor, m.provider, m.name, req.hours
             ),
             &format!(
-                "The machine {} asked for is up: `{}` on {}, registered as executor `{}` for project `{}` (approved by {}). The daemon releases it when its {} hour(s) are over or after {} idle minutes, whichever comes first; `hive executor list` shows it meanwhile.\n\nReason given: {}\n",
+                "The machine {} asked for is up: `{}` on {}, registered as executor `{}` for project `{}` (approved by {}). The daemon releases it when its {} hour(s) are over or after {} idle minutes, whichever comes first; once the hours are over it takes no new work, and a run in flight then is finished first. `hive executor list` shows it meanwhile.\n\nReason given: {}\n",
                 req.requested_by, m.name, m.provider, m.executor, req.project, req.decided_by, req.hours, COMPUTE_IDLE_MINUTES, req.reason
             ),
         );
         self.say_line(format!("compute {} ready: executor {}", req.id, m.executor));
     }
     pub(crate) fn release_due(&self, req: hive_tasks::ComputeRequest, now: &str) -> String {
-        let (m, mrow) = load_machine(&self.s, &req.id);
-        let mut ready_at = req.updated_at.clone();
-        if !mrow.0.is_empty() && !mrow.str("created_at").is_empty() {
-            ready_at = mrow.str("created_at");
-        }
-        let mut executor = req.executor.clone();
-        if let Some(m) = &m
-            && !m.executor.is_empty()
-        {
-            executor = m.executor.clone();
-        }
+        let (executor, ready_at) = rented(&self.s, &req);
         if !executor.is_empty() && crate::executor::executor_running(&self.s, &executor, now) > 0 {
             return String::new();
         }
         if ready_at.is_empty() {
             return String::new();
         }
-        let age = crate::util::must_iso(now) - crate::util::must_iso(&ready_at);
-        if req.hours > 0 && age >= chrono::Duration::hours(req.hours as i64) {
+        if hours_up(&req, &ready_at, now) {
             return format!("its {} hour(s) are up", req.hours);
         }
         let mut last = ready_at;
@@ -644,6 +635,22 @@ impl ComputeWorker {
             return format!("the executor sat idle for {} minutes", COMPUTE_IDLE_MINUTES);
         }
         String::new()
+    }
+    /// A rental past its hours that a run in flight keeps up: said once, in the daemon log and
+    /// on the request's card, since the machine stays and takes nothing from the queue.
+    fn say_past_hours(&self, req: &hive_tasks::ComputeRequest, now: &str) {
+        let (executor, ready_at) = rented(&self.s, req);
+        if !hours_up(req, &ready_at, now) {
+            return;
+        }
+        let note = format!(
+            "its {} hour(s) are up: {executor} takes no new work and is released when its last run ends",
+            req.hours
+        );
+        if req.note != note {
+            let _ = hive_tasks::note_compute(&self.s, &req.id, &note);
+            self.say_line(format!("compute {}: {note}", req.id));
+        }
     }
     pub(crate) fn release(
         &self,
@@ -993,6 +1000,48 @@ impl Leftover {
             ),
         }
     }
+}
+/// The executor a ready request's machine runs as and when it became ready: the machine row's
+/// word, else the request's own.
+fn rented(s: &hive_store::Store, req: &hive_tasks::ComputeRequest) -> (String, String) {
+    let (m, mrow) = load_machine(s, &req.id);
+    let mut ready_at = req.updated_at.clone();
+    if !mrow.0.is_empty() && !mrow.str("created_at").is_empty() {
+        ready_at = mrow.str("created_at");
+    }
+    let mut executor = req.executor.clone();
+    if let Some(m) = &m
+        && !m.executor.is_empty()
+    {
+        executor = m.executor.clone();
+    }
+    (executor, ready_at)
+}
+/// Whether the hours a ready request asked for are over, counted from when its machine was ready.
+fn hours_up(req: &hive_tasks::ComputeRequest, ready_at: &str, now: &str) -> bool {
+    !ready_at.is_empty()
+        && req.hours > 0
+        && crate::util::must_iso(now) - crate::util::must_iso(ready_at)
+            >= chrono::Duration::hours(req.hours as i64)
+}
+/// The rented machines whose hours are up. They get no new work (`run::executor_slots`), so the
+/// runs in flight on them are their last and `release_due` lets them go when those end.
+/// Measured on one hub before this: a machine approved for 4 hours was released after 21.9 and
+/// another after 12.1; 17 of the first one's 22 runs began after its hours were up, because the
+/// queue leased to it again each time a run ended and a machine with a run in flight is not
+/// released.
+pub(crate) fn rentals_past_hours(
+    s: &hive_store::Store,
+    now: &str,
+) -> std::collections::BTreeSet<String> {
+    hive_tasks::list_compute(s, "", "ready")
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|req| {
+            let (executor, ready_at) = rented(s, req);
+            (!executor.is_empty() && hours_up(req, &ready_at, now)).then_some(executor)
+        })
+        .collect()
 }
 pub(crate) fn compute_finding(
     s: &hive_store::Store,

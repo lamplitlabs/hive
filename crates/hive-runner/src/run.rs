@@ -3657,7 +3657,13 @@ pub(crate) fn executor_slots(
 ) -> Vec<String> {
     let mut slots = Vec::new();
     let remotes = crate::executor::executor_rows(s, false);
+    // A rented machine whose hours are up takes no new work: the run in
+    // flight on it is its last, and the compute worker releases it then.
+    let past_hours = crate::compute::rentals_past_hours(s, now);
     for r in &remotes {
+        if past_hours.contains(&r.str("name")) {
+            continue;
+        }
         for _ in 0..crate::executor::executor_free_slots(
             s,
             r,

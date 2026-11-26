@@ -1096,6 +1096,137 @@ hive-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOCK
         );
     }
 
+    /// A machine approved for hours goes when they are up. Measured on one hub: a machine asked
+    /// for four hours was released after 21.9, and 17 of its 22 runs began after the hours were
+    /// up, since the queue leased to it again each time a run ended and a machine with a run in
+    /// flight is not released.
+    #[test]
+    fn a_rental_past_its_hours_takes_no_new_work_and_goes_when_its_run_ends() {
+        let _serial = crate::test_helpers::serial();
+        let _lock = provider_test_lock();
+        let s = new_store();
+        let h = compute_harness(&s, AZURE_SETTINGS);
+        // A run may take two hours here, so one that began inside the machine's hours is still
+        // in flight when they are up.
+        set_setting(&s, "minutes_per_job", "120");
+        let az = new_fake_az();
+        let _fake = install_fake(crate::azure::set_run_az, {
+            let az = az.clone();
+            Box::new(move |ctx, args, timeout| az.run(ctx, args, timeout))
+        });
+        let req = approved_request(&s);
+        let log = once(&s, &h);
+        let got = hive_tasks::get_compute(&s, &req.id).unwrap_or_default();
+        assert_eq!(
+            (got.status.as_str(), got.executor.as_str(), got.hours),
+            ("ready", "hands-cr-001", 2),
+            "request: {got:?}\n{log}"
+        );
+        // Two slots on the machine, one of them busy with a run that began half an hour in.
+        let after = |minutes: f64| crate::util::plus_minutes(TEST_NOW, minutes);
+        exec1(
+            &s,
+            "UPDATE executors SET workers = 2 WHERE name = 'hands-cr-001'",
+            &[],
+        );
+        exec1(
+            &s,
+            "INSERT INTO runs (id, job_id, agent, project, started_at, status, executor) VALUES ('run-1', 'job-1', 'aurora', 'proj', ?, 'running', 'hands-cr-001')",
+            &[&after(30.0)],
+        );
+        let slots = |now: &str| crate::run::executor_slots(&s, now, &BTreeMap::new(), true);
+        assert_eq!(
+            slots(&after(60.0)),
+            ["hands-cr-001"],
+            "inside its hours the free slot is offered"
+        );
+        // Its two hours are up: no slot is offered, so nothing new is leased to it.
+        assert_eq!(
+            slots(&after(120.0)),
+            Vec::<String>::new(),
+            "a rental past its hours still offers a slot"
+        );
+        // It is not released under the run in flight; the log and the request's card say what
+        // it waits for, once.
+        let cancel = hive_bus::CancellationToken::new();
+        let worker = crate::compute::new_compute_worker(
+            &cancel,
+            &s,
+            crate::compute::ComputeOpts {
+                actor: TEST_DAEMON.into(),
+                hub_home: h.hub_home.clone(),
+            },
+        );
+        let tick = |now: &str| {
+            let mut lines = worker.tick(&cancel, now);
+            worker.wait(Duration::from_secs(60));
+            lines.extend(worker.drain());
+            lines
+        };
+        const LAST_RUN: &str = "its 2 hour(s) are up: hands-cr-001 takes no new work and is released when its last run ends";
+        let lines = tick(&after(120.0));
+        let got = hive_tasks::get_compute(&s, &req.id).unwrap_or_default();
+        assert_eq!(
+            (got.status.as_str(), got.note.as_str()),
+            ("ready", LAST_RUN),
+            "{lines:?}"
+        );
+        assert_eq!(lines, [format!("compute {}: {LAST_RUN}", req.id)]);
+        assert_eq!(tick(&after(120.25)), Vec::<String>::new());
+        // No second machine is rented while this one finishes its last run, though work
+        // waits and the owner pre-authorised one: it still counts as a machine against
+        // compute.max_vms and as the one open request.
+        set_setting(&s, "compute.auto_approve", "1");
+        crate::test_helpers_daemon::queued_job(&s, "j-waits", "proj", "task", "owner");
+        let rent = |now: &str| {
+            crate::daemon::auto_compute(
+                &s,
+                "1 job(s) waited 120 min with every slot on this machine busy or held",
+                crate::daemon::HANDS_WANTED_MINUTES,
+                now,
+                TEST_DAEMON,
+            )
+        };
+        set_setting(&s, "compute.max_vms", "1");
+        assert_eq!(
+            rent(&after(120.5)),
+            Err(crate::daemon::NoAutoCompute::Why(
+                "compute.max_vms 1 reached (1 in use)".into()
+            ))
+        );
+        set_setting(&s, "compute.max_vms", "2");
+        assert_eq!(
+            rent(&after(120.5)),
+            Err(crate::daemon::NoAutoCompute::Open {
+                id: req.id.clone(),
+                status: "ready".into()
+            })
+        );
+        // The run ends: the machine goes on the next tick.
+        exec1(
+            &s,
+            "UPDATE runs SET status = 'done', finished_at = ? WHERE id = 'run-1'",
+            &[&after(125.0)],
+        );
+        let lines = tick(&after(125.25));
+        let got = hive_tasks::get_compute(&s, &req.id).unwrap_or_default();
+        assert_eq!(
+            (got.status.as_str(), got.note.as_str()),
+            ("released", "its 2 hour(s) are up"),
+            "{lines:?}"
+        );
+        assert_eq!(az.deleted(), vec!["hive-cr-001"], "{lines:?}");
+        // Nothing waits after the release: the queue still waits, so the daemon asks for a
+        // fresh machine on its usual terms.
+        let next = rent(&after(125.5)).expect("a fresh machine is asked for");
+        assert_eq!(
+            (next.id.as_str(), next.status.as_str(), next.hours),
+            ("CR-002", "approved", crate::daemon::AUTO_COMPUTE_HOURS),
+            "{next:?}"
+        );
+        cancel.cancel();
+    }
+
     /// A failure after the machine exists releases it (VM and its siblings) before the request
     /// is failed, as the Go runner did; the machine row keeps the released time.
     #[test]

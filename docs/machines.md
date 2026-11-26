@@ -156,6 +156,30 @@ project instead. Measured before this rule: CR-064 lacked `cargo` for the
 brain, was released after 30 idle minutes, and CR-065 was rented for the
 same job within the minute.
 
+**When a rented machine goes.** The daemon releases it when the hours it
+was asked for are up, counted from the moment it was ready, or after 30
+minutes without a run, whichever comes first. It does not release a machine
+with a run in flight, and it stops no run. So once its hours are up a rented
+machine takes no new work: the runs in flight on it are its last, and it is
+released when they end. Until then the daemon log and the request's card say
+so (`compute CR-012: its 4 hour(s) are up: hands-cr-012 takes no new work
+and is released when its last run ends`), and no second machine is rented:
+the one that is finishing still counts against `compute.max_vms` and as the
+open request. A machine can still run past its hours by the length of that
+last run, and the day's `compute.max_hours_per_day` counts the hours asked
+for, not the hours run.
+
+Once it is released nothing waits before the next request. A queue that
+still waits gets a fresh machine on the daemon's usual terms, for another
+four hours, and again when those are up, until the day's
+`compute.max_hours_per_day` is reached. So a queue that used to keep one
+machine busy long past its hours now gets a new machine each time the hours
+are up: over a day fewer hours are rented once the cap binds, and more
+machines are bought, each with its own start. Measured before this rule: a
+machine asked for 4 hours was released after 21.9, and another after 12.1;
+17 of the first one's 22 runs began after its hours were up, because the
+queue leased to it again each time a run ended.
+
 ```bash
 hive settings set machine.labels gpu,android          # what this machine offers, beyond its OS and chip and what it finds
 hive settings set machine.reserve on                  # this machine takes only the jobs that need something it offers
@@ -348,8 +372,9 @@ commands behind one route, `POST /api/v1/compute/executors`, told apart by
 Each way records what its command would: `executor.add`, `executor.probe`,
 `pair.applied`, `compute.requested`. The request rows `GET /api/v1/compute`
 lists carry a `note`: the daemon's last word on each (the provisioning step
-in progress, why it failed, why its machine was released; empty once a
-machine is ready), which is what the card on the Machines page shows under
+in progress, why it failed, that its hours are up while a last run
+finishes, why its machine was released; empty while a ready machine is
+inside its hours), which is what the card on the Machines page shows under
 the reason. The hub serving one project
 (`hive hub --project`) takes requests for that project only.
 
