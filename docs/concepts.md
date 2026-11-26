@@ -1,8 +1,10 @@
 # Concepts
 
 Hive is an open-source harness for coding agents. It runs on your own
-machine as one binary, improves itself under rules you write, and pairs
-more machines when the work needs them. This page is a short orientation:
+machine as one binary. It does the tasks you give it, keeps a project's
+standing work going with automations, and improves every project it works
+on, its own source included, under rules you write. It pairs more machines
+when the work needs them. This page is a short orientation:
 the words Hive uses and how the parts fit. Each section ends with the page
 that has the detail.
 

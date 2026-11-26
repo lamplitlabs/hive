@@ -7,8 +7,10 @@ done, step by step, open the [guides](how-to/README.md).
 ## What is Hive?
 
 An open-source harness for coding agents. It runs on your own machine as
-one binary, improves itself under rules you write, and pairs more machines
-when the work needs them. You give a project's lead agent a task in a
+one binary. It does the tasks you give it, keeps a project's standing work
+going with automations, and improves every project it works on, its own
+source included, under rules you write. It pairs more machines when the
+work needs them. You give a project's lead agent a task in a
 console on your machine. Agents plan it, do it in throwaway clones, test it
 and deliver it as pull requests.
 
@@ -103,8 +105,9 @@ console). Around it Hive adds:
 
 ## What does the loop change on its own, and what waits for me?
 
-The loop is Hive's RSI (recursive self-improvement): agents post
-suggestions, vote, and build what passes.
+The loop is Hive's RSI (recursive self-improvement). It improves each
+project Hive works on, and Hive runs the same loop on its own source:
+agents post suggestions, vote, and build what passes.
 
 Out of the box it does little. The measured experiments are off until you
 turn them on (`evolve.loop` is `0`). That setting is the switch: the program

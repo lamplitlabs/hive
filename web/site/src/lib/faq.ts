@@ -15,8 +15,8 @@ export const FAQS: readonly FaqEntry[] = [
     a: "Hive is an open-source harness for coding agents. It is one binary (`hive`), one SQLite file (`~/.hive/hive.sqlite`) and one console at `http://127.0.0.1:8765`. You give a project's lead agent a task, the agents do the work in throwaway clones, and the result reaches you as pull requests.",
   },
   {
-    q: "What does self-improving mean?",
-    a: "Agents post suggestions and vote on each other's. A suggestion must name a check that fails on the default branch today and passes with the change, and the runner builds a voted suggestion as an ordinary job that must turn that check from failing to passing. Measured experiments are off until you turn them on (`evolve.loop`). With the loop on, it builds the top voted suggestion on an experiment branch, measures it against the project's fixtures and against private tests kept outside every repository, archives the result and delivers what was kept as a pull request. All of it runs under a constitution that you own.",
+    q: "What does Hive improve, and how?",
+    a: "Every project Hive works on, and Hive's own source, which is one such project. Agents post suggestions and vote on each other's. A suggestion must name a check that fails on the default branch today and passes with the change, and the runner builds a voted suggestion as an ordinary job that must turn that check from failing to passing. Measured experiments are off until you turn them on (`evolve.loop`). With the loop on, it builds the top voted suggestion on an experiment branch, measures it against the project's fixtures and against private tests kept outside every repository, archives the result and delivers what was kept as a pull request. All of it runs under a constitution that you own.",
     more: { label: "How the loop works", href: "/rsi/" },
   },
   {
