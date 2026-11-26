@@ -6223,3 +6223,82 @@ fn an_owner_wait_names_its_holds_until_the_job_is_leased() {
             .contains("waiting")
     );
 }
+
+/// The lifecycle read from a real store: the task's jobs by source, the
+/// branch a landing emptied read back from its run, the lead's
+/// `task.lead` event and the task's pull request with its review.
+#[test]
+fn lifecycle_for_reads_the_tasks_rows() {
+    let s = new_store();
+    let t = new(&s, "demo", "Footer", "", 0, "human").unwrap();
+    let l = lifecycle_for(&s, &t.id).unwrap();
+    assert_eq!((l.phase, l.waits_on), (Phase::Intake, WaitsOn::Lead));
+
+    set_lead(&s, &t.id, "demo-lead", "J-lead", "daemon").ok();
+    s.conn()
+        .unwrap()
+        .execute(
+            "INSERT INTO jobs (id, project, kind, title, source, status, branch, created_at, finished_at) VALUES \
+             ('J-1', 'demo', 'task', 'T', ?, 'done', '', '2026-09-06T21:01:00Z', '2026-09-06T21:30:00Z'), \
+             ('J-other', 'demo', 'task', 'T', 'task:TASK-999', 'leased', '', '2026-09-06T21:01:00Z', '')",
+            [format!("task:{}:footer", t.id)],
+        )
+        .unwrap();
+    s.conn()
+        .unwrap()
+        .execute(
+            "INSERT INTO runs (id, job_id, agent, project, started_at, status, branch) VALUES \
+             ('run-1', 'J-1', 'worker', 'demo', '2026-09-06T21:02:00Z', 'running', 'hive/worker/J-1')",
+            [],
+        )
+        .unwrap();
+    let l = lifecycle_for(&s, &t.id).unwrap();
+    assert_eq!(
+        (l.phase, l.waits_on),
+        (Phase::Verify, WaitsOn::Runner),
+        "{l:?}"
+    );
+
+    s.conn()
+        .unwrap()
+        .execute("UPDATE runs SET status = 'done' WHERE id = 'run-1'", [])
+        .unwrap();
+    let l = lifecycle_for(&s, &t.id).unwrap();
+    assert_eq!(
+        (l.phase, l.waits_on),
+        (Phase::Review, WaitsOn::Runner),
+        "{l:?}"
+    );
+    let verify = l.steps.iter().find(|p| p.phase == Phase::Verify).unwrap();
+    assert_eq!(verify.left[0].id, "hive/worker/J-1");
+
+    let opened = serde_json::json!({"project": "demo", "task": t.id, "number": 41, "url": "https://github.com/o/r/pull/41", "kind": "task"});
+    hive_bus::emit(&s, "daemon", "land.pr", "demo", opened.clone()).unwrap();
+    hive_bus::emit(
+        &s,
+        "reviewer",
+        "review.queued",
+        "demo",
+        serde_json::json!({"project": "demo", "number": 41}),
+    )
+    .unwrap();
+    let l = lifecycle_for(&s, &t.id).unwrap();
+    assert_eq!(
+        (l.phase, l.waits_on),
+        (Phase::Review, WaitsOn::Reviewer),
+        "{l:?}"
+    );
+
+    hive_bus::emit(
+        &s,
+        "reviewer",
+        "review.merged",
+        "demo",
+        serde_json::json!({"project": "demo", "number": 41}),
+    )
+    .unwrap();
+    let all = lifecycles_for(&s, "demo").unwrap();
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].phase, Phase::Done);
+    assert_eq!(by_phase(&all)[&Phase::Done], vec![t.id.clone()]);
+}
