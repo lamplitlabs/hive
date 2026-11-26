@@ -748,9 +748,6 @@ impl BoardData {
         db_posts: &BTreeMap<String, hive_tally::Post>,
         store: Option<&hive_store::Store>,
     ) {
-        let owner_away = store.is_some_and(|s| {
-            s.setting("owner.presence", hive_store::OWNER_PRESENT) == hive_store::OWNER_AWAY
-        });
         let major_updates_auto =
             store.is_some_and(|s| s.setting("dependencies.major_updates", "ask") == "auto");
         let threads = self
@@ -808,6 +805,18 @@ impl BoardData {
                 if stop && body.contains(hive_evolve::CARD_NEEDED) {
                     continue;
                 }
+                // Why only the owner can decide it (money, a destructive
+                // act, credentials, publication, Tier 2 ...); empty for a
+                // routine ask the lead decides (TASK-129). The Sessions
+                // strip lists the rows whose `decider` is `owner`.
+                let mut hard_stop = hive_board::hard_stop_ask(&kind, &summary, body);
+                // A question the daemon asked (a restart drain, a sign-in,
+                // a lead seat) is never the lead's: the daemon answers it
+                // itself once the owner acts.
+                if hard_stop.is_empty() && kind == "question" && str_key(post, "agent") == "daemon"
+                {
+                    hard_stop = "was asked by the daemon".into();
+                }
                 // A question goes with its thread; a finding, handoff or
                 // suggestion on a running thread (one security thread
                 // holds many) is settled by its own answer or decision, or
@@ -830,7 +839,7 @@ impl BoardData {
                     continue;
                 }
                 rows.push(object(
-                    "id thread_key area thread kind agent name session date summary body on_post stop stale thread_last decider",
+                    "id thread_key area thread kind agent name session date summary body on_post stop stale thread_last decider hard_stop",
                     vec![
                         json!(id),
                         json!(key),
@@ -847,12 +856,8 @@ impl BoardData {
                         json!(stop),
                         json!(status == "stale"),
                         json!(last),
-                        json!(question_decider(
-                            &kind,
-                            &summary,
-                            owner_away,
-                            major_updates_auto
-                        )),
+                        json!(question_decider(&kind, &summary, &hard_stop, major_updates_auto)),
+                        json!(hard_stop),
                     ],
                 ));
             }
@@ -868,7 +873,7 @@ impl BoardData {
                 "agents_deciding".into(),
                 json!({
                     "count": delegated,
-                    "note": format!("{delegated} more the agents are deciding (the lead while you are away, or a setting answers them)"),
+                    "note": format!("{delegated} more the agents are deciding (the lead decides routine asks, or a setting answers them)"),
                 }),
             );
         }
@@ -1094,24 +1099,25 @@ impl BoardData {
     }
 }
 
-/// Who alone can answer a question the owner was asked. A security finding
-/// about a major upgrade that `dependencies.major_updates = auto` queues
-/// itself is a `setting`'s call; while `owner.presence` is `away` the lead
-/// answers findings, handoffs and suggestions on the owner's behalf
-/// (edc518dc); everything else only the owner can decide.
+/// Who answers an ask addressed to the owner. A security finding about a
+/// major upgrade that `dependencies.major_updates = auto` queues itself is a
+/// `setting`'s call; an ask at a hard stop (`hard_stop` names why, from
+/// [`hive_board::hard_stop_ask`]) waits for the `owner`; every other ask is
+/// routine and the project's `lead` decides it on the owner's behalf,
+/// whatever `owner.presence` says (TASK-129).
 fn question_decider(
     kind: &str,
     summary: &str,
-    owner_away: bool,
+    hard_stop: &str,
     major_updates_auto: bool,
 ) -> &'static str {
     if kind == "finding" && major_updates_auto && summary.contains("major upgrade") {
         return "setting";
     }
-    if owner_away && matches!(kind, "finding" | "handoff" | "suggestion") {
-        return "lead";
+    if !hard_stop.is_empty() {
+        return "owner";
     }
-    "owner"
+    "lead"
 }
 
 pub(crate) fn str_value(v: &Value) -> String {
@@ -2477,10 +2483,22 @@ mod tests {
             present: true,
             mark: String::new(),
         };
+        // Only the stopped loop is at a hard stop (ADR-043); the other three
+        // are routine asks the lead decides (TASK-129), listed but not
+        // counted as waiting on the owner.
+        let deciders = view
+            .data
+            .as_ref()
+            .unwrap()
+            .questions
+            .iter()
+            .map(|q| str_key(q, "decider"))
+            .collect::<Vec<_>>();
+        assert_eq!(deciders, vec!["owner", "lead", "lead", "lead"]);
         let summary = h.summary(&view);
-        assert_eq!(summary["owner_questions"], 4);
+        assert_eq!(summary["owner_questions"], 1);
         let org = h.org(std::slice::from_ref(&view));
-        assert_eq!(org["totals"]["owner_questions"], 4);
+        assert_eq!(org["totals"]["owner_questions"], 1);
         let rows = org["questions"].as_array().unwrap();
         assert_eq!(rows.len(), 4);
         assert_eq!(rows[0]["slug"], "one");
@@ -2561,12 +2579,20 @@ mod tests {
             )
             .unwrap()
         };
-        // One of each class: the owner's ask, a finding the lead answers
-        // while the owner is away, and a security major-upgrade finding a
-        // setting answers.
+        // One of each class: an ask at a hard stop (publication) only the
+        // owner decides, a routine question and a handoff the lead decides
+        // whatever owner.presence says, and a security major-upgrade finding
+        // a setting answers under `auto`.
         let own = post(
             "question",
             "own",
+            "Put the new wording on hivefleet.dev now?",
+            "Publishing the site goes live for everyone.\n\nYes: Publish it\nNo: Hold it",
+            "2026-09-06T08:00:00Z",
+        );
+        let routine = post(
+            "question",
+            "routine",
             "Ship the rename?",
             "Yes: Rename it\nNo: Keep it",
             "2026-09-06T08:01:00Z",
@@ -2575,7 +2601,7 @@ mod tests {
             "handoff",
             "lead",
             "Run the queued cleanup?",
-            "The owner is away; the lead's call.",
+            "The lead's call.",
             "2026-09-06T08:02:00Z",
         );
         let setting = post(
@@ -2587,59 +2613,53 @@ mod tests {
         );
 
         let h = http::handler(&s);
-
-        // Owner present, no auto: all three are the owner's.
-        let data = h.snapshot("one", "").unwrap();
-        let deciders: Vec<(String, String)> = data
-            .questions
-            .iter()
-            .map(|q| {
-                let id = str_key(q, "id");
-                let who = if id == own.id {
-                    "own"
-                } else if id == lead.id {
-                    "lead"
-                } else {
-                    "setting"
-                };
-                (who.to_string(), str_key(q, "decider"))
-            })
-            .collect();
-        assert_eq!(deciders.len(), 3, "{:#?}", data.questions);
-        for (who, decider) in &deciders {
-            assert_eq!(decider, "owner", "{who}: {deciders:?}");
-        }
-        assert!(!data.questions_meta.contains_key("agents_deciding"));
-
-        // Owner away: the handoff and the finding become the lead's (the
-        // lead answers findings, handoffs and suggestions while the owner is
-        // away); only the question stays the owner's.
-        s.set_setting("human", "owner.presence", hive_store::OWNER_AWAY)
-            .unwrap();
-        let data = h.snapshot("one", "").unwrap();
-        let by_id: std::collections::BTreeMap<String, String> = data
-            .questions
-            .iter()
-            .map(|q| (str_key(q, "id"), str_key(q, "decider")))
-            .collect();
-        assert_eq!(by_id[&own.id], "owner");
-        assert_eq!(by_id[&lead.id], "lead");
-        assert_eq!(by_id[&setting.id], "lead");
-        assert_eq!(
-            data.questions_meta["agents_deciding"]["count"],
-            serde_json::json!(2)
-        );
-        let view = crate::read::ProjectView {
+        let view_of = |data: BoardData| crate::read::ProjectView {
             project: s.project("one").unwrap().unwrap(),
             data: Some(std::sync::Arc::new(data)),
             error: String::new(),
             present: true,
             mark: String::new(),
         };
-        assert_eq!(h.summary(&view)["owner_questions"], 1);
 
-        // Major upgrades on auto too: the finding is the setting's, leaving
-        // only the owner's own question in For you.
+        // Nothing waits on the owner by default (TASK-129): present or
+        // away, only the publication is the owner's, with the hard stop
+        // named for the Sessions strip; the rest are the lead's.
+        for presence in [hive_store::OWNER_PRESENT, hive_store::OWNER_AWAY] {
+            s.set_setting("human", "owner.presence", presence).unwrap();
+            let data = h.snapshot("one", "").unwrap();
+            let by_id: std::collections::BTreeMap<String, (String, String)> = data
+                .questions
+                .iter()
+                .map(|q| {
+                    (
+                        str_key(q, "id"),
+                        (str_key(q, "decider"), str_key(q, "hard_stop")),
+                    )
+                })
+                .collect();
+            assert_eq!(by_id.len(), 4, "{presence}: {:#?}", data.questions);
+            assert_eq!(
+                by_id[&own.id],
+                ("owner".to_string(), "is about publication".to_string()),
+                "{presence}"
+            );
+            for id in [&routine.id, &lead.id, &setting.id] {
+                assert_eq!(by_id[id], ("lead".to_string(), String::new()), "{presence}");
+            }
+            assert_eq!(
+                data.questions_meta["agents_deciding"]["count"],
+                serde_json::json!(3),
+                "{presence}"
+            );
+            assert_eq!(
+                h.summary(&view_of(data))["owner_questions"],
+                1,
+                "{presence}"
+            );
+        }
+
+        // Major upgrades on auto: the finding is the setting's, leaving only
+        // the hard stop for the owner.
         s.set_setting("human", "dependencies.major_updates", "auto")
             .unwrap();
         let data = h.snapshot("one", "").unwrap();
@@ -2649,19 +2669,14 @@ mod tests {
             .map(|q| (str_key(q, "id"), str_key(q, "decider")))
             .collect();
         assert_eq!(by_id[&own.id], "owner");
+        assert_eq!(by_id[&routine.id], "lead");
         assert_eq!(by_id[&lead.id], "lead");
         assert_eq!(by_id[&setting.id], "setting");
         assert_eq!(
             data.questions_meta["agents_deciding"]["count"],
-            serde_json::json!(2)
+            serde_json::json!(3)
         );
-        let view = crate::read::ProjectView {
-            project: s.project("one").unwrap().unwrap(),
-            data: Some(std::sync::Arc::new(data)),
-            error: String::new(),
-            present: true,
-            mark: String::new(),
-        };
+        let view = view_of(data);
         assert_eq!(h.summary(&view)["owner_questions"], 1);
         let org = h.org(std::slice::from_ref(&view));
         assert_eq!(org["totals"]["owner_questions"], 1);

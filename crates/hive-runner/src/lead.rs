@@ -59,6 +59,9 @@ pub(crate) struct OwnerQuestion {
     /// empty when it names none.
     pub yes: String,
     pub no: String,
+    /// Why only the owner can decide it (`hive_board::hard_stop_ask`);
+    /// empty for a routine ask the lead decides (TASK-129).
+    pub hard_stop: String,
 }
 
 /// The post kinds, besides a question, that wait for the owner when marked
@@ -67,7 +70,7 @@ pub(crate) struct OwnerQuestion {
 pub(crate) const OWNER_ASK_DECIDE_KINDS: &[&str] = &["finding", "handoff", "suggestion"];
 
 /// The yes/no rubric for a routine ask addressed to the owner: the lead's
-/// brief gives it while the owner is away, and the decide role (ADR-072,
+/// brief gives it whatever `owner.presence` says, and the decide role (ADR-072,
 /// `crate::decide`) answers by it.
 pub(crate) const ROUTINE_ASK_RUBRIC: &str = "A finding whose advisory names no fixed version is a no (keep watching) unless the package can be dropped or replaced inside the project's checks. A handoff or suggestion that is Tier 0 or 1 work inside the constitution and the accepted decisions is a yes; one that is stale, already done, or needs the owner's knowledge is a no with the reason. Major dependency upgrades are not listed: the `dependencies.major_updates` setting decides those, never you.";
 
@@ -376,57 +379,70 @@ pub(crate) fn write_lead_answered_asks_section(b: &mut String, slug: String, lin
 pub(crate) fn write_lead_owner_questions_section(
     b: &mut String,
     slug: String,
-    away: Option<AwayBrief>,
+    _away: Option<AwayBrief>,
     questions: Vec<OwnerQuestion>,
 ) {
     b.push_str("## Questions addressed to the owner\n\n");
+    let (routine, hard_stops): (Vec<_>, Vec<_>) =
+        questions.into_iter().partition(|q| q.hard_stop.is_empty());
     let mut asks = 0;
-    if questions.is_empty() {
-        b.push_str("No open questions addressed to the owner.\n");
-    } else {
-        for q in questions {
-            if q.kind.is_empty() || q.kind == "question" {
-                let _ = writeln!(
-                    b,
-                    "- {} {}/{} by {}: {}",
-                    q.id, q.area, q.thread, q.agent, q.summary
-                );
-                continue;
-            }
-            asks += 1;
+    if routine.is_empty() {
+        b.push_str("No open routine questions addressed to the owner.\n");
+    }
+    for q in routine {
+        if q.kind.is_empty() || q.kind == "question" {
             let _ = writeln!(
                 b,
-                "- {} ({} for the owner) {}/{} by {}: {}",
-                q.id, q.kind, q.area, q.thread, q.agent, q.summary
+                "- {} {}/{} by {}: {}",
+                q.id, q.area, q.thread, q.agent, q.summary
             );
-            if !q.yes.is_empty() || !q.no.is_empty() {
-                let _ = writeln!(
-                    b,
-                    "  yes: {}; no: {}",
-                    if q.yes.is_empty() {
-                        "act on it"
-                    } else {
-                        &q.yes
-                    },
-                    if q.no.is_empty() { "close it" } else { &q.no }
-                );
-            }
+            continue;
+        }
+        asks += 1;
+        let _ = writeln!(
+            b,
+            "- {} ({} for the owner) {}/{} by {}: {}",
+            q.id, q.kind, q.area, q.thread, q.agent, q.summary
+        );
+        if !q.yes.is_empty() || !q.no.is_empty() {
+            let _ = writeln!(
+                b,
+                "  yes: {}; no: {}",
+                if q.yes.is_empty() {
+                    "act on it"
+                } else {
+                    &q.yes
+                },
+                if q.no.is_empty() { "close it" } else { &q.no }
+            );
         }
     }
     b.push('\n');
-    if away.is_some() {
+    let _ = write!(
+        b,
+        "Nothing waits on the owner by default: these are routine asks, and you decide them whether the owner is here or away. Answer each question with hive post answer --project {slug} --area A --thread T --on POST-ID --summary ... - a question that offers options gets the Recommended one unless the evidence says otherwise, and your answer says which and why. Leave money, compute, Tier 2 decisions, the constitution, hard stops and anything only the owner knows unanswered. A question the daemon asked (a lead seat, the toolkit) is not yours to answer: a seat is compute, and the toolkit the daemon adds itself while the owner is away.\n\n"
+    );
+    if asks > 0 {
         let _ = write!(
             b,
-            "The owner is away: answer what you can with hive post answer --project {slug} --area A --thread T --on POST-ID --summary ... ; leave money, compute, Tier 2 decisions, the constitution, hard stops and anything only the owner knows unanswered. A question the daemon asked (a lead seat, the toolkit) is not yours to answer: a seat is compute, and the toolkit the daemon adds itself while the owner is away.\n\n"
+            "A finding, handoff or suggestion marked \"for the owner\" above is your call: end the report with one `DECIDE: <post-id> yes|no <reason>` line for each. Yes queues the work the post's Yes line names as a job recorded as your decision; no closes it with your reason - read the full post first (`hive show POST-ID`). {ROUTINE_ASK_RUBRIC} Leave none for the owner.\n\n"
         );
-        if asks > 0 {
-            let _ = write!(
+    }
+    if !hard_stops.is_empty() {
+        b.push_str("### At a hard stop: the owner's\n\n");
+        for q in hard_stops {
+            let kind = if q.kind.is_empty() || q.kind == "question" {
+                String::new()
+            } else {
+                format!(" ({} for the owner)", q.kind)
+            };
+            let _ = writeln!(
                 b,
-                "A finding, handoff or suggestion marked \"for the owner\" above is your call while the owner is away: end the report with one `DECIDE: <post-id> yes|no <reason>` line for each. Yes queues the work the post's Yes line names as a job recorded as your decision; no closes it with your reason - read the full post first (`hive show POST-ID`). {ROUTINE_ASK_RUBRIC} Leave none for the owner.\n\n"
+                "- {}{} {}/{} by {}: {} - {}",
+                q.id, kind, q.area, q.thread, q.agent, q.summary, q.hard_stop
             );
         }
-    } else {
-        b.push_str("These wait for the owner; do not answer them, but say in the task thread when one blocks a task.\n\n");
+        b.push_str("\nThese wait for the owner; do not answer them, but say in the task thread when one blocks a task.\n\n");
     }
 }
 
@@ -436,7 +452,7 @@ pub(crate) fn write_owner_away_section(b: &mut String, _slug: String, away: Opti
     };
     let _ = write!(
         b,
-        "## The owner is away\n\nThe owner set `owner.presence = away`. Decide on the owner's behalf with your best judgement; the decision is recorded as yours, never as the owner's.\n\n### Awaiting proposals ({})\n\n",
+        "## Routine asks are yours\n\nNothing waits on the owner by default, whatever `owner.presence` says: decide the routine asks on the owner's behalf with your best judgement; the decision is recorded as yours, never as the owner's. Only the hard stops (money, destructive or irreversible acts, credentials, publication, Tier 2) wait for the owner, and those are not listed here.\n\n### Awaiting proposals ({})\n\n",
         away.proposals.len()
     );
     if away.proposals.is_empty() {
@@ -464,7 +480,7 @@ pub(crate) fn write_owner_away_section(b: &mut String, _slug: String, away: Opti
     }
     let _ = write!(
         b,
-        "### Eligible suggestions addressed to the owner ({})\n\nThe planner never queues these (they are `{}`); with the owner away they are yours to queue as work or close.\n\n",
+        "### Eligible suggestions addressed to the owner ({})\n\nThe planner never queues these (they are `{}`); they are yours to queue as work or close.\n\n",
         away.owner_cards.len(),
         hive_tally::GATE_OWNER
     );
@@ -502,8 +518,8 @@ pub(crate) fn away_lead_rules(slug: String, away: Option<AwayBrief>, start: i32)
     };
     rule("For each proposal listed above, end the report with one line per proposal: `DECIDE: <post-id> yes|no <reason>`. Say yes only when the proposal is small, reversible, inside the constitution and the accepted decisions, and its evidence holds; say no with the reason otherwise. If you cannot judge, say no with what is missing - the author can re-propose.".into());
     rule("Never decide hard stops (`STOP`), Tier 2 decisions (new or changed ADRs under docs/decisions/), the constitution's protected sections, `docs/evolution/evaluators.md`, `.github/`, money (compute), or anything with a `pair:` or `onboard:` marker; say why instead.".into());
-    rule("Do not park tasks on the owner while away: decide and write the reasoning in the task's thread. Only a hard stop or a Tier 2 decision goes to `review` with `SUMMARY: waiting on the owner: ...`.".into());
-    rule("Do not post questions addressed to the owner while away, and never repeat one that already exists: a stopped evolution loop, a sign-in, a missing secret are cards on the hub already. Name what only the owner can do in the report instead.".into());
+    rule("Do not park tasks on the owner: decide and write the reasoning in the task's thread. Only a hard stop or a Tier 2 decision goes to `review` with `SUMMARY: waiting on the owner: ...`.".into());
+    rule("Do not post questions addressed to the owner unless they are at a hard stop, and never repeat one that already exists: a stopped evolution loop, a sign-in, a missing secret are cards on the hub already. Name what only the owner can do in the report instead.".into());
     if !away.owner_cards.is_empty() {
         rule(format!(
             "For each eligible suggestion addressed to the owner listed above: queue it as one worker job when it is Tier 0 or 1 work inside the constitution and the accepted decisions - `hive job add --project {slug} --kind improve --source suggestion:<id> --title \"...\" --brief \"...\" [--tier 0|1]` (the source ties the job to the card, so the ballot shows it in flight and then built) - or close its thread with the reason: `hive post result --project {slug} --area <area> --thread <thread> --on <id> --resolution declined --summary \"<why>\"`. Leave none for the owner."
@@ -857,29 +873,28 @@ pub(crate) fn lead_due(
             .cmp(&a.task.priority)
             .then_with(|| a.task.id.cmp(&b.task.id))
     });
-    let mut away = None;
-    if s.owner_away() {
-        let mut a = AwayBrief {
-            proposals: awaiting_lead_proposals(s, slug.clone(), now.clone(), true)?,
+    // Nothing waits on the owner by default (TASK-129): the lead decides
+    // the routine asks as it once did only while the owner was away,
+    // whatever owner.presence says; hard stops stay the owner's.
+    let mut a = AwayBrief {
+        proposals: awaiting_lead_proposals(s, slug.clone(), now.clone(), true)?,
+        ..Default::default()
+    };
+    let q = hive_tally::work_wanted(
+        s,
+        Some(vec![slug.clone()]),
+        &lead,
+        hive_tally::Thresholds {
+            now: now.clone(),
             ..Default::default()
-        };
-        let q = hive_tally::work_wanted(
-            s,
-            Some(vec![slug.clone()]),
-            &lead,
-            hive_tally::Thresholds {
-                now: now.clone(),
-                ..Default::default()
-            },
-        )?;
-        for c in owner_cards(q.work) {
-            if !recently_presented_to_lead(s, slug.clone(), now.clone(), c.id.clone()) {
-                a.owner_cards.push(c);
-            }
+        },
+    )?;
+    for c in owner_cards(q.work) {
+        if !recently_presented_to_lead(s, slug.clone(), now.clone(), c.id.clone()) {
+            a.owner_cards.push(c);
         }
-        away = Some(a);
     }
-    Ok((owner, due, away))
+    Ok((owner, due, Some(a)))
 }
 
 /// Workers' reports the lead has not read: one per finished job of an open
@@ -979,7 +994,7 @@ pub(crate) fn awaiting_lead_proposals(
             body: row.get(4)?,
         };
         if LEAD_HUMAN_ONLY_MARKER_RE.is_match(&p.body)
-            || !hive_board::owner_only_proposal(&p.summary, &p.body).is_empty()
+            || !hive_board::hard_stop_ask("proposal", &p.summary, &p.body).is_empty()
         {
             continue;
         }
@@ -1021,6 +1036,7 @@ pub(crate) fn owner_addressed_questions(
             kind: "question".into(),
             yes: String::new(),
             no: String::new(),
+            hard_stop: hive_board::hard_stop_ask("question", &q.str("summary"), &q.str("body")),
         })
         .collect()
 }
@@ -1115,6 +1131,7 @@ pub(crate) fn owner_addressed_asks(s: &hive_store::Store, slug: String) -> Vec<O
             kind: r.str("kind"),
             yes,
             no,
+            hard_stop: hive_board::hard_stop_ask(&r.str("kind"), &r.str("summary"), &r.str("body")),
         }
     })
     .collect()
@@ -1353,20 +1370,23 @@ pub(crate) fn tend_lead(
             .concat();
         }
     };
+    // The findings, handoffs and suggestions addressed to the owner are the
+    // lead's to decide too, and the questions its to answer, whatever
+    // owner.presence says (TASK-129). The hard stops (a stopped loop,
+    // money, credentials, publication ...) are listed as context but never
+    // wake the lead: they wait for the owner on the Sessions strip.
     let mut owner_questions = owner_addressed_questions(s, slug.clone(), now.clone());
-    if away.is_some() {
-        // While the owner is away, the findings, handoffs and suggestions
-        // addressed to the owner are the lead's to decide too.
-        owner_questions.extend(owner_addressed_asks(s, slug.clone()));
-    }
+    owner_questions.extend(owner_addressed_asks(s, slug.clone()));
     let mut away_question_count = 0;
-    if away.is_some() {
-        for q in &owner_questions {
-            if q.summary != hive_evolve::STOP_SUMMARY
-                && !recently_presented_to_lead(s, slug.clone(), now.clone(), q.id.clone())
-            {
-                away_question_count += 1;
-            }
+    for q in &owner_questions {
+        // A question the daemon asked (a restart drain, a login gate, a
+        // lead seat) the daemon answers itself: it never wakes the lead.
+        // Its findings (the security watcher's) are the lead's to decide.
+        if q.hard_stop.is_empty()
+            && !(q.kind == "question" && q.agent == "daemon")
+            && !recently_presented_to_lead(s, slug.clone(), now.clone(), q.id.clone())
+        {
+            away_question_count += 1;
         }
     }
     if msgs.is_empty()
@@ -1592,16 +1612,16 @@ pub(crate) fn lead_idle_brief(
         "You are the lead of project `{}`, and its maintainer. The owner has no open task and no unread message for you, and nothing is queued or running: this is your standing brief. Find the next most valuable Tier 0 or Tier 1 work and queue it yourself - the owner asked that nothing wait on a human that agents can do. Small maintenance you can finish in this run - a flaky test, doc drift, a failing scheduled check, a watcher or monitor the project lacks - do yourself in this clone and commit; the runner lands your commits like any worker's. Larger work goes to a job.\n\n",
         slug
     );
-    let mut away = None;
-    if s.owner_away() {
+    let away = {
         let proposals =
             awaiting_lead_proposals(s, slug.clone(), s.now(), false).unwrap_or_default();
-        away = Some(AwayBrief {
+        let away = Some(AwayBrief {
             proposals,
             owner_cards: owner_cards(items.clone()),
         });
         write_owner_away_section(&mut b, slug.clone(), away.clone());
-    }
+        away
+    };
     let (rules, finish_rule) = away_lead_rules(slug.clone(), away, 7);
     let _ = write!(b, "## The board's queue for {} (top 15)\n\n", slug);
     if items.is_empty() {
@@ -4483,6 +4503,7 @@ mod tests {
             ("away question", "question", true),
             ("present message", "message", false),
             ("present task", "task", false),
+            ("present question", "question", false),
         ] {
             let s = new_store();
             new_repo(&s);
@@ -4605,15 +4626,17 @@ mod tests {
                     "{name}: fresh owner brief lacks {want:?}:\n{brief}"
                 );
             }
-            let guidance = if away {
-                "leave money, compute, Tier 2 decisions, the constitution, hard stops and anything only the owner knows unanswered"
-            } else {
-                "These wait for the owner; do not answer them"
-            };
-            assert!(
-                brief.contains(guidance),
-                "{name}: owner-only guidance changed:\n{brief}"
-            );
+            // Present or away (TASK-129): the routine questions are the
+            // lead's, the stopped loop (a hard stop) the owner's.
+            for guidance in [
+                "Leave money, compute, Tier 2 decisions, the constitution, hard stops and anything only the owner knows unanswered",
+                "These wait for the owner; do not answer them",
+            ] {
+                assert!(
+                    brief.contains(guidance),
+                    "{name}: owner-only guidance changed:\n{brief}"
+                );
+            }
             assert!(
                 work == "question" || !jobs[1].str("title").contains("owner question(s)"),
                 "{name}: paced questions were counted as new work: {}",

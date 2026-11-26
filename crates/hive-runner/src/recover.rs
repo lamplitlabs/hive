@@ -4872,15 +4872,27 @@ mod tests {
                 .expect("create answer");
             }
             let lines = crate::lead::tend_lead(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+            // A routine question for the owner is the lead's to answer
+            // whatever owner.presence says (TASK-129) - as an owner
+            // question, never counted as peer help.
+            let want = if mode == "owner flag" { 1 } else { 0 };
             assert_eq!(
                 count(
                     &s,
                     "SELECT COUNT(*) AS n FROM jobs WHERE kind = ?",
                     &[&crate::lead::LEAD_KIND]
                 ),
-                0,
+                want,
                 "{mode}: guarded mention woke lead: {lines:?}"
             );
+            let joined = lines.join("\n");
+            assert!(!joined.contains("peer request"), "{mode}: {lines:?}");
+            if want == 1 {
+                assert!(
+                    joined.contains("answer 1 owner question(s)"),
+                    "{mode}: {lines:?}"
+                );
+            }
         }
     }
 
