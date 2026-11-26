@@ -4,8 +4,9 @@
 //! under the lead's name through `hive_board::decide_with`, so every gate of
 //! a lead's decision still applies; a pass, an error, a late answer or one
 //! that cannot be read leaves the ask in the lead's brief, as before the
-//! role. In `decide.mode = shadow` the answer is recorded and nothing is
-//! decided.
+//! role. While the role is on and no outage is open, the lead's brief leaves
+//! out the asks the role still holds (`held_by_role`). In
+//! `decide.mode = shadow` the answer is recorded and nothing is decided.
 //!
 //! The asks are the ones the lead decides today: `owner_addressed_asks`
 //! (finding, handoff or suggestion marked for the owner, still open, not a
@@ -26,6 +27,16 @@ const ANSWERED_ACTIONS: &[&str] = &["decide.pass", "decide.shadow", "decide.refu
 /// fallbacks it has counted since.
 const OUTAGE_META: &str = "decide.outage";
 const OUTAGE_COUNT_META: &str = "decide.outage_fallbacks";
+/// One failed try on one ask: no answer, a late one or one that cannot be
+/// read. The ask waits `RETRY_MINUTES` before it is sent again, so the asks
+/// behind it reach the role first, and after `MAX_TRIES` it is the lead's
+/// for good.
+const FAILED_ACTION: &str = "decide.failed";
+const RETRY_MINUTES: i64 = 60;
+const MAX_TRIES: i64 = 3;
+/// The role's reason is one line of at most this many characters: it goes
+/// into the decision, the result post and the job brief.
+const REASON_CHARS: usize = 300;
 /// How much of a post body and of the thread the call carries.
 const BODY_CHARS: usize = 4000;
 const THREAD_CHARS: usize = 8000;
@@ -66,13 +77,26 @@ pub(crate) fn tend_decide(s: &hive_store::Store, slug: &str, now: &str) -> Vec<S
     let mut runs = DECIDE_RUNS.lock();
     let run = runs.entry(slug.to_string()).or_default();
     let lines = std::mem::take(&mut run.lines);
-    if run.inflight || !role_due(s) || decide_asks(s, slug).is_empty() {
+    if run.inflight || !role_due(s) || decide_asks(s, slug, now).is_empty() {
         return lines;
     }
     run.inflight = true;
     let (s, slug, now) = (s.clone(), slug.to_string(), now.to_string());
     std::thread::spawn(move || {
-        let out = decide_pass(&s, &slug, &now);
+        // A panic must not leave the pass marked in flight, which would keep
+        // the role off until the daemon restarts: it is an outage, said
+        // once, and the next pass tries again.
+        let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            decide_pass(&s, &slug, &now)
+        }))
+        .unwrap_or_else(|panic| {
+            let reason = format!("the decide pass panicked: {}", panic_text(&panic));
+            let by = role_by(&s);
+            fallback(&s, &now, &slug, "", &by, &reason);
+            vec![format!(
+                "decide {slug}: {reason}; the asks stay with the lead"
+            )]
+        });
         let mut runs = DECIDE_RUNS.lock();
         let run = runs.entry(slug).or_default();
         run.inflight = false;
@@ -88,9 +112,74 @@ fn role_due(s: &hive_store::Store) -> bool {
     s.decide_mode() != "off" && s.owner_away()
 }
 
-/// The asks of `slug` the role may answer, oldest first.
-pub(crate) fn decide_asks(s: &hive_store::Store, slug: &str) -> Vec<DecideAsk> {
-    let questions = crate::lead::owner_addressed_asks(s, slug.to_string());
+fn panic_text(panic: &Box<dyn std::any::Any + Send>) -> String {
+    panic
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_string())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown panic".into())
+}
+
+/// The role's model and provider as the settings name them.
+fn role_by(s: &hive_store::Store) -> hive_board::DecidedBy {
+    hive_board::DecidedBy {
+        model: s.decide_model(),
+        provider: s.decide_provider(),
+        role: true,
+    }
+}
+
+/// The asks of `slug` the lead's pass leaves to the role: while
+/// `decide.mode` is on, the owner is away, the lead is active and no outage
+/// is open, the ones the role still lists (`role_asks`). An ask the role
+/// passed, failed on, or may not answer stays in the lead's brief; in shadow
+/// the lead decides them all. Without this every ask cost one small call
+/// and a lead run besides.
+pub(crate) fn held_by_role(
+    s: &hive_store::Store,
+    slug: &str,
+    questions: &[crate::lead::OwnerQuestion],
+    now: &str,
+) -> std::collections::BTreeSet<String> {
+    if questions.is_empty()
+        || s.decide_mode() != "on"
+        || !s.owner_away()
+        || !s
+            .meta(OUTAGE_META)
+            .map(|(v, _)| v)
+            .unwrap_or_default()
+            .is_empty()
+    {
+        return Default::default();
+    }
+    match s.agent(&crate::lead::lead_name(slug.to_string())) {
+        Ok(Some(a)) if a.kind == "lead" && a.status == "active" => {}
+        _ => return Default::default(),
+    }
+    role_asks(s, questions.to_vec(), now)
+        .into_iter()
+        .map(|a| a.id)
+        .collect()
+}
+
+/// The asks of `slug` the role may answer now, oldest first.
+pub(crate) fn decide_asks(s: &hive_store::Store, slug: &str, now: &str) -> Vec<DecideAsk> {
+    role_asks(
+        s,
+        crate::lead::owner_addressed_asks(s, slug.to_string()),
+        now,
+    )
+}
+
+/// Of `questions` (the lead's `owner_addressed_asks`), the ones the role
+/// may answer at `now`: not owner-only, no pair or onboard marker, no
+/// compute request, not answered by the role already, and not failed
+/// `MAX_TRIES` times or within the last `RETRY_MINUTES`.
+fn role_asks(
+    s: &hive_store::Store,
+    questions: Vec<crate::lead::OwnerQuestion>,
+    now: &str,
+) -> Vec<DecideAsk> {
     if questions.is_empty() {
         return Vec::new();
     }
@@ -100,6 +189,9 @@ pub(crate) fn decide_asks(s: &hive_store::Store, slug: &str) -> Vec<DecideAsk> {
     let marks = vec!["?"; ANSWERED_ACTIONS.len()].join(", ");
     let answered_sql =
         format!("SELECT 1 AS x FROM events WHERE action IN ({marks}) AND subject = ? LIMIT 1");
+    let retry_since = crate::util::parse_iso(now)
+        .map(|t| crate::util::format_iso(t - chrono::Duration::minutes(RETRY_MINUTES)))
+        .unwrap_or_default();
     questions
         .into_iter()
         .filter_map(|q| {
@@ -141,15 +233,36 @@ pub(crate) fn decide_asks(s: &hive_store::Store, slug: &str) -> Vec<DecideAsk> {
             {
                 return None;
             }
+            let failed = crate::util::must_one(
+                &conn,
+                "SELECT COUNT(*) AS n, COALESCE(MAX(at), '') AS last FROM events WHERE subject = ? AND action = ?",
+                &[&ask.id, &FAILED_ACTION],
+            );
+            if i64::from(failed.int("n")) >= MAX_TRIES
+                || (!failed.str("last").is_empty()
+                    && failed.str("last").as_str() > retry_since.as_str())
+            {
+                return None;
+            }
             Some(ask)
         })
         .collect()
 }
 
 /// One decide pass over the open asks of `slug`, in the caller's thread.
-/// Returns one line per ask it touched. After the first fallback of a pass
-/// (no answer, a late or unreadable one) the rest of the pass is left to the
-/// lead: the provider is out, and each further call would only wait again.
+/// Returns one line per ask it touched.
+///
+/// Mode and presence are read again before each ask and after its answer,
+/// so an owner who returns, or a mode switched off or to shadow, mid-pass
+/// stops the pass before it records or decides anything more. Right before
+/// a write the ask is checked again as the lead's own path checks it: still
+/// open, and not a major security upgrade.
+///
+/// A call that fails (no answer, a late or an unreadable one) records one
+/// `decide.failed` try on that ask, which then waits `RETRY_MINUTES` and is
+/// the lead's for good after `MAX_TRIES`, so the asks behind it reach the
+/// role. A provider error or a timeout ends the pass (the provider is out,
+/// each further call would only wait again); an unreadable answer does not.
 pub(crate) fn decide_pass(s: &hive_store::Store, slug: &str, now: &str) -> Vec<String> {
     if !role_due(s) {
         return Vec::new();
@@ -159,12 +272,11 @@ pub(crate) fn decide_pass(s: &hive_store::Store, slug: &str, now: &str) -> Vec<S
         Ok(Some(a)) if a.kind == "lead" && a.status == "active" => {}
         _ => return Vec::new(),
     }
-    let mode = s.decide_mode();
-    let by = hive_board::DecidedBy {
-        model: s.decide_model(),
-        provider: s.decide_provider(),
-        role: true,
-    };
+    let asks = decide_asks(s, slug, now);
+    if asks.is_empty() {
+        return Vec::new();
+    }
+    let mut by = role_by(s);
     let timeout = Duration::from_secs(
         s.setting("decide.timeout_seconds", "30")
             .trim()
@@ -173,9 +285,29 @@ pub(crate) fn decide_pass(s: &hive_store::Store, slug: &str, now: &str) -> Vec<S
             .max(1),
     );
     let mut lines = Vec::new();
-    for ask in decide_asks(s, slug) {
+    let provider: std::sync::Arc<dyn hive_provider::Provider> = match open_role(s, &mut by, timeout)
+    {
+        Ok(p) => std::sync::Arc::from(p),
+        Err(e) => {
+            let reason = crate::run::err_message(&e);
+            fallback(s, now, slug, &asks[0].id, &by, &reason);
+            lines.push(format!(
+                "decide {slug}: the role cannot run, the asks stay with the lead: {reason}"
+            ));
+            return lines;
+        }
+    };
+    for ask in asks {
+        if !role_due(s) {
+            lines.push(format!(
+                "decide {slug}: stopped: decide.mode is off or the owner is back"
+            ));
+            break;
+        }
         let prompt = decide_prompt(s, &ask);
-        let answer = call_role(s, &by, prompt, timeout).and_then(|text| {
+        let called = call_role(&provider, &by, prompt, timeout);
+        let out = called.is_err();
+        let answer = called.and_then(|text| {
             read_answer(&text)
                 .ok_or_else(|| anyhow::anyhow!("unreadable answer: {}", clip(text.trim(), 200)))
         });
@@ -183,15 +315,33 @@ pub(crate) fn decide_pass(s: &hive_store::Store, slug: &str, now: &str) -> Vec<S
             Ok(a) => a,
             Err(e) => {
                 let reason = crate::run::err_message(&e);
+                failed(s, now, slug, &ask.id, &by, &reason);
                 fallback(s, now, slug, &ask.id, &by, &reason);
                 lines.push(format!(
                     "decide {slug}: {} left to the lead: {reason}",
                     ask.id
                 ));
-                break;
+                if out {
+                    break;
+                }
+                continue;
             }
         };
         recovered(s, now, &by);
+        // The answer may have taken `timeout`: read mode, presence and the
+        // ask again before anything is recorded.
+        if !role_due(s) {
+            lines.push(format!(
+                "decide {slug}: {} not recorded: decide.mode is off or the owner is back",
+                ask.id
+            ));
+            break;
+        }
+        let mode = s.decide_mode();
+        if let Some(why) = gone(s, &ask.id) {
+            lines.push(format!("decide {slug}: {} not recorded: {why}", ask.id));
+            continue;
+        }
         let detail = json!({
             "project": slug,
             "answer": answer.answer,
@@ -237,6 +387,13 @@ pub(crate) fn decide_pass(s: &hive_store::Store, slug: &str, now: &str) -> Vec<S
             )),
             Err(e) => {
                 let why = crate::run::err_message(&e);
+                // A refusal because the owner came back or the mode moved
+                // between the check and the write is not the ask's: it is
+                // not recorded, so the role may answer it on a later away.
+                if !role_due(s) || s.decide_mode() != "on" {
+                    lines.push(format!("decide {slug}: {} not decided: {why}", ask.id));
+                    break;
+                }
                 let mut detail = detail;
                 detail["refused"] = json!(why);
                 event(s, now, &lead, "decide.refused", &ask.id, detail);
@@ -245,6 +402,51 @@ pub(crate) fn decide_pass(s: &hive_store::Store, slug: &str, now: &str) -> Vec<S
         }
     }
     lines
+}
+
+/// Why the ask may no longer be written, checked right before the write as
+/// the lead's own path checks it (`run::apply_result_decisions`): it was
+/// answered, decided or its thread closed, or it is a major security
+/// upgrade. `None` while it still waits.
+fn gone(s: &hive_store::Store, post: &str) -> Option<String> {
+    let Ok(conn) = s.conn() else {
+        return Some("the store cannot be read".into());
+    };
+    if crate::lead::is_security_major_finding(&conn, post) {
+        return Some(
+            "it is a major dependency upgrade: the owner's call, or dependencies.major_updates's"
+                .into(),
+        );
+    }
+    if !crate::lead::owner_ask_is_open(&conn, post) {
+        return Some("it was answered or its thread closed meanwhile".into());
+    }
+    None
+}
+
+/// One failed try on `post`: counted per ask so it is not sent again on
+/// every pass (`role_asks`).
+fn failed(
+    s: &hive_store::Store,
+    now: &str,
+    slug: &str,
+    post: &str,
+    by: &hive_board::DecidedBy,
+    reason: &str,
+) {
+    event(
+        s,
+        now,
+        "daemon",
+        FAILED_ACTION,
+        post,
+        json!({
+            "project": slug,
+            "reason": reason,
+            "decided_model": by.model,
+            "decided_provider": by.provider,
+        }),
+    );
 }
 
 fn event(
@@ -260,15 +462,16 @@ fn event(
     }
 }
 
-/// The one call: the post, its thread and the rubric, no tools. The answer
-/// must come before `timeout`; the provider is also handed the deadline, so
-/// one that reads it stops on its own.
-fn call_role(
+/// Opens the role's provider. An empty model (no `decide_model`,
+/// `measure_model`, `light_model` nor `worker_model`: the shipped default)
+/// is resolved here to the provider's default chat model, and `by.model`
+/// names it, so the call never sends an empty model and the decision
+/// records the model that answered.
+fn open_role(
     s: &hive_store::Store,
-    by: &hive_board::DecidedBy,
-    prompt: String,
+    by: &mut hive_board::DecidedBy,
     timeout: Duration,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<Box<dyn hive_provider::Provider>> {
     let p = hive_provider::open(
         &by.provider,
         hive_provider::Options {
@@ -277,6 +480,33 @@ fn call_role(
             ..Default::default()
         },
     )?;
+    if by.model.trim().is_empty() {
+        let cancel = hive_provider::CancelToken::new().with_timeout(timeout);
+        let models = p.models(&cancel)?;
+        let chosen = models
+            .iter()
+            .find(|m| m.default && m.chat)
+            .or_else(|| models.iter().find(|m| m.chat))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no decide model: decide_model is empty and {} lists no chat model",
+                    by.provider
+                )
+            })?;
+        by.model = chosen.id.clone();
+    }
+    Ok(p)
+}
+
+/// The one call: the post, its thread and the rubric, no tools. The answer
+/// must come before `timeout`; the provider is also handed the deadline, so
+/// one that reads it stops on its own.
+fn call_role(
+    p: &std::sync::Arc<dyn hive_provider::Provider>,
+    by: &hive_board::DecidedBy,
+    prompt: String,
+    timeout: Duration,
+) -> anyhow::Result<String> {
     let cancel = hive_provider::CancelToken::new().with_timeout(timeout);
     let req = hive_provider::Request {
         model: by.model.clone(),
@@ -291,6 +521,7 @@ fn call_role(
     };
     let (tx, rx) = std::sync::mpsc::channel();
     let token = cancel.clone();
+    let p = p.clone();
     std::thread::spawn(move || {
         let _ = tx.send(p.chat(&token, req));
     });
@@ -301,9 +532,12 @@ fn call_role(
             .unwrap_or_default()
             .trim()
             .to_string()),
-        Err(_) => {
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
             cancel.cancel();
             anyhow::bail!("no answer within {}s", timeout.as_secs())
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            anyhow::bail!("the provider's call ended without an answer")
         }
     }
 }
@@ -377,8 +611,11 @@ fn clip(text: &str, max: usize) -> String {
 }
 
 /// Reads `{"answer":"yes"|"no"|"pass","reason":"..."}` out of the reply; a
-/// code fence around it is allowed. Anything else, an answer outside the
-/// three, or a yes or no without a reason, cannot be read.
+/// code fence around it is allowed. The reason becomes one line (its
+/// whitespace runs folded to one space) of at most `REASON_CHARS`: it goes
+/// into the decision, the result post and the job brief. Anything else, an
+/// answer outside the three, or a yes or no without a reason, cannot be
+/// read.
 pub(crate) fn read_answer(text: &str) -> Option<DecideAnswer> {
     let start = text.find('{')?;
     let end = text.rfind('}')?;
@@ -391,8 +628,10 @@ pub(crate) fn read_answer(text: &str) -> Option<DecideAnswer> {
         .get("reason")
         .and_then(|r| r.as_str())
         .unwrap_or("")
-        .trim()
-        .to_string();
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let reason = clip(&reason, REASON_CHARS);
     match answer.as_str() {
         "yes" | "no" if !reason.is_empty() => Some(DecideAnswer { answer, reason }),
         "pass" => Some(DecideAnswer { answer, reason }),
@@ -483,6 +722,24 @@ mod tests {
         models: Vec<String>,
         prompts: Vec<String>,
         tools: usize,
+        /// Replies by a word of the prompt, before `reply`.
+        replies: Vec<(String, String)>,
+        /// The provider's model list; `models` panics when `panic` is set.
+        list: Vec<String>,
+        panic: bool,
+    }
+
+    /// What happens in the store while a call of the store's fake waits:
+    /// the world moving on between the list and the write.
+    type During = std::sync::Arc<dyn Fn() + Send + Sync>;
+    static DURING: LazyLock<Mutex<BTreeMap<String, During>>> =
+        LazyLock::new(|| Mutex::new(BTreeMap::new()));
+
+    fn during(s: &hive_store::Store, f: impl Fn() + Send + Sync + 'static) {
+        DURING
+            .lock()
+            .unwrap()
+            .insert(s.home.clone(), std::sync::Arc::new(f));
     }
 
     static FAKES: LazyLock<Mutex<BTreeMap<String, Fake>>> =
@@ -522,13 +779,24 @@ mod tests {
             if f.stall_ms > 0 {
                 std::thread::sleep(Duration::from_millis(f.stall_ms));
             }
+            let hook = DURING.lock().unwrap().remove(&self.home);
+            if let Some(hook) = hook {
+                hook();
+            }
             if !f.err.is_empty() {
                 anyhow::bail!("{}", f.err);
             }
+            let prompt = f.prompts.last().cloned().unwrap_or_default();
+            let reply = f
+                .replies
+                .iter()
+                .find(|(word, _)| prompt.contains(word.as_str()))
+                .map(|(_, r)| r.clone())
+                .unwrap_or_else(|| f.reply.clone());
             Ok(hive_provider::Response {
                 message: Some(hive_provider::Message {
                     role: hive_provider::Role::ASSISTANT,
-                    content: f.reply.clone(),
+                    content: reply,
                     ..Default::default()
                 }),
                 finish_reason: "stop".into(),
@@ -539,7 +807,32 @@ mod tests {
             &self,
             _cancel: &hive_provider::CancelToken,
         ) -> anyhow::Result<Vec<hive_provider::Model>> {
-            Ok(Vec::new())
+            let f = FAKES
+                .lock()
+                .unwrap()
+                .get(&self.home)
+                .cloned()
+                .unwrap_or_default();
+            if f.panic {
+                panic!("the fake's model list broke");
+            }
+            Ok(f.list
+                .iter()
+                .enumerate()
+                .map(|(i, id)| hive_provider::Model {
+                    id: id.clone(),
+                    name: id.clone(),
+                    vendor: "decidefake".into(),
+                    chat: true,
+                    tool_calls: false,
+                    vision: false,
+                    premium: 0.0,
+                    preview: false,
+                    context_window: 0,
+                    max_output: 0,
+                    default: i == 1,
+                })
+                .collect())
         }
         fn status(
             &self,
@@ -756,21 +1049,24 @@ mod tests {
         );
         assert_eq!(v["decided_model"], "decide-small");
         assert_eq!(v["decided_provider"], "decidefake");
-        // Still out: counted, not said again.
-        decide_pass(&s, "proj", TEST_NOW);
+        // Still out, once the ask may be tried again: counted, not said
+        // again.
+        let later = crate::util::plus_minutes(TEST_NOW, RETRY_MINUTES as f64 + 1.0);
+        decide_pass(&s, "proj", &later);
         assert_eq!(events(&s, "decide.fallback").len(), 1);
         assert_eq!(s.meta(OUTAGE_COUNT_META).unwrap().0, "2");
         // An answer it can read: one recovered event, and the ask decided.
         fake(&s, |f| {
             f.reply = r#"{"answer":"yes","reason":"small and reversible"}"#.into()
         });
-        decide_pass(&s, "proj", TEST_NOW);
+        let later = crate::util::plus_minutes(&later, RETRY_MINUTES as f64 + 1.0);
+        decide_pass(&s, "proj", &later);
         assert_decided(&s, &first, "yes");
         let rec = events(&s, "decide.recovered");
         assert_eq!(rec.len(), 1);
         assert_eq!(detail(&rec[0])["fallbacks"], 2);
         let second = ask(&s, "prose-ask-2");
-        decide_pass(&s, "proj", TEST_NOW);
+        decide_pass(&s, "proj", &later);
         assert_decided(&s, &second, "yes");
         assert_eq!(events(&s, "decide.recovered").len(), 1);
     }
@@ -897,7 +1193,7 @@ mod tests {
             json!({"post": major}).to_string(),
         )
         .unwrap();
-        let asks = decide_asks(&s, "proj");
+        let asks = decide_asks(&s, "proj", TEST_NOW);
         assert!(
             asks.iter().all(|a| a.id != spend && a.id != major),
             "{asks:?}"
@@ -923,5 +1219,271 @@ mod tests {
         }
         assert!(lines.iter().any(|l| l.contains(&post)), "{lines:?}");
         assert_decided(&s, &post, "no");
+    }
+
+    /// The lead's jobs whose brief names `post`.
+    fn lead_jobs_naming(s: &hive_store::Store, post: &str) -> usize {
+        crate::util::must_rows(
+            &s.conn().unwrap(),
+            "SELECT brief FROM jobs WHERE kind = 'lead'",
+            &[],
+        )
+        .iter()
+        .filter(|j| j.str("brief").contains(post))
+        .count()
+    }
+
+    fn post_answer_on(s: &hive_store::Store, post: &str) {
+        crate::board::create_post(
+            s,
+            TEST_NOW.into(),
+            crate::board::PostOpts {
+                kind: "answer".into(),
+                project: "proj".into(),
+                area: "build".into(),
+                thread: "answered".into(),
+                summary: "Done by hand".into(),
+                body: format!("re: {post}\n"),
+                on: post.into(),
+                agent: crate::board::actor_agent(s, "daemon".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn an_ask_closed_or_marked_major_while_the_role_thinks_is_not_written() {
+        let _serial = serial();
+        let s = decide_store(r#"{"answer":"yes","reason":"fine"}"#);
+        let answered = ask(&s, "closed-meanwhile");
+        let store = (*s).clone();
+        let id = answered.clone();
+        during(&s, move || post_answer_on(&store, &id));
+        let lines = decide_pass(&s, "proj", TEST_NOW);
+        assert!(is_nil_row(&decision(&s, &answered)), "{lines:?}");
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("answered or its thread closed")),
+            "{lines:?}"
+        );
+        assert!(events(&s, "decide.refused").is_empty());
+        assert!(events(&s, "decide").is_empty());
+
+        let major = ask(&s, "major-meanwhile");
+        let store = (*s).clone();
+        let id = major.clone();
+        during(&s, move || {
+            crate::util::event_at(
+                &store.conn().unwrap(),
+                TEST_NOW,
+                "security",
+                "security.major",
+                &id,
+                json!({"post": id}),
+            )
+        });
+        let lines = decide_pass(&s, "proj", TEST_NOW);
+        assert!(is_nil_row(&decision(&s, &major)), "{lines:?}");
+        assert!(
+            lines.iter().any(|l| l.contains("major dependency upgrade")),
+            "{lines:?}"
+        );
+        assert!(events(&s, "decide").is_empty());
+    }
+
+    #[test]
+    fn while_the_role_is_on_the_lead_does_not_sit_for_its_asks() {
+        let _serial = serial();
+        let s = decide_store(r#"{"answer":"pass","reason":"needs the code"}"#);
+        let post = ask(&s, "same-tick");
+        // The same tick as the daemon's: the role's pass has not answered
+        // yet, and the lead leaves the ask to it.
+        crate::lead::tend_lead(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        assert_eq!(lead_jobs_naming(&s, &post), 0, "the role holds the ask");
+        // In shadow the lead decides it.
+        set(&s, "decide.mode", "shadow");
+        let held = held_by_role(
+            &s,
+            "proj",
+            &crate::lead::owner_addressed_asks(&s, "proj".into()),
+            TEST_NOW,
+        );
+        assert!(held.is_empty(), "{held:?}");
+        set(&s, "decide.mode", "on");
+        // A pass is the lead's.
+        decide_pass(&s, "proj", TEST_NOW);
+        crate::lead::tend_lead(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        assert_eq!(lead_jobs_naming(&s, &post), 1, "a passed ask is the lead's");
+    }
+
+    #[test]
+    fn an_outage_gives_the_asks_back_to_the_lead() {
+        let _serial = serial();
+        let s = decide_store("");
+        fake(&s, |f| f.err = "502 bad gateway".into());
+        let post = ask(&s, "outage-ask");
+        let asks = crate::lead::owner_addressed_asks(&s, "proj".into());
+        assert_eq!(held_by_role(&s, "proj", &asks, TEST_NOW).len(), 1);
+        decide_pass(&s, "proj", TEST_NOW);
+        let later = crate::util::plus_minutes(TEST_NOW, RETRY_MINUTES as f64 + 1.0);
+        assert!(
+            held_by_role(&s, "proj", &asks, &later).is_empty(),
+            "an open outage leaves every ask to the lead"
+        );
+        crate::lead::tend_lead(&s, "proj".into(), later, "daemon".into());
+        assert_eq!(lead_jobs_naming(&s, &post), 1);
+    }
+
+    #[test]
+    fn a_panic_in_the_pass_is_an_outage_and_the_next_pass_runs() {
+        let _serial = serial();
+        let s = decide_store(r#"{"answer":"yes","reason":"fine"}"#);
+        set(&s, "decide_model", "");
+        fake(&s, |f| f.panic = true);
+        let post = ask(&s, "panic-ask");
+        let wait_lines = |s: &hive_store::Store, now: &str| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let mut lines = tend_decide(s, "proj", now);
+            while lines.is_empty() && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+                lines = tend_decide(s, "proj", now);
+            }
+            lines
+        };
+        let lines = wait_lines(&s, TEST_NOW);
+        assert!(lines.iter().any(|l| l.contains("panicked")), "{lines:?}");
+        let fb = events(&s, "decide.fallback");
+        assert_eq!(fb.len(), 1);
+        assert!(
+            detail(&fb[0])["reason"]
+                .as_str()
+                .unwrap()
+                .contains("the fake's model list broke"),
+            "{:?}",
+            fb[0]
+        );
+        assert_left_to_lead(&s, &post);
+        // The next pass runs: the role was not left switched off.
+        fake(&s, |f| {
+            f.panic = false;
+            f.list = vec!["small".into(), "fake-default".into()];
+        });
+        let lines = wait_lines(&s, TEST_NOW);
+        assert!(lines.iter().any(|l| l.contains(&post)), "{lines:?}");
+        let d = decision(&s, &post);
+        assert_eq!(d.str("answer"), "yes", "{d:?}");
+        assert_eq!(events(&s, "decide.recovered").len(), 1);
+    }
+
+    #[test]
+    fn a_failing_ask_waits_and_the_asks_behind_it_still_reach_the_role() {
+        let _serial = serial();
+        let s = decide_store(r#"{"answer":"yes","reason":"small and reversible"}"#);
+        fake(&s, |f| {
+            f.replies = vec![("bad-ask".into(), "I would say yes, probably.".into())]
+        });
+        let bad = ask(&s, "bad-ask");
+        let good = ask(&s, "good-ask");
+        decide_pass(&s, "proj", TEST_NOW);
+        assert_left_to_lead(&s, &bad);
+        assert_decided(&s, &good, "yes");
+        assert_eq!(calls(&s).calls, 2);
+        // Inside the wait it is not sent again.
+        decide_pass(&s, "proj", &crate::util::plus_minutes(TEST_NOW, 10.0));
+        assert_eq!(calls(&s).calls, 2, "the failed ask waits");
+        // After the wait it is, up to MAX_TRIES; then it is the lead's.
+        let mut at = TEST_NOW.to_string();
+        for _ in 0..MAX_TRIES + 1 {
+            at = crate::util::plus_minutes(&at, RETRY_MINUTES as f64 + 1.0);
+            decide_pass(&s, "proj", &at);
+        }
+        assert_eq!(calls(&s).calls, 1 + MAX_TRIES as usize);
+        assert_eq!(events(&s, FAILED_ACTION).len(), MAX_TRIES as usize);
+        assert_left_to_lead(&s, &bad);
+        assert!(decide_asks(&s, "proj", &at).is_empty());
+        crate::lead::tend_lead(&s, "proj".into(), at, "daemon".into());
+        assert_eq!(lead_jobs_naming(&s, &bad), 1);
+    }
+
+    #[test]
+    fn an_empty_model_is_the_providers_default_and_is_recorded() {
+        let _serial = serial();
+        let s = decide_store(r#"{"answer":"no","reason":"stale"}"#);
+        set(&s, "decide_model", "");
+        assert_eq!(s.decide_model(), "", "the shipped default");
+        fake(&s, |f| f.list = vec!["first".into(), "fake-default".into()]);
+        let post = ask(&s, "default-model");
+        decide_pass(&s, "proj", TEST_NOW);
+        assert_eq!(calls(&s).models, vec!["fake-default".to_string()]);
+        let d = decision(&s, &post);
+        assert_eq!(d.str("answer"), "no", "{d:?}");
+        assert_eq!(d.str("decided_model"), "fake-default");
+    }
+
+    #[test]
+    fn the_owner_back_mid_pass_stops_it_and_refuses_nothing() {
+        let _serial = serial();
+        let s = decide_store(r#"{"answer":"yes","reason":"fine"}"#);
+        let first = ask(&s, "back-1");
+        let second = ask(&s, "back-2");
+        let store = (*s).clone();
+        during(&s, move || {
+            store
+                .set_setting(crate::util::HUMAN_AGENT, "owner.presence", "present")
+                .unwrap();
+        });
+        decide_pass(&s, "proj", TEST_NOW);
+        assert_eq!(calls(&s).calls, 1, "the pass stopped");
+        assert!(events(&s, "decide.refused").is_empty());
+        assert!(is_nil_row(&decision(&s, &first)));
+        // Away again: both reach the role.
+        set(&s, "owner.presence", hive_store::OWNER_AWAY);
+        decide_pass(&s, "proj", TEST_NOW);
+        assert_decided(&s, &first, "yes");
+        assert_decided(&s, &second, "yes");
+    }
+
+    #[test]
+    fn the_reason_is_one_clipped_line() {
+        let long = "word ".repeat(200);
+        let reply =
+            json!({"answer": "no", "reason": format!("stale:\n\n  done in\tPR 12.\n{long}")})
+                .to_string();
+        let a = read_answer(&reply).unwrap();
+        assert!(
+            !a.reason.contains('\n') && !a.reason.contains('\t'),
+            "{a:?}"
+        );
+        assert!(a.reason.starts_with("stale: done in PR 12. word"), "{a:?}");
+        assert!(a.reason.len() <= REASON_CHARS + 3, "{}", a.reason.len());
+    }
+
+    #[test]
+    fn the_leads_own_decision_records_the_model_its_run_ran() {
+        let _serial = serial();
+        let s = decide_store("");
+        set(&s, "decide.mode", "off");
+        set(&s, "light_model", "light-setting");
+        let post = ask(&s, "lead-model");
+        let mut job = crate::util::Row::new();
+        job.insert("kind", json!(crate::lead::LEAD_KIND));
+        job.insert("project", json!("proj"));
+        job.insert("source", json!("lead:proj:x"));
+        let rep = crate::brief::Report {
+            decisions: vec![crate::brief::Decision {
+                post_id: post.clone(),
+                answer: "yes".into(),
+                reason: "fine".into(),
+            }],
+            ..Default::default()
+        };
+        let mut log = crate::run::RunLog::default();
+        let got = crate::run::apply_result_decisions_ran(&s, job, rep, &mut log, "agent-pinned");
+        assert_eq!(got, 1, "{}", log.text());
+        let d = decision(&s, &post);
+        assert_eq!(d.str("decided_by"), "proj-lead");
+        assert_eq!(d.str("decided_model"), "agent-pinned", "{d:?}");
     }
 }

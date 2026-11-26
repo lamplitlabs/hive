@@ -59,7 +59,21 @@ pass in a background thread when:
 
 The pass never holds the daemon's loop: it may wait up to
 `decide.timeout_seconds` per ask, so it runs beside the loop, and the lines
-it writes are said on the next pass.
+it writes are said on the next pass. A panic inside the pass is caught: it
+is an outage (`decide.fallback`, said once), the pass is no longer marked
+in flight, and the next daemon pass tries again.
+
+While `decide.mode` is `on`, the owner is away, the lead is active and no
+outage is open, `lead::tend_lead` leaves out of the lead's brief the asks
+the role still lists (`decide::held_by_role`), even in the tick before the
+role has answered: an ask costs one small call, not also a lead run. What
+the role passes, fails on for good or may not answer comes back to the
+lead; in `shadow` and during an outage the lead sees them all.
+
+`decide.mode` and `owner.presence` are read again before each ask and once
+its answer is in. When the owner returns or the mode changes mid-pass, the
+pass stops and records nothing more. A refusal caused by that change is
+not recorded as `decide.refused`.
 
 ### Which asks
 
@@ -76,14 +90,25 @@ upgrade (`is_security_major_finding`). From those it drops:
   put to the role;
 - an ask the role already answered with a pass, recorded in shadow, or that
   `hive_board::decide` refused (events `decide.pass`, `decide.shadow`,
-  `decide.refused`): those are the lead's from then on.
+  `decide.refused`): those are the lead's from then on;
+- an ask whose call failed (event `decide.failed`, one per try) within the
+  last 60 minutes, or 3 times in all: it is not sent again on every pass,
+  and after the third try it is the lead's for good.
+
+Right before the write, the ask is checked again as the lead's own path
+checks it (`run::apply_result_decisions`): still open, and not a major
+dependency upgrade. An ask answered or closed while the model thought is
+left alone, with no event.
 
 ### The call
 
 One `Provider::chat` call per ask, with no tools, on `decide_provider` with
 `decide_model` (`Store::decide_provider`, `Store::decide_model`). Both are
 empty by default, which means the hub's own `provider` and a small model
-(section 3); no endpoint of its own is named. The prompt
+(section 3); no endpoint of its own is named. When every model setting is
+empty, the pass asks the provider for its model list once and uses its
+default chat model (else its first chat model), and records that name on
+the decision: the call never sends an empty model. The prompt
 (`decide::decide_prompt`) holds:
 
 - what to answer and how: yes, no or pass, as the project's lead would;
@@ -100,7 +125,9 @@ The answer must be one JSON object, optionally inside a code fence:
 {"answer": "yes" | "no" | "pass", "reason": "one sentence"}
 ```
 
-A yes or a no without a reason cannot be read. The first build does not
+A yes or a no without a reason cannot be read. The reason is folded to one
+line and clipped at 300 characters: it becomes the decision's words, the
+result post and the job brief. The first build does not
 depend on token probabilities, which a provider's chat API does not always
 return. The deadline is `decide.timeout_seconds`: the provider gets a
 `CancelToken` with that deadline, and the call runs in a thread the pass
@@ -122,9 +149,11 @@ ask.
 ### Falling back, said once
 
 A provider error, no answer within the timeout, or an answer that cannot be
-read leaves the ask to the lead, who decides it as before the role. The
-rest of that pass is left to the lead too: the provider is out, and each
-further call would only wait again. Since the role runs on the hub's own
+read leaves the ask to the lead, who decides it as before the role, and
+records one `decide.failed` try on it. After a provider error or a timeout
+the rest of that pass is left to the lead too: the provider is out, and
+each further call would only wait again. After an unreadable answer the
+pass goes on to the next ask. Since the role runs on the hub's own
 provider, an outage adds no new failure: no run works without the provider
 either.
 
@@ -153,7 +182,7 @@ them:
 | Writer | `decided_model` | `decided_provider` |
 | --- | --- | --- |
 | the decide role (`hive_board::decide_with` with `DecidedBy { role: true, .. }`) | `decide_model` as resolved | `decide_provider` as resolved |
-| a lead's `DECIDE:` line (`hive_board::decide` with a lead's name) | the lead's run model (`run_model("lead")`) | `provider` |
+| a lead's `DECIDE:` line (`run::apply_result_decisions_ran`) | the model the lead's run was started with (an agent file's pin, else `run_model("lead")`; empty for the provider's default) | `provider` |
 | compute (`crates/hive-tasks/src/compute.rs`), an agent's answer | the agent's recorded model, else `light_model` | `provider` |
 | the human, anywhere | empty | empty |
 
@@ -191,7 +220,15 @@ decision row with its `decided_model` and `decided_provider` and the
 `decide.shadow` or `decide.fallback` event. Further tests cover the
 once-per-outage `decide.recovered`, `off` and an owner at hand making no
 call, owner-only and major-upgrade asks never reaching the role, and the
-daemon hook running the pass in the background.
+daemon hook running the pass in the background. The review follow-ups
+(TASK-137) each have a test that fails without the fix: an ask closed or
+marked major during the call is not written; the lead does not sit for an
+ask the role holds in the same tick, and gets it back after a pass or an
+outage; a panic is an outage and the next pass runs; a failing ask waits
+while the asks behind it are decided, and is the lead's after three tries;
+an empty model resolves to the provider's default and is recorded; the
+owner back during a pass stops it with nothing refused; the reason is one
+clipped line; and a lead's own decision records the model its run used.
 `decide_settings_fall_back_to_measure_light_and_the_hub_provider`
 (`hive-store`) covers the settings and their fallbacks.
 
