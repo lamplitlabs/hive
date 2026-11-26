@@ -2463,7 +2463,7 @@ mod tests {
             "one-lead",
             "Two tries failed. How do we go on?",
             &[
-                hive_tasks::Choice::reply("Try again another way"),
+                hive_tasks::Choice::reply("Try again another way").recommended(),
                 hive_tasks::Choice::with_action("Good enough, close it", "done"),
             ],
         )
@@ -2474,6 +2474,7 @@ mod tests {
         let messages = arr(&result, "messages");
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0]["choices"][0]["label"], "Try again another way");
+        assert_eq!(messages[0]["choices"][0]["recommended"], true);
         assert_eq!(messages[0]["choices"][1]["action"], "done");
         assert_eq!(messages[0]["job_id"], "", "a plain message names no job");
         // A worker's report on a job carries the job, so the chat nests it.

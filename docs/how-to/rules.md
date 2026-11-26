@@ -25,7 +25,7 @@ paths`, `Editable scope by stage`, `Budget`, `Sandbox`, `Branches and
 worktrees`, `Vote rules`, `Amendments`, `Promotion` and `Kill switch`. It is
 written as rules for agents: step 3 says which of them the program enforces.
 
-In the console, open the project from **Home** and choose the
+In the console, open the project from **Projects** in the sidebar and choose the
 **Self-improvement** tab. The panel **The rules (constitution)** shows the
 same text, and **Open the record** leads to its history on **Records**.
 

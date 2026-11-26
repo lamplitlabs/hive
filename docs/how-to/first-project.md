@@ -32,7 +32,7 @@ a terminal, such as a script or a service.
 
 ## 2. Connect a model provider
 
-Agents think with a model, so this comes first. On a new machine **Home**
+Agents think with a model, so this comes first. On a new machine **Sessions**
 shows the card **Set up Hive**, with three steps. If the first is ticked, Hive
 found a Copilot sign-in on this machine, such as an editor's: go to step 3.
 
@@ -102,8 +102,8 @@ console's word for the daemon, `hive daemon`) plans jobs and starts their
 agents. Until it runs, the onboarding job and every task wait in the
 queue.
 
-1. Go back to **Home**. With a provider connected and a project added,
-   the card is gone and Home shows the notice **Runner is off**. Press
+1. Go back to **Sessions**. With a provider connected and a project added,
+   the card is gone and Sessions shows the notice **Runner is off**. Press
    **Start runner**. (While the card is still there, its third step,
    **Keep Hive running**, opens the same dialog with **Keep running**.)
 2. The dialog **Keep Hive running** says what it installs: two background
@@ -165,10 +165,9 @@ reads your tasks and messages, cuts the work into steps and answers you.
 The lead plans towards the project's goal, and every agent reads that goal
 before it starts work. Until you write one, Hive writes it from the
 project's README and commit history, with no model call. Such a project
-can show *Runs on a generated goal* and the button **Set goal** on its row
-under **Projects** on Home.
+says so on its **Overview** tab, under **Goal**.
 
-1. Open the project from **Projects** on Home. On the **Overview** tab,
+1. Open the project from **Projects** in the sidebar. On the **Overview** tab,
    find **Goal**. It is marked **Written by Hive**.
 2. Press **Edit**. In **Edit the project goal**, write one outcome: what
    should get better, and how you would see the progress.
@@ -207,8 +206,8 @@ branch ([The project's own files](../board.md#the-projects-own-files-hive)).
 
 In the console:
 
-- **Home** lists `my-app` under **Projects**, and the card **Set up Hive**
-  is gone.
+- The sidebar lists `my-app` under **Projects**, and the card **Set up
+  Hive** is gone from **Sessions**.
 - The foot of the sidebar says **Runner on**, and under it
   **GitHub Copilot** with its model.
 - **Runs** lists the onboarding run, and the project's **Overview** shows
@@ -237,12 +236,12 @@ and the line `daemon` says `alive`.
   ```
 
 - **The onboarding job stays `queued`.** No runner is running, so nothing
-  takes the job. Home says **Runner is off**, and `hive status` says
+  takes the job. Sessions says **Runner is off**, and `hive status` says
   `never started` on its `daemon` line. Do step 4. When the runner runs in
-  a terminal only, Home says **Hive stops when you close its terminal**
+  a terminal only, Sessions says **Hive stops when you close its terminal**
   and offers **Keep Hive running**.
 - **The runner is on and still nothing starts.** No model provider is
-  connected, and agents wait for the sign-in. Home shows the card
+  connected, and agents wait for the sign-in. Sessions shows the card
   **Set up Hive** with **Connect** on its first step. In
   `hive status`, the line `harness` ends with
   `not signed in - Sign in with GitHub (Settings -> Harness) or run hive harness login`.

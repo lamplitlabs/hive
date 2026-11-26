@@ -745,10 +745,15 @@ to act on it      the lead's reason
 (a lead-role:, toolkit: or goal: proposal queues no job)
 ```
 
-What the daemon does when the owner is away (`hive settings set
-owner.presence away`, or **Here or away** under **Settings → General → You** in the console; `present` is
-the default): nothing is parked for your approval that a project's lead can
-judge. Each project's lead is woken by the project's awaiting board proposals
+What the daemon does with the asks addressed to you, whether the owner is
+here or away (`owner.presence`, **Here or away** under **Settings → General →
+You** in the console, no longer changes it): nothing is parked for your
+approval that a project's lead can judge. Only an ask at a hard stop - money,
+a destructive or irreversible act, credentials, publication, a Tier 2
+decision, a command a yes would run (ADR-021) or the evolution loop's stop
+question - waits for you; the hub marks those `decider: owner` with a
+`hard_stop` reason for the Sessions strip, and every other ask is
+`decider: lead`. Each project's lead is woken by the project's awaiting board proposals
 (each presented at most once per six hours), reads them in its brief with the
 rule that it decides on your behalf with its best judgement, and ends its
 report with one `DECIDE: <post-id> yes|no <reason>` line per proposal - yes
@@ -756,17 +761,18 @@ only for small, reversible work inside the constitution and the accepted
 decisions whose evidence holds; no, with what is missing, otherwise. The
 daemon records each line through the same `decide` path the console uses, as
 the lead's decision and never as yours: the result post is authored by the
-lead ("The owner is away ... answered yes on the owner's behalf"), the
+lead ("A routine ask, so the project's lead decides it ... answered yes on
+the owner's behalf"), the
 `decisions` row says `decided_by = <slug>-lead`, the event carries
-`on_behalf: owner-away`, and a yes queues one job titled "Act on the lead's
-yes (owner away): ...". Only the proposal project's own active lead may
-decide, only while the setting is `away`, and a `DECIDE:` line from a worker
-is ignored. The For you inbox empties the same way: every `finding`,
+`on_behalf: owner-routine`, and a yes queues one job titled "Act on the
+lead's yes (routine ask): ...". Only the proposal project's own active lead
+may decide, never at a hard stop, and a `DECIDE:` line from a worker is
+ignored. The For you inbox empties the same way: every `finding`,
 `handoff` or `suggestion` marked for the owner that still waits (not
 decided, not answered, its thread not closed) is listed in the lead's brief
 with its kind and what its `Yes:` / `No:` lines mean, and the lead ends its
 report with a `DECIDE:` line for each - yes queues the work the post's Yes
-line names as "Act on the lead's yes (owner away): ..." (a handoff or
+line names as "Act on the lead's yes (routine ask): ..." (a handoff or
 suggestion that is Tier 0 or 1 work inside the constitution), no closes it
 with the lead's reason (an advisory with no fixed version is "keep
 watching"; a stale handoff is closed as such). The daemon looks for
@@ -786,10 +792,11 @@ enough (`security.auto_major`). While you are away the watcher also answers
 its own **no patched version yet** findings with the away default - keep
 watching, the update is queued the moment a fix is published and old enough
 (`security.away_default`) - so nothing of the watcher's waits on you.
-Questions marked for the owner are still answered in words (`hive post
-answer --on`) rather than decided. Tasks are not parked either: while you are away the lead decides
+Questions marked for the owner are answered in words (`hive post
+answer --on`) rather than decided. Questions marked for the owner that are routine are the lead's to answer
+in words as well, here or away. Tasks are not parked either: the lead decides
 and writes its reasoning in the task's thread instead of ending with
-"waiting on the owner", and it posts no question addressed to you (what only
+"waiting on the owner", and it posts no question addressed to you unless it is at a hard stop (what only
 you can do goes in its report; a stopped loop, a sign-in or a missing secret
 is a card on the hub already). The daemon asks nothing either: the toolkit a
 project's shape asks for is added on its own and said so on the board (see

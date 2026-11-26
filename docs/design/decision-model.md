@@ -18,7 +18,7 @@ with its bars, the console panel and the other uses of the role (votes,
 answers, idle planning) are later slices and are not built (section 5).
 
 ```text
- open owner ask (owner away)
+ open routine owner ask
         │
         ↓
  decide.mode? ── off ──────────────→ lead brief, as before
@@ -39,8 +39,9 @@ answers, idle planning) are later slices and are not built (section 5).
 
 ## 1. What the role does
 
-While `owner.presence` is `away`, the lead decides the findings, handoffs
-and suggestions marked for the owner: its brief lists them and it answers
+Whatever `owner.presence` says (TASK-129: nothing waits on the owner but a
+hard stop), the lead decides the routine findings, handoffs and suggestions
+marked for the owner: its brief lists them and it answers
 each with a `DECIDE: <post> yes|no <reason>` line. The decide role answers
 the same asks first, with one short call and no tools, before the lead's
 pass reads what is left.
@@ -51,9 +52,10 @@ On each daemon pass, for each project, `crate::decide::tend_decide`
 pass in a background thread when:
 
 - `decide.mode` is `on` or `shadow`;
-- the owner is away (`Store::owner_away`), the condition under which the
-  lead decides the owner's routine asks today (TASK-129 widens that
-  condition; this slice does not);
+- the ask is routine: `hive_board::hard_stop_ask` names no hard stop. The
+  lead decides routine asks whatever `owner.presence` says (TASK-129), so
+  the role no longer waits for an away owner; a hard stop is the owner's
+  and never reaches the role;
 - the project's lead is an active agent;
 - at least one ask waits.
 
@@ -63,17 +65,19 @@ it writes are said on the next pass. A panic inside the pass is caught: it
 is an outage (`decide.fallback`, said once), the pass is no longer marked
 in flight, and the next daemon pass tries again.
 
-While `decide.mode` is `on`, the owner is away, the lead is active and no
-outage is open, `lead::tend_lead` leaves out of the lead's brief the asks
-the role still lists (`decide::held_by_role`), even in the tick before the
-role has answered: an ask costs one small call, not also a lead run. What
-the role passes, fails on for good or may not answer comes back to the
-lead; in `shadow` and during an outage the lead sees them all.
+While `decide.mode` is `on`, the lead is active and no outage is open,
+`lead::tend_lead` leaves out of the lead's brief the asks the role still
+lists (`decide::held_by_role`), even in the tick before the role has
+answered and whatever `owner.presence` says: an ask costs one small call,
+not also a lead run. What the role passes, fails on for good or may not
+answer (a hard stop among them) comes back to the lead; in `shadow` and
+during an outage the lead sees them all.
 
-`decide.mode` and `owner.presence` are read again before each ask and once
-its answer is in. When the owner returns or the mode changes mid-pass, the
-pass stops and records nothing more. A refusal caused by that change is
-not recorded as `decide.refused`.
+`decide.mode` is read again before each ask and once its answer is in. When
+the mode changes mid-pass, the pass stops and records nothing more. A
+refusal caused by that change is not recorded as `decide.refused`.
+`owner.presence` plays no part (TASK-129): an owner who returns mid-pass
+changes nothing.
 
 ### Which asks
 
@@ -218,22 +222,24 @@ pass, prose, an error and a stall. Each test walks the ask to its end: the
 decision row with its `decided_model` and `decided_provider` and the
 `decide` event, or the ask left in the lead's list with its `decide.pass`,
 `decide.shadow` or `decide.fallback` event. Further tests cover the
-once-per-outage `decide.recovered`, `off` and an owner at hand making no
-call, owner-only and major-upgrade asks never reaching the role, and the
-daemon hook running the pass in the background. The review follow-ups
-(TASK-137) each have a test that fails without the fix: an ask closed or
-marked major during the call is not written; the lead does not sit for an
-ask the role holds in the same tick, and gets it back after a pass or an
+once-per-outage `decide.recovered`, `off` making no call, an owner at hand
+still leaving a routine ask to the role, owner-only, hard-stop and
+major-upgrade asks never reaching the role, and the daemon hook running the
+pass in the background. The review follow-ups (TASK-137) each have a test
+that fails without the fix: an ask closed or marked major during the call
+is not written; the lead does not sit for an ask the role holds in the same
+tick, with the owner away or at hand, and gets it back after a pass or an
 outage; a panic is an outage and the next pass runs; a failing ask waits
 while the asks behind it are decided, and is the lead's after three tries;
-an empty model resolves to the provider's default and is recorded; the
-owner back during a pass stops it with nothing refused; the reason is one
-clipped line; and a lead's own decision records the model its run used.
+an empty model resolves to the provider's default and is recorded; the mode
+switched off during a pass stops it with nothing refused, and the owner
+back during a pass changes nothing; the reason is one clipped line; and a
+lead's own decision records the model its run used.
 `decide_settings_fall_back_to_measure_light_and_the_hub_provider`
 (`hive-store`) covers the settings and their fallbacks.
 
-The runner's test store sets `decide.mode = off` so that no other test of
-an away owner calls a real provider; the role's own tests turn it on.
+The runner's test store sets `decide.mode = off` so that no other test
+with a routine ask calls a real provider; the role's own tests turn it on.
 
 ## 5. Not built yet
 
@@ -251,7 +257,6 @@ an away owner calls a real provider; the role's own tests turn it on.
 - **The console's "Decision model" panel**: the setting, the last replay
   against the bar, and each decision's "decided by <lead> with <model> on
   <provider>".
-- **Wider asks.** TASK-129 has the leads decide routine asks whatever
-  `owner.presence` says; the role answers those first. Later uses (votes,
+- **Wider asks.** Later uses (votes,
   answers that need no code reading, the lead's idle planning pass) each
   come by a lead's amendment of ADR-072 with its own replay.

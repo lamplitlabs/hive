@@ -22,6 +22,13 @@ pub struct Choice {
     /// `reply` (the default), `done`, or `amend`.
     #[serde(default = "default_action")]
     pub action: String,
+    /// What picking it does, in one line; empty when the label says it all.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub note: String,
+    /// The one the asker recommends: the hub shows it first and as the
+    /// default. A message with choices marks exactly one (TASK-129).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub recommended: bool,
 }
 
 fn default_action() -> String {
@@ -33,15 +40,31 @@ impl Choice {
         Choice {
             label: label.into(),
             action: "reply".into(),
+            ..Default::default()
         }
     }
     pub fn with_action(label: impl Into<String>, action: impl Into<String>) -> Self {
         Choice {
             label: label.into(),
             action: action.into(),
+            ..Default::default()
         }
     }
+    /// The same choice marked as the asker's recommendation.
+    pub fn recommended(mut self) -> Self {
+        self.recommended = true;
+        self
+    }
+    /// The same choice with a line on what picking it does.
+    pub fn noting(mut self, note: impl Into<String>) -> Self {
+        self.note = note.into();
+        self
+    }
 }
+
+/// The fewest answers a message with choices offers: one answer is not a
+/// choice (TASK-129).
+pub const MIN_CHOICES: usize = 2;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Message {
@@ -94,28 +117,91 @@ pub fn parse_choices(text: &str) -> Vec<Choice> {
     serde_json::from_str(text).unwrap_or_default()
 }
 
-/// Turns `--choice` values into choices: `label` or `label=action`, where the
-/// action is one of `reply`, `done`, `amend`. A label alone is a reply.
-pub fn choices_from_flags(values: &[String]) -> Result<Vec<Choice>> {
+/// Turns `--choice` values into choices: `label`, `label=action` or
+/// `label - what it does[=action]`, where the action is one of `reply`,
+/// `done`, `amend`. A label alone is a reply. `recommend` names the label of
+/// the recommended one; a label written with a leading `*` is the same.
+pub fn choices_from_flags_recommending(values: &[String], recommend: &str) -> Result<Vec<Choice>> {
     let mut out = Vec::new();
     for v in values {
         let v = v.trim();
         if v.is_empty() {
             continue;
         }
-        let (label, action) = match v.rsplit_once('=') {
+        let (text, action) = match v.rsplit_once('=') {
             Some((l, a)) if CHOICE_ACTIONS.contains(&a.trim()) => (l.trim(), a.trim()),
             _ => (v, "reply"),
         };
-        out.push(Choice::with_action(label, action));
+        let (star, text) = match text.strip_prefix('*') {
+            Some(rest) => (true, rest.trim()),
+            None => (false, text),
+        };
+        let (label, note) = match text.split_once(" - ") {
+            Some((l, n)) => (l.trim(), n.trim()),
+            None => (text, ""),
+        };
+        let mut c = Choice::with_action(label, action).noting(note);
+        c.recommended = star;
+        out.push(c);
+    }
+    let recommend = recommend.trim();
+    if !recommend.is_empty() {
+        let Some(i) = out
+            .iter()
+            .position(|c| c.label.eq_ignore_ascii_case(recommend))
+        else {
+            return Err(input(
+                2,
+                format!("--recommend {recommend:?} names no --choice"),
+                "the recommended answer is one of the choices",
+                "repeat the label of one --choice exactly",
+            ));
+        };
+        for (j, c) in out.iter_mut().enumerate() {
+            c.recommended = j == i;
+        }
     }
     check_choices(&out)?;
     Ok(out)
 }
 
-/// Refuses choices the hub could not show: too many, an empty or overlong
-/// label, a repeated label, an unknown action.
+/// [`choices_from_flags_recommending`] without `--recommend`: the
+/// recommended choice is the one written with a leading `*`.
+pub fn choices_from_flags(values: &[String]) -> Result<Vec<Choice>> {
+    choices_from_flags_recommending(values, "")
+}
+
+/// Refuses choices the hub could not show: too many or too few, an empty or
+/// overlong label, a repeated label, an unknown action, and a set that does
+/// not mark exactly one recommended answer (TASK-129: every question to the
+/// owner carries its answers and names the recommended one).
 pub fn check_choices(choices: &[Choice]) -> Result<()> {
+    if choices.is_empty() {
+        return Ok(());
+    }
+    if choices.len() < MIN_CHOICES {
+        return Err(input(
+            2,
+            "One choice is not a choice",
+            format!(
+                "a question offers at least {MIN_CHOICES} answers to pick, one of them recommended"
+            ),
+            "--choice '<your recommendation>' --choice '<the alternative>' --recommend '<your recommendation>'",
+        ));
+    }
+    let marked = choices.iter().filter(|c| c.recommended).count();
+    if marked != 1 {
+        return Err(input(
+            2,
+            if marked == 0 {
+                "Name the recommended choice".to_string()
+            } else {
+                format!("{marked} choices are marked recommended")
+            },
+            "the owner sees one answer marked Recommended, first and as the default, with your reason in the message",
+            "--recommend '<label of one --choice>' (or write that --choice with a leading *)",
+        ));
+    }
     if choices.len() > MAX_CHOICES {
         return Err(input(
             2,
@@ -271,7 +357,12 @@ fn send_inner(
     check_project(s, &project)?;
     let choices = choices
         .iter()
-        .map(|c| Choice::with_action(c.label.trim(), c.action.as_str()))
+        .map(|c| Choice {
+            label: c.label.trim().to_string(),
+            action: c.action.clone(),
+            note: c.note.trim().to_string(),
+            recommended: c.recommended,
+        })
         .collect::<Vec<_>>();
     let now = s.now();
     let tx = s.begin()?;

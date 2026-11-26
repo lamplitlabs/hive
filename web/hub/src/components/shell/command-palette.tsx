@@ -23,6 +23,7 @@ import {
   HistoryIcon,
   HomeIcon,
   InboxIcon,
+  MessageSquareIcon,
   ListTodoIcon,
   MessagesSquareIcon,
   PlugIcon,
@@ -316,18 +317,11 @@ export function CommandPaletteHost() {
           <CommandSeparator />
           <CommandGroup heading="Pages" className={groupStyle}>
             <CommandItem
-              value="page home overview"
+              value="page sessions home for you inbox waiting decisions questions hard stops"
               className={itemStyle}
-              onSelect={() => go(hrefs.home())}
+              onSelect={() => go(hrefs.conversations())}
             >
-              <HomeIcon aria-hidden="true" className={itemIcon} /> Home
-            </CommandItem>
-            <CommandItem
-              value="page for you inbox waiting decisions questions"
-              className={itemStyle}
-              onSelect={() => go(hrefs.forYou())}
-            >
-              <InboxIcon aria-hidden="true" className={itemIcon} /> For you
+              <MessageSquareIcon aria-hidden="true" className={itemIcon} /> Sessions
             </CommandItem>
             <CommandItem
               value="page tasks all projects"

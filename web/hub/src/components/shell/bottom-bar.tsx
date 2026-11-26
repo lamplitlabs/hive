@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { useState } from "react";
 import { MenuIcon } from "lucide-react";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { useInbox } from "@/components/hive/inbox";
+import { useHardStops } from "@/components/sessions/hard-stops";
 import { cn } from "@/lib/utils";
 import { NAV_ICON } from "./nav-icons";
 import { activeItem, MORE_GROUPS, PRIMARY_ITEMS, SETTINGS_ITEM, type NavItem } from "./nav-items";
@@ -35,20 +35,20 @@ function Cell({ item, active, count }: { item: NavItem; active: boolean; count?:
   );
 }
 
-// Phones (spec "Phone"): Home, For you, Sessions, Tasks and More along the
+// Phones (spec "Phone"): Sessions, Tasks and More along the
 // bottom, safe-area padded; More opens a sheet with the Knowledge and System
 // pages, Settings, Here/Away and the status card.
 export function BottomBar() {
   const pathname = usePathname();
-  const { total } = useInbox();
+  const total = useHardStops().rows.length;
   const [more, setMore] = useState(false);
   const active = activeItem(pathname);
   const underMore = !!active && !PRIMARY_ITEMS.includes(active);
   return (
     <nav aria-label="Main" className="fixed inset-x-0 bottom-0 z-40 border-t bg-background/95 backdrop-blur pb-[env(safe-area-inset-bottom)] lg:hidden">
-      <div className="grid h-16 grid-cols-5 items-stretch px-1 pt-0.5">
+      <div className="grid h-16 grid-cols-3 items-stretch px-1 pt-0.5">
         {PRIMARY_ITEMS.map((item) => (
-          <Cell key={item.href} item={item} active={active === item} count={item.icon === "inbox" ? total : undefined} />
+          <Cell key={item.href} item={item} active={active === item} count={item.icon === "sessions" ? total : undefined} />
         ))}
         <button type="button" className={cn(cell, underMore && "text-link")} aria-haspopup="dialog" aria-expanded={more} onClick={() => setMore(true)}>
           <MenuIcon aria-hidden className="size-[22px]" strokeWidth={underMore ? 2 : 1.75} />

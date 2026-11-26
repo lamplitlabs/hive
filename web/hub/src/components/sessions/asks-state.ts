@@ -1,7 +1,8 @@
-// The For you page's model (spec "Navigation changes": one page lists
-// everything that waits on you across projects). Pure: it turns the inbox's
-// typed lists into rows grouped by kind, filtered by project and ordered by
-// urgency then recency, so node --test can check it without React.
+// What waits on the owner, as rows (the For you page's model until TASK-129
+// removed that page). Pure: it turns the inbox's typed lists into rows
+// grouped by kind, filtered by project and ordered by urgency then recency,
+// so node --test can check it without React. The bell reads every row; the
+// strip on Sessions keeps only the hard stops (hardStopRows).
 
 import type { Kind } from "../hive/kind-tile-state";
 
@@ -67,14 +68,18 @@ export interface ForYouRow {
   yesNo?: boolean;
   /** The button word on a row whose fix is a page away (the row links there). */
   fix?: string;
+  /** The ask's own words (a question's body, a proposal's text, a suggestion's brief). */
+  text?: string;
+  /** Why only the owner may decide it, as the hub marks a question or a proposal (`hard_stop`, TASK-129); empty or absent when the lead decides it. */
+  hardStop?: string;
 }
 
 export interface ForYouInput {
   decisions: { id: string; project: string; title: string; kind: string; updated_at?: string; date?: string }[];
-  proposals: { id: string; slug?: string; summary: string; date: string; thread_key?: string }[];
-  questions: { id: string; slug?: string; summary: string; date: string; stop?: boolean; thread_key?: string; on_post?: string }[];
+  proposals: { id: string; slug?: string; summary: string; proposal_text?: string; date: string; thread_key?: string; hard_stop?: string }[];
+  questions: { id: string; slug?: string; summary: string; body?: string; date: string; stop?: boolean; thread_key?: string; on_post?: string; hard_stop?: string }[];
   compute: { id: string; project: string; size: string; hours: number; requested_by: string; at: string }[];
-  work: { id: string; project: string; title: string; updated_at?: string; created_at?: string; reviewed_at?: string }[];
+  work: { id: string; project: string; title: string; brief?: string; updated_at?: string; created_at?: string; reviewed_at?: string }[];
   drafts: { slug: string; r: { id: string; draft?: { author?: string; at?: string } | null } }[];
   steps: { kind: string; slug: string; slugs?: string[]; label: string; title: string }[];
   machine: boolean;
@@ -97,11 +102,11 @@ export function forYouRows(i: ForYouInput): ForYouRow[] {
   // The runner's row leads to its controls (lib/nav hrefs.runnerControls(); spelled out because this module imports nothing at run time).
   if (i.machine) rows.push({ key: "machine", section: "problems", kind: "machine", project: "", title: "The runner isn't working", meta: i.machineWhy || "Agents can't start work on this machine", href: "/settings/#daemon", at: "", urgent: true, fix: "Fix it" });
   if (i.provider) rows.push({ key: "provider:" + i.provider.name, section: "problems", kind: "tool", project: "", title: i.provider.expired ? (i.provider.label || i.provider.name) + " sign-in expired" : "Connect " + (i.provider.label || i.provider.name), meta: i.provider.expired ? "Sign in again so agents can use their model" : "Agents have no model provider yet", href: "/settings/?connect=" + encodeURIComponent(i.provider.name) + "#harness", at: "", urgent: true, fix: i.provider.expired ? "Sign in" : "Connect" });
-  for (const q of i.questions) rows.push({ key: "question:" + q.id, section: "questions", kind: "question", project: q.slug || brain, title: isStop(q) ? STOP_TITLE : q.summary, at: q.date, urgent: !!q.stop, yesNo: true });
+  for (const q of i.questions) rows.push({ key: "question:" + q.id, section: "questions", kind: "question", project: q.slug || brain, title: isStop(q) ? STOP_TITLE : q.summary, text: q.body, hardStop: q.hard_stop || undefined, at: q.date, urgent: !!q.stop, yesNo: true });
   for (const r of i.decisions) rows.push({ key: "decision:" + r.id, section: "decisions", kind: "decision", project: r.project, title: r.title, meta: r.id, at: first(r.updated_at, r.date), yesNo: true });
-  for (const p of i.proposals) rows.push({ key: "proposal:" + p.id, section: "proposals", kind: "proposal", project: p.slug || brain, title: p.summary, at: p.date, yesNo: true });
+  for (const p of i.proposals) rows.push({ key: "proposal:" + p.id, section: "proposals", kind: "proposal", project: p.slug || brain, title: p.summary, text: p.proposal_text, hardStop: p.hard_stop || undefined, at: p.date, yesNo: true });
   for (const c of i.compute) rows.push({ key: "compute:" + c.id, section: "compute", kind: "machine", project: c.project, title: c.size + " for " + c.hours + (c.hours === 1 ? " hour" : " hours"), meta: "Asked by " + c.requested_by, at: c.at, yesNo: true });
-  for (const w of i.work) rows.push({ key: "work:" + w.id, section: "work", kind: "suggestion", project: w.project, title: w.title, meta: w.id, at: first(w.reviewed_at, w.updated_at, w.created_at), yesNo: true });
+  for (const w of i.work) rows.push({ key: "work:" + w.id, section: "work", kind: "suggestion", project: w.project, title: w.title, text: w.brief, meta: w.id, at: first(w.reviewed_at, w.updated_at, w.created_at), yesNo: true });
   for (const d of i.drafts) rows.push({ key: "draft:" + d.slug + ":" + d.r.id, section: "drafts", kind: "record", project: d.slug, title: d.r.id === "EVO-evaluators" ? "New evaluators drafted" : "A new constitution drafted", meta: d.r.draft?.author ? "By " + d.r.draft.author : undefined, at: d.r.draft?.at || "" });
   for (const s of i.steps) rows.push({ key: "step:" + s.kind + ":" + (s.slugs?.join(",") || s.slug), section: "steps", kind: "rule", project: s.slugs && s.slugs.length > 1 ? "" : s.slug, title: s.title, meta: s.label, at: "", fix: "Open" });
   return rows;
@@ -142,4 +147,70 @@ export function latestRows(rows: ForYouRow[], n = 5): ForYouRow[] {
 export function waitingWords(n: number): string {
   if (n === 0) return "Nothing waits on you";
   return n === 1 ? "1 thing waits on you" : n.toLocaleString("en-US") + " things wait on you";
+}
+
+// ----- hard stops ----------------------------------------------------------
+
+// The four kinds of ask only the owner may answer (TASK-129; the constitution's
+// hard stops, docs/concepts.md): what spends money, what cannot be undone,
+// what touches a credential, and what goes out to the public. Everything
+// else is the project lead's to decide, so the strip on Sessions shows only
+// these, each with its buttons. `owner` is a hard stop the hub marks that is
+// none of the four (a Tier 2 decision, a command a proposal would authorize,
+// the self-improvement loop's stop).
+export type HardStop = "money" | "destructive" | "credentials" | "publication" | "owner";
+
+export const HARD_STOP_ORDER: HardStop[] = ["money", "destructive", "credentials", "publication", "owner"];
+
+export const HARD_STOP_LABEL: Record<HardStop, string> = {
+  money: "Money",
+  destructive: "Can't be undone",
+  credentials: "Credentials",
+  publication: "Publication",
+  owner: "Only you",
+};
+
+// The hard stop a row names, or null when the lead may decide it. One rule,
+// the hub's (hive-board owner_only_ask): a question or proposal is the
+// owner's when the hub marks it `hard_stop`, whatever its words; the reason
+// picks the label. A compute request is money whatever it says; a proposed
+// decision record (agents cannot accept one) and suggested work the review
+// left in `owner` status are the owner's by what they are. The runner, the
+// provider, drafts and gate steps are no asks at all (the broken-strip and
+// the project carry them).
+export function hardStopOf(r: Pick<ForYouRow, "section" | "hardStop">): HardStop | null {
+  if (r.section === "compute") return "money";
+  if (r.section === "problems" || r.section === "drafts" || r.section === "steps") return null;
+  if (r.hardStop) return hardStopKind(r.hardStop);
+  if (r.section === "decisions" || r.section === "work") return "owner";
+  return null;
+}
+
+// The label for the hub's reason ("is about money", "names a hard stop:
+// credentials", "the evolution loop stopped (ADR-043)").
+export function hardStopKind(why: string): HardStop {
+  const w = why.toLowerCase();
+  if (/money|spend|budget|compute/.test(w)) return "money";
+  if (/destructive|irreversible|undone|delet/.test(w)) return "destructive";
+  if (/credential/.test(w)) return "credentials";
+  if (/publication/.test(w)) return "publication";
+  return "owner";
+}
+
+export type HardStopRow = ForYouRow & { stopKind: HardStop };
+
+// The strip's rows: the hard-stop asks only, money first, then urgent, then newest.
+export function hardStopRows(rows: ForYouRow[]): HardStopRow[] {
+  const out: HardStopRow[] = [];
+  for (const r of rows) {
+    const k = hardStopOf(r);
+    if (k) out.push({ ...r, stopKind: k });
+  }
+  const rank = (r: HardStopRow) => HARD_STOP_ORDER.indexOf(r.stopKind);
+  return out.sort((a, b) => rank(a) - rank(b) || Number(!!b.urgent) - Number(!!a.urgent) || (a.at < b.at ? 1 : a.at > b.at ? -1 : 0) || a.key.localeCompare(b.key));
+}
+
+// "1 decision only you can make" / "3 decisions only you can make".
+export function hardStopWords(n: number): string {
+  return (n === 1 ? "1 decision" : n.toLocaleString("en-US") + " decisions") + " only you can make";
 }

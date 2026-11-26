@@ -599,7 +599,7 @@ impl Handler {
             .map(|row| {
                 pick(
                     row,
-                    "id thread_key agent name session date status summary proposal_text rel_path",
+                    "id thread_key agent name session date status summary proposal_text rel_path hard_stop",
                 )
             })
             .collect::<Vec<_>>();

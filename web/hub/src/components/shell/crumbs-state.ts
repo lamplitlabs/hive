@@ -53,14 +53,14 @@ function projectHref(slug: string, tab?: string | null, sub?: string | null): st
   return h;
 }
 
-// What the top bar shows when the page says nothing: Home on "/", the page's
-// nav label elsewhere, "project › Tab" on a project page and "Page not
+// What the top bar shows when the page says nothing: Sessions on "/" and
+// on "/for-you/" (both forward there), the page's nav label elsewhere, "project › Tab" on a project page and "Page not
 // found" on a path the console doesn't have. A detail id in
 // the query (a record, a task, a run, a conversation) adds a last crumb so
 // the phone's back arrow has somewhere to go.
 export function defaultCrumbs(pathname: string, search: URLSearchParams, projects: CrumbProject[] = [], pages: CrumbPage[] = []): Crumb[] {
   const path = normalizePath(pathname);
-  if (path === "/") return [{ label: "Home", href: "/" }];
+  if (path === "/" || path === "/for-you/") return [{ label: "Sessions", href: "/chat/" }];
 
   if (path === "/project/") {
     const slug = search.get("slug") || "";

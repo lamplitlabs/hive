@@ -344,9 +344,11 @@ hive msg read MSG-ID... (mark read for --agent)
 
 Flags:
   -choice string
-        an answer the owner can pick instead of writing, repeatable: LABEL or LABEL=reply|done|amend (send, needs --task)
+        an answer the owner can pick, repeatable (two or more): LABEL, 'LABEL - what it does' or LABEL=reply|done|amend; a leading * marks the recommended one (send, needs --task)
   -file string
         file holding the message text (send)
+  -recommend string
+        the label of the recommended --choice: shown first and as the default (send)
   -since string
         only messages after this id (list)
   -task string
@@ -380,7 +382,7 @@ Flags:
   -files string
         files touched
   -for-owner
-        reserve this post for the owner, not a worker job
+        reserve this post for the owner, not a worker job; the body names two or more answers (Yes:/No:/Option: lines) and one Recommended: line, or it goes to the lead
   -links string
         related links
   -on string
@@ -542,7 +544,7 @@ Flags:
   -brief-file string
         file holding the brief; - for stdin
   -choice string
-        an answer the owner can pick instead of writing, repeatable: LABEL or LABEL=reply|done|amend (reply)
+        an answer the owner can pick, repeatable (two or more): LABEL, 'LABEL - what it does' or LABEL=reply|done|amend; a leading * marks the recommended one (reply)
   -file string
         file holding the reply text (reply)
   -note string
@@ -551,6 +553,8 @@ Flags:
         priority, higher first (new, suggest, review accept)
   -reason string
         why (cancel, review, withdraw)
+  -recommend string
+        the label of the recommended --choice: shown first and as the default (reply)
   -status string
         filter by status (list, suggestions)
   -title string
@@ -756,16 +760,19 @@ Usage: hive cred token [--from-file PATH]      (1Password service-account token 
 
 ### decide
 
-The human records yes or no on a proposal (a yes queues one job, WU-022).
+The human records yes or no on a proposal, or picks one of the answers a question names (a yes queues one job, WU-022).
 
 ```text
-hive decide  the human records yes or no on a proposal (a yes queues one job, WU-022)
+hive decide  the human records yes or no on a proposal, or picks one of the answers a question names (a yes queues one job, WU-022)
 
 Usage: hive decide POST_ID yes|no [--words '...']
+       hive decide POST_ID --option 'LABEL' [--words '...']
 
 Flags:
+  -option string
+        pick one of the answers the ask names (its Option:, Yes: or No: label)
   -words string
-        the words that go with the answer
+        an optional note that goes with the answer
 ```
 
 ### goal

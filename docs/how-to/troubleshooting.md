@@ -29,7 +29,7 @@ executors  local active (0/5 busy)
 | `capacity`, `waiting` | there only while jobs wait: how many are queued, and what holds them back |
 | `planner`, `recovery` | with a project's name: why nothing is planned for a project that has nothing queued, and what became of its failed jobs |
 
-- **The console.** **Home** shows a notice with its button when the runner is
+- **The console.** **Sessions** shows a notice with its button when the runner is
   off, paused or not responding, and the card **Set up Hive** until a provider
   is connected and a project added. The foot of the sidebar shows the runner's
   state on every page. **Runs** lists every run: open one for its transcript.
@@ -89,7 +89,7 @@ name. Open `http://127.0.0.1:8765`, or allow the name with
 ### The console opens, but nothing runs
 
 `hive hub` serves the console only. The runner is a second process, and until
-it runs, every task and every onboarding waits in the queue. Home says
+it runs, every task and every onboarding waits in the queue. Sessions says
 **Runner is off** with the button **Start runner**, or shows the step
 **Keep Hive running** on its card **Set up Hive**, and the foot of the sidebar
 says **Runner off**. Press the button and confirm in its dialog, or run
@@ -106,13 +106,13 @@ queued, read `hive status` from the top:
   ([above](#the-console-opens-but-nothing-runs)).
 - **`runner     the runner is stopped in the store (hive start to resume)`.**
   The kill switch is on: somebody ran `hive stop` or pressed
-  **Pause all work**. Home says **Runner is paused: nothing new starts**.
+  **Pause all work**. Sessions says **Runner is paused: nothing new starts**.
   Press **Resume** there, or run `hive start`.
 - **`harness    ... not signed in`.** No model provider is connected, and the
-  runner starts no agent on this machine without one. Home shows the card
+  runner starts no agent on this machine without one. Sessions shows the card
   **Set up Hive**: press **Connect** on its first step
   ([Choose models and set budgets](models.md)).
-- **`daemon     silent`.** The runner has not beaten for a while, and Home
+- **`daemon     silent`.** The runner has not beaten for a while, and Sessions
   says **Runner is not responding**. On macOS, look for a dialog about a
   folder ([below](#macos-asks-about-folder-access)). A runner that stays
   silent for half an hour writes `~/.hive/logs/daemon-stall-<time>.log` and

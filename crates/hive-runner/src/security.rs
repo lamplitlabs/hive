@@ -689,7 +689,7 @@ pub(crate) fn tend_dependency_alerts_with(
                         "Dependabot alerts are off for {repo}: turn them on under Settings \u{2192} Code security so hive can watch and fix them"
                     );
                     let body = format!(
-                        "`gh api repos/{repo}/dependabot/alerts` answered: {}\n\nWith the alerts on, hive reads them once per {} minutes (`{ALERT_CHECK_MINUTES}`) and queues one security update job per affected manifest, moving each vulnerable package to the newest patched version that is at least {} days old (`{}`). If the alerts are already on, the gh account hive uses cannot read them: it needs the `security_events` scope or admin rights on the repository.\n\n`hive settings set {SECURITY_UPDATES} off` stops the watcher instead.",
+                        "`gh api repos/{repo}/dependabot/alerts` answered: {}\n\nWith the alerts on, hive reads them once per {} minutes (`{ALERT_CHECK_MINUTES}`) and queues one security update job per affected manifest, moving each vulnerable package to the newest patched version that is at least {} days old (`{}`). If the alerts are already on, the gh account hive uses cannot read them: it needs the `security_events` scope or admin rights on the repository.\n\n`hive settings set {SECURITY_UPDATES} off` stops the watcher instead.\n\nYes: I turned them on - a job checks that hive can read the alerts\nNo: Leave them off - nothing is queued\nRecommended: Yes - the alerts are how hive learns of a vulnerable package",
                         trunc(e.trim(), 300),
                         minutes,
                         release_age::min_release_age_days(s),
@@ -1306,7 +1306,7 @@ impl Pass<'_> {
             alerts[0].name
         );
         let body = format!(
-            "The security watcher reads npm, Cargo, pip, Go and RubyGems alerts and queues their updates itself; {eco} it leaves to a human. Open alerts: {}.",
+            "The security watcher reads npm, Cargo, pip, Go and RubyGems alerts and queues their updates itself; {eco} it leaves to a human. Open alerts: {}.\n\nYes: Update them in a job - a worker moves them to the patched versions within the project's checks\nNo: I'll handle them - nothing is queued\nRecommended: Yes - the job lands only when the project's checks pass",
             numbers_text(&numbers)
         );
         if let Some(post) = self.tell(summary, body) {
@@ -1334,7 +1334,7 @@ impl Pass<'_> {
             a.number, a.severity, a.ghsa, a.name
         );
         let body = format!(
-            "{} in {manifest} of {} is vulnerable ({}) and the advisory names no fixed version. Hive queues the update the moment one is published and at least {} days old.\n\nYes: Look for a way around it\nNo: Keep watching\n\nYes queues a job that looks for a replacement or a safe pin for {} within the project's checks and reports what it finds; No leaves it to the advisory. Either way the alert can be dismissed on GitHub; hive answers this finding itself once the alert closes.",
+            "{} in {manifest} of {} is vulnerable ({}) and the advisory names no fixed version. Hive queues the update the moment one is published and at least {} days old.\n\nYes: Look for a way around it\nNo: Keep watching\nRecommended: No - hive queues the fix itself once a patched version is published\n\nYes queues a job that looks for a replacement or a safe pin for {} within the project's checks and reports what it finds; No leaves it to the advisory. Either way the alert can be dismissed on GitHub; hive answers this finding itself once the alert closes.",
             a.name, self.repo, a.range, self.min_days, a.name
         );
         if let Some(post) = self.tell(summary, body) {
@@ -1362,7 +1362,7 @@ impl Pass<'_> {
             a.name, a.number
         );
         let body = format!(
-            "Dependabot #{} ({}, {}) in {manifest} of {}: the first patched version of {} is {patched}, outside the compatible range of the installed {current}. Hive adopts patched versions within the installed major (minor below 1.0) on its own; a major upgrade is yours to allow.\n\nYes: Upgrade it\nNo: Leave it to me\n\nYes queues a job that moves {} to the newest {patched}-range version at least {} days old, makes the code changes the new major needs, and lands only when the project's checks pass; No leaves it to you - upgrade by hand or dismiss the alert on GitHub, and hive answers this finding itself once the alert closes. `hive settings set {MAJOR_UPDATES} auto` lets hive queue every such upgrade without asking.",
+            "Dependabot #{} ({}, {}) in {manifest} of {}: the first patched version of {} is {patched}, outside the compatible range of the installed {current}. Hive adopts patched versions within the installed major (minor below 1.0) on its own; a major upgrade is yours to allow.\n\nYes: Upgrade it\nNo: Leave it to me\nRecommended: Yes - the job lands only when the project's checks pass on the new major\n\nYes queues a job that moves {} to the newest {patched}-range version at least {} days old, makes the code changes the new major needs, and lands only when the project's checks pass; No leaves it to you - upgrade by hand or dismiss the alert on GitHub, and hive answers this finding itself once the alert closes. `hive settings set {MAJOR_UPDATES} auto` lets hive queue every such upgrade without asking.",
             a.number, a.severity, a.ghsa, self.repo, a.name, a.name, self.min_days
         );
         if let Some(post) = self.tell(summary, body) {
@@ -2103,7 +2103,7 @@ mod tests {
         assert!(
             major
                 .str("body")
-                .contains("\nYes: Upgrade it\nNo: Leave it to me\n")
+                .contains("\nYes: Upgrade it\nNo: Leave it to me\nRecommended: Yes - ")
                 && major.str("body").contains(MAJOR_UPDATES),
             "{}",
             major.str("body")
@@ -2115,7 +2115,7 @@ mod tests {
         assert!(
             unfixable
                 .str("body")
-                .contains("\nYes: Look for a way around it\nNo: Keep watching\n"),
+                .contains("\nYes: Look for a way around it\nNo: Keep watching\nRecommended: No - "),
             "{}",
             unfixable.str("body")
         );

@@ -19,7 +19,7 @@ import { GoalReviewCard } from "./goal-review";
 
 const goalViews = (path: string) => path === "org" || path === "projects" || path.startsWith("projects/") || path.startsWith("events");
 
-// The id the home page's "generated goal" note links to (project/?slug=x#goal).
+// The id a link to the project's goal panel lands on (project/?slug=x#goal).
 export const GOAL_ANCHOR = "goal";
 
 export function ProjectGoalPanel({ slug }: { slug: string }) {

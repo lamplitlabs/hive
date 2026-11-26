@@ -5,7 +5,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { CodeDeliveredKpi } from "@/components/code-delivery/report";
-import { KpisPanel } from "@/components/home/kpis-panel";
+import { KpisPanel } from "@/components/insights/kpis-panel";
 import { ActivityChart } from "@/components/hive/charts";
 import { ErrorNotice, Kpi, KpiGrid, SkeletonRows } from "@/components/hive/panel";
 import { PageHeader } from "@/components/hive/page-header";

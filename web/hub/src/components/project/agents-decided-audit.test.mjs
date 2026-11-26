@@ -41,7 +41,8 @@ const OWNER_Q = {
   id: "q-owner",
   date: "2026-10-28T10:00:00Z",
   summary: "Ship the beta to everyone?",
-  body: "The fleet asks whether the beta opens to all projects now.",
+  // TASK-129: a question reaches the owner with its answers and one recommended.
+  body: "The fleet asks whether the beta opens to all projects now.\n\nYes: Open it - every project gets the beta\nNo: Keep it closed - only the pilot projects keep it\nRecommended: Yes - the pilot ran clean for a month",
   decider: "owner",
 };
 
@@ -86,5 +87,6 @@ test("agents-decided rows are read-only (nothing to decide) while the owner's ca
   assert.ok(!audit.includes('aria-label="No to'), "settled questions offer no No button");
   assert.ok(audit.includes("See it on the board"), "the audit links to the thread holding the answer");
   const waiting = html(cards.QuestionCard, { q: OWNER_Q, slug: "demo-app", canDecide: true });
-  assert.ok(waiting.includes('aria-label="Yes to'), "owner-decidable question still renders its decision buttons");
+  assert.ok(waiting.includes('aria-label="Open it (recommended) to'), "owner-decidable question still renders its decision buttons, the recommended one marked");
+  assert.ok(waiting.includes('aria-label="Keep it closed to'), "and the alternative");
 });

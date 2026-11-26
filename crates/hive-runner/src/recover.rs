@@ -881,7 +881,7 @@ pub(crate) fn post_hold_question(
 
 {}
 
-The runner takes Tier 0 and Tier 1 jobs only; Tier 2 needs an ADR and the human. Land the change by hand or through an ADR and answer on this thread naming the commit, or decline the card with an answer carrying `--resolution declined`. `hive job retry {} --as-new` runs the job again once the rules allow it.",
+The runner takes Tier 0 and Tier 1 jobs only; Tier 2 needs an ADR and the human. Land the change by hand or through an ADR and answer on this thread naming the commit, or decline the card with an answer carrying `--resolution declined`. `hive job retry {} --as-new` runs the job again once the rules allow it.\n\nOption: Decline the card - it is closed with your reason and no job is queued for it\nOption: Keep it for an ADR - it waits until an ADR or a hand-made change lifts the reason\nRecommended: Decline the card - a Tier 2 change starts from an ADR, not from a held card",
         job.str("id"),
         crate::util::trunc(&job.str("title"), 160),
         crate::util::trunc(&crate::compute::redact_secrets(reason), 1200),
@@ -4831,7 +4831,12 @@ mod tests {
                 ..Default::default()
             };
             match mode {
-                "owner flag" => input.for_owner = true,
+                "owner flag" => {
+                    // TASK-129: an owner question with its answers stays the
+                    // owner's; one without them goes to the lead on purpose.
+                    input.for_owner = true;
+                    input.body = "Yes: Fix the parser - an empty input returns an error\nNo: Leave it - an empty input still panics\nRecommended: Yes - a panic is never the answer".into();
+                }
                 "owner paths" => input.body = "Edit docs/evolution/constitution.md".into(),
                 "tier two" => input.summary = "@proj-lead should ADR-021 change?".into(),
                 "hard stop" => input.body = "This needs a hard stop overridden.".into(),
@@ -4872,15 +4877,27 @@ mod tests {
                 .expect("create answer");
             }
             let lines = crate::lead::tend_lead(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+            // A routine question for the owner is the lead's to answer
+            // whatever owner.presence says (TASK-129) - as an owner
+            // question, never counted as peer help.
+            let want = if mode == "owner flag" { 1 } else { 0 };
             assert_eq!(
                 count(
                     &s,
                     "SELECT COUNT(*) AS n FROM jobs WHERE kind = ?",
                     &[&crate::lead::LEAD_KIND]
                 ),
-                0,
+                want,
                 "{mode}: guarded mention woke lead: {lines:?}"
             );
+            let joined = lines.join("\n");
+            assert!(!joined.contains("peer request"), "{mode}: {lines:?}");
+            if want == 1 {
+                assert!(
+                    joined.contains("answer 1 owner question(s)"),
+                    "{mode}: {lines:?}"
+                );
+            }
         }
     }
 

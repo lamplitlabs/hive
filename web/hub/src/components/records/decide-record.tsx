@@ -17,18 +17,19 @@ import { invalidate } from "@/lib/use-api";
 import { sentence } from "@/lib/format";
 
 // The human gates in the console (ADR-028). A Proposed ADR waits for the
-// owner's yes, defer or no; each answer needs their words, which the hub
+// owner's yes, defer or no; each answer carries a reason the owner confirms
+// (TASK-129: the pick carries it, nothing needs typing), which the hub
 // records as the revision note (author `human`, "(via console)"). Nothing
 // runs from the click itself: accepting unblocks the plan for the lead agent.
 
-const TEXT: Record<RecordDecision, { verb: string; title: string; doing: string; done: string; label: string; placeholder: string; happens: string }> = {
+const TEXT: Record<RecordDecision, { verb: string; title: string; doing: string; done: string; label: string; reason: string; happens: string }> = {
   accept: {
     verb: "Accept",
     title: "Accept this decision?",
     doing: "Accepting the decision…",
     done: "Accepted. The lead agent may now start on its plan.",
-    label: "Why do you accept it?",
-    placeholder: "I accept because …",
+    label: "Your reason",
+    reason: "Accepted: I read it and its plan may go ahead.",
     happens: "The decision becomes Accepted, with your words in its history. Its plan is unblocked, so the lead agent may start on it. Nothing runs from this click by itself.",
   },
   Deferred: {
@@ -36,8 +37,8 @@ const TEXT: Record<RecordDecision, { verb: string; title: string; doing: string;
     title: "Defer this decision?",
     doing: "Deferring the decision…",
     done: "Deferred. Agents won't build it for now.",
-    label: "Why not now?",
-    placeholder: "Later, because …",
+    label: "Your reason",
+    reason: "Deferred: not now; it can be reopened later.",
     happens: "The decision is put on hold, with your words in its history. Agents won't build it, and it can be reopened later.",
   },
   Rejected: {
@@ -45,8 +46,8 @@ const TEXT: Record<RecordDecision, { verb: string; title: string; doing: string;
     title: "Decline this decision?",
     doing: "Declining the decision…",
     done: "Declined. The record keeps your reasoning.",
-    label: "Why do you decline it?",
-    placeholder: "No, because …",
+    label: "Your reason",
+    reason: "Declined: this is not the way to go.",
     happens: "The decision is turned down, with your words in its history. The record stays, so the reasoning isn't lost.",
   },
 };
@@ -65,7 +66,7 @@ function DecisionIcon({ action, className }: { action: RecordDecision; className
 export function DecideRecordDialog({ record, action, open, onOpenChange, onDone }: { record: RecordRow; action: RecordDecision; open: boolean; onOpenChange: (o: boolean) => void; onDone?: (r: RecordRow) => void }) {
   // The busy flag lives here so the dialog cannot be dismissed mid-write; the
   // words live in the body, which mounts with the content, so every opening
-  // starts from an empty field.
+  // starts from the action's own reason.
   const [busy, setBusy] = useState(false);
   return (
     <Dialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)}>
@@ -78,7 +79,7 @@ export function DecideRecordDialog({ record, action, open, onOpenChange, onDone 
 
 function DecideBody({ record, action, busy, setBusy, onOpenChange, onDone }: { record: RecordRow; action: RecordDecision; busy: boolean; setBusy: (b: boolean) => void; onOpenChange: (o: boolean) => void; onDone?: (r: RecordRow) => void }) {
   const t = TEXT[action];
-  const [words, setWords] = useState("");
+  const [words, setWords] = useState(t.reason);
   const trimmed = words.trim();
   const ready = trimmed.length > 0 && !busy;
 
@@ -120,9 +121,7 @@ function DecideBody({ record, action, busy, setBusy, onOpenChange, onDone }: { r
             id="decide-words"
             value={words}
             onChange={(e) => setWords(e.target.value)}
-            placeholder={t.placeholder}
-            rows={3}
-            autoFocus
+            rows={2}
             required
             aria-describedby="decide-words-help"
             onKeyDown={(e) => {
@@ -133,7 +132,7 @@ function DecideBody({ record, action, busy, setBusy, onOpenChange, onDone }: { r
             }}
           />
           <p id="decide-words-help" className="text-xs text-muted-foreground">
-            A few words are required. They go into the decision&apos;s history as your note. Press ⌘ Enter to send.
+            This reason goes into the decision&apos;s history as your note. Change it if you like; press ⌘ Enter to send.
           </p>
         </div>
         <div className="rounded-xl bg-muted/60 px-3.5 py-3">
