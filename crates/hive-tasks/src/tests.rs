@@ -1182,8 +1182,41 @@ fn compute_request_says_how_many_machine_runs_landed() {
     // without commits and one on this machine: neither of those counts.
     add("r1", "hands-cr-1", "failed", 2, "2026-11-20T10:00:00Z");
     add("r2", "hands-cr-1", "failed", 1, "2026-11-21T10:00:00Z");
+    // r1 failed before the fetch-failed event existed; r2 wrote one.
+    conn.execute(
+        "UPDATE runs SET summary = 'could not land the branch: fatal: Could not read from remote repository.' WHERE id = 'r1'",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO events (at, actor, action, subject, detail) VALUES ('2026-11-21T10:00:00Z', 'runner', 'executor.fetch-failed', 'hands-cr-1', '{\"job\":\"job-r2\",\"run\":\"r2\"}')",
+        [],
+    )
+    .unwrap();
     add("r3", "hands-cr-1", "done", 0, "2026-11-22T10:00:00Z");
     add("r4", "local", "done", 3, "2026-11-22T11:00:00Z");
+    // Ordinary failures on a machine would have ended the same here: a
+    // failed check, an identity refusal, a stale lease (TASK-138 item 5).
+    add("r6", "hands-cr-1", "failed", 1, "2026-11-22T12:00:00Z");
+    add("r7", "hands-cr-1", "failed", 1, "2026-11-22T13:00:00Z");
+    add("r8", "hands-cr-1", "stale", 1, "2026-11-22T14:00:00Z");
+    for (id, summary) in [
+        ("r6", "1 commit(s) but verify exit 1; nothing landed"),
+        (
+            "r7",
+            "1 commit(s) refused: commit abc is not signed by the run's key; nothing landed",
+        ),
+        (
+            "r8",
+            "lease lost: generation 2 is no longer current; 1 commit(s) discarded",
+        ),
+    ] {
+        conn.execute(
+            "UPDATE runs SET summary = ? WHERE id = ?",
+            params![summary, id],
+        )
+        .unwrap();
+    }
     let line = machine_landing_line(&s).unwrap();
     assert!(
         line.starts_with("Machines so far: 0 of the last 2 runs with commits"),

@@ -1384,6 +1384,10 @@ pub(crate) fn executors_text(s: &hive_store::Store, now: &str) -> String {
                 r.str("probe_note")
             };
             out.push(format!("{:14} probe {}: {}", "", last, note));
+            let fetch = crate::executor::fetch_broken_line(s, &name);
+            if !fetch.is_empty() {
+                out.push(format!("{:14} {}", "", fetch));
+            }
             let check = crate::executor::last_login_check(s, &name);
             let expires = crate::executor::login_expiry(s, &name);
             let warn =

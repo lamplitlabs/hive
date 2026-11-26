@@ -431,6 +431,18 @@ impl DaemonMaintenance {
                                 tend_unfit_reprobes(&s, s.now(), actor.clone())
                             }));
                         }
+                        if !bulk_away
+                            && !dry
+                            && !cancel.is_cancelled()
+                            && crate::run::runner_stopped(&s).is_empty()
+                        {
+                            // Clones kept on machines whose fetch failed:
+                            // fetched again (a flagged machine's way back)
+                            // or removed once their job is closed (TASK-138).
+                            lines.extend(b.once("kept work", || {
+                                crate::kept_work::tend_kept_work(&s, &cancel, &s.now(), &actor)
+                            }));
+                        }
                         if !cancel.is_cancelled() && crate::run::runner_stopped(&s).is_empty() {
                             lines.extend(b.once("binary check", || {
                                 crate::selfupdate::tend_binary(&s, s.now(), binary)
