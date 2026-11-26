@@ -96,12 +96,16 @@ pub const IMPLEMENTATION_JOB_KINDS: &[&str] = &["task", "improve", "experiment"]
 /// refused, a change that slips through put back).
 pub const READ_ONLY_JOB_KINDS: &[&str] = &["answer", "ballot"];
 pub static MODEL_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(
-    || map! {"light_model"=>"","measure_model"=>"","ask.model"=>"","worker_reasoning"=>"","light_reasoning"=>"","measure_reasoning"=>"",},
+    || map! {"light_model"=>"","measure_model"=>"","ask.model"=>"","decide_model"=>"","decide_provider"=>"","decide.mode"=>"on","decide.timeout_seconds"=>"30","worker_reasoning"=>"","light_reasoning"=>"","measure_reasoning"=>"",},
 );
 pub static MODEL_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
     rules! {
         "light_model"=>("text",None,[],None,"the model of the light runs - lead, answer, ballot, reflect, onboard and clean jobs, the sealed held-out call and the login check; empty means worker_model"),
         "measure_model"=>("text",None,[],None,"the model the self-improvement loop measures fixtures with - every baseline, experiment and landing re-measure; empty means worker_model. It is part of the evaluator: a change re-measures every baseline, and a pinned value keeps the baselines when worker_model changes"),
+        "decide_model"=>("text",None,[],None,"the model of the decide role (ADR-072): one call with no tools that answers yes, no or pass on a routine ask the lead may decide; empty means measure_model, then light_model"),
+        "decide_provider"=>("choice",None,["","copilot","openai","anthropic","gemini","azure-openai","openrouter","groq","mistral","deepseek","xai","together","fireworks","cerebras","github-models","ollama","lmstudio","vllm","custom"],None,"the model provider of the decide role, one of the provider choices; empty means provider, the hub's own. Only the decide role reads it: runs that change code and reviews stay on provider"),
+        "decide.mode"=>("choice",None,["off","shadow","on"],None,"the decide role (ADR-072): on - each daemon pass asks decide_model for a yes, no or pass on every open routine ask the lead may decide, and a yes or a no is decided under the lead's name; shadow - the answer is recorded as a decide.shadow event and the lead still decides; off - no call, the lead decides as before. A pass, an error, a late or unreadable answer leaves the ask to the lead"),
+        "decide.timeout_seconds"=>("count",Some(1),[],None,"seconds the decide role waits for its answer before the ask is left to the lead (the request deadline)"),
         "ask.model"=>("text",None,[],None,"the model Ask answers the owner's questions with (console Ask, hive ask); empty means light_model, then worker_model, then the provider's default chat model"),
         "worker_reasoning"=>("choice",None,["","default","minimal","low","medium","high","xhigh","max"],None,"the reasoning effort of the runs that change code - task, improve and experiment jobs - and of a worker-class agent; empty means harness.reasoning; default sends nothing and leaves the model's own setting"),
         "light_reasoning"=>("choice",None,["","default","minimal","low","medium","high","xhigh","max"],None,"the reasoning effort of the light runs - lead, answer, ballot, reflect, onboard and clean jobs - and of a light-class agent; empty means harness.reasoning; default sends nothing"),
@@ -1083,6 +1087,41 @@ impl Store {
             self.setting("worker_model", "").trim().to_string()
         } else {
             light
+        }
+    }
+    /// The model of the decide role (ADR-072, Amendment 1): `decide_model`,
+    /// else `measure_model`, else `light_model` (which itself falls back to
+    /// `worker_model`). Empty when none is set: the provider's default.
+    pub fn decide_model(&self) -> String {
+        for name in ["decide_model", "measure_model"] {
+            let v = self.setting(name, "").trim().to_string();
+            if !v.is_empty() {
+                return v;
+            }
+        }
+        self.light_model()
+    }
+    /// The provider of the decide role: `decide_provider`, else the hub's
+    /// own `provider`.
+    pub fn decide_provider(&self) -> String {
+        let own = self.setting("decide_provider", "").trim().to_string();
+        if !own.is_empty() {
+            return own;
+        }
+        let main = self.setting("provider", "").trim().to_string();
+        if main.is_empty() {
+            "copilot".into()
+        } else {
+            main
+        }
+    }
+    /// `decide.mode`: off, shadow or on; a value the store does not know
+    /// reads as the default, on.
+    pub fn decide_mode(&self) -> String {
+        let v = self.setting("decide.mode", "").trim().to_ascii_lowercase();
+        match v.as_str() {
+            "off" | "shadow" | "on" => v,
+            _ => "on".into(),
         }
     }
     /// The model the loop measures fixtures with: `measure_model`, or
@@ -2149,9 +2188,13 @@ mod go_settings_tests {
         s.set_setting("human", "light_model", "").unwrap();
         assert_eq!(s.run_model("lead"), "claude-fable-5.1");
         assert_eq!(
-            &extra_setting_names()[..5],
+            &extra_setting_names()[..9],
             [
                 "ask.model",
+                "decide.mode",
+                "decide.timeout_seconds",
+                "decide_model",
+                "decide_provider",
                 "light_model",
                 "light_reasoning",
                 "measure_model",
@@ -2209,6 +2252,63 @@ mod go_settings_tests {
                 .description
                 .contains("measure_model")
         );
+    }
+
+    #[test]
+    fn decide_settings_fall_back_to_measure_light_and_the_hub_provider() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = set_job_empty();
+        let s = store("2026-10-26T10:00:00Z");
+        assert_eq!(s.decide_mode(), "on", "on by default (Amendment 1)");
+        assert_eq!(s.setting("decide.timeout_seconds", ""), "30");
+        assert_eq!(s.decide_model(), "");
+        s.set_setting("human", "worker_model", "big").unwrap();
+        assert_eq!(
+            s.decide_model(),
+            "big",
+            "light_model falls back to worker_model"
+        );
+        s.set_setting("human", "light_model", "light").unwrap();
+        assert_eq!(s.decide_model(), "light");
+        s.set_setting("human", "measure_model", "measure").unwrap();
+        assert_eq!(s.decide_model(), "measure");
+        s.set_setting("human", "decide_model", " small ").unwrap();
+        assert_eq!(s.decide_model(), "small");
+        assert_eq!(
+            s.run_model("lead"),
+            "light",
+            "decide_model touches no run kind"
+        );
+        assert_eq!(s.decide_provider(), "copilot");
+        s.set_setting("human", "provider", "openai").unwrap();
+        assert_eq!(s.decide_provider(), "openai");
+        s.set_setting("human", "decide_provider", "anthropic")
+            .unwrap();
+        assert_eq!(s.decide_provider(), "anthropic");
+        assert_eq!(s.setting("provider", ""), "openai");
+        assert!(
+            s.set_setting("human", "decide_provider", "nonesuch")
+                .is_err()
+        );
+        let provider_choices = &HARNESS_RULES["provider"].choices;
+        for c in provider_choices {
+            assert!(
+                MODEL_RULES["decide_provider"].choices.contains(c),
+                "decide_provider lacks {c}"
+            );
+        }
+        for mode in ["off", "shadow", "on"] {
+            s.set_setting("human", "decide.mode", mode).unwrap();
+            assert_eq!(s.decide_mode(), mode);
+        }
+        assert!(s.set_setting("human", "decide.mode", "maybe").is_err());
+        assert!(
+            s.set_setting("human", "decide.timeout_seconds", "0")
+                .is_err()
+        );
+        s.set_setting("human", "decide.timeout_seconds", "45")
+            .unwrap();
+        assert_eq!(s.setting("decide.timeout_seconds", ""), "45");
     }
 
     #[test]
