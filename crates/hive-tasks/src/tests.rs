@@ -4543,7 +4543,7 @@ fn delivery_follows_the_review_of_the_tasks_pull_request() {
     assert_eq!(d.url, "https://github.com/o/r/pull/7");
 
     // The owner's Merge is one event the daemon answers.
-    ask_merge(&s, "demo", 7, &id, hive_store::HUMAN_AGENT).unwrap();
+    ask_merge(&s, "demo", 7, &id, "", hive_store::HUMAN_AGENT).unwrap();
     let asks = events(&s, "review.ask");
     assert_eq!(asks.len(), 1);
     assert_eq!(
@@ -4553,7 +4553,8 @@ fn delivery_follows_the_review_of_the_tasks_pull_request() {
     let detail: serde_json::Value = serde_json::from_str(&asks[0].detail).unwrap();
     assert_eq!(
         detail,
-        serde_json::json!({"project": "demo", "number": 7, "action": "merge", "task": id})
+        serde_json::json!({"project": "demo", "number": 7, "action": "merge", "task": id, "sha": "abc123"}),
+        "the ask names the head it was pressed for"
     );
     let d = delivery_for(&s, &id).unwrap();
     assert_eq!((d.state.as_str(), d.can_merge), ("merge_asked", false));
