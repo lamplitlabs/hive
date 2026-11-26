@@ -1,0 +1,11 @@
+# hivefleet.dev shows what main holds: every half hour the runner asks the
+# public address which commit it was built from and, when web/site, docs/ or
+# scripts/install.sh changed since, builds main and deploys it. Only a
+# machine signed in to Vercel with access to the project deploys; on any
+# other the check stays green and does nothing. The script's own header and
+# docs/development.md ("The site follows main by itself") say the rest.
+title: The public site shows main
+every: 30m
+kind: check
+script: .hive/automations/site-shows-main.sh
+job_kind: task
