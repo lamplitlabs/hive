@@ -1437,6 +1437,86 @@ fn a_request_that_failed_before_a_machine_was_ready_does_not_spend_the_day() {
     assert_eq!(r3.status, "pending");
 }
 
+/// Two rentals replayed on one hub ran 5.2 and 8.0 hours on 4-hour approvals while the day
+/// counted 4 each: the cap counts what machines ran that UTC day, not what was asked.
+#[test]
+fn the_day_counts_the_hours_machines_ran_not_the_hours_asked() {
+    let _serial = crate::test_helpers::serial();
+    let s = new_store();
+    // The store's clock reads 2026-09-06T21:00:00Z.
+    let conn = s.conn().unwrap();
+    let request = |id: &str, hours: i32, status: &str, executor: &str, at: &str| {
+        conn.execute(
+            "INSERT INTO compute_requests(id,project,requested_by,size,hours,reason,status,decided_by,executor,at,updated_at) VALUES(?,'demo','demo-lead','Standard_B2ms',?,'more hands',?,'human',?,?,?)",
+            params![id, hours, status, executor, at, at],
+        )
+        .unwrap();
+    };
+    let machine = |id: &str, made: &str, released: &str| {
+        conn.execute(
+            "INSERT INTO compute_machines(request_id,provider,name,executor,created_at,released_at) VALUES(?,'azure',?,?,?,?)",
+            params![id, id.to_lowercase(), format!("hands-{}", id.to_lowercase()), made, released],
+        )
+        .unwrap();
+    };
+    // Approved for 4 hours, ran 8 before its last run ended and it was released.
+    request(
+        "CR-001",
+        4,
+        "released",
+        "hands-cr-001",
+        "2026-09-06T08:00:00Z",
+    );
+    machine("CR-001", "2026-09-06T08:10:00Z", "2026-09-06T16:10:00Z");
+    // Made yesterday, ran 3 hours into today.
+    request(
+        "CR-002",
+        4,
+        "released",
+        "hands-cr-002",
+        "2026-09-05T22:00:00Z",
+    );
+    machine("CR-002", "2026-09-05T23:00:00Z", "2026-09-06T03:00:00Z");
+    // Failed before a machine was made: nothing spent.
+    request("CR-003", 4, "failed", "", "2026-09-06T17:00:00Z");
+    // Ready half an hour of its two: it holds the rest.
+    request("CR-004", 2, "ready", "hands-cr-004", "2026-09-06T20:30:00Z");
+    machine("CR-004", "2026-09-06T20:30:00Z", "");
+    drop(conn);
+    assert_eq!(get_caps(&s).unwrap().hours_today, 8 + 3 + 2);
+    for (k, v) in [
+        ("compute.auto_approve", "1"),
+        ("compute.max_vms", "5"),
+        ("compute.max_hours_per_day", "14"),
+    ] {
+        s.set_setting("human", k, v).unwrap();
+    }
+    let over = request_compute(&s, "demo", "demo-lead", "", 2, "past what ran today").unwrap();
+    assert_eq!(over.status, "pending", "{over:?}");
+}
+
+/// `compute.max_hours_per_day` 0 means none, as its description says and as the compute
+/// worker reads it when it provisions; approval read it as no cap.
+#[test]
+fn no_hours_a_day_approves_nothing() {
+    let _serial = crate::test_helpers::serial();
+    let s = new_store();
+    for (k, v) in [
+        ("compute.auto_approve", "1"),
+        ("compute.max_vms", "2"),
+        ("compute.max_hours_per_day", "0"),
+    ] {
+        s.set_setting("human", k, v).unwrap();
+    }
+    let r = request_compute(&s, "demo", "demo-lead", "", 1, "none allowed").unwrap();
+    assert_eq!(r.status, "pending", "{r:?}");
+    // The pending request holds its hour, so two make room for one more.
+    s.set_setting("human", "compute.max_hours_per_day", "2")
+        .unwrap();
+    let r = request_compute(&s, "demo", "demo-lead", "", 1, "one allowed").unwrap();
+    assert_eq!(r.status, "approved", "{r:?}");
+}
+
 #[test]
 fn request_refused_before_a_machine_when_the_hands_binary_is_missing() {
     let _serial = crate::test_helpers::serial();

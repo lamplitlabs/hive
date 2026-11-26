@@ -166,13 +166,23 @@ so (`compute CR-012: its 4 hour(s) are up: hands-cr-012 takes no new work
 and is released when its last run ends`), and no second machine is rented:
 the one that is finishing still counts against `compute.max_vms` and as the
 open request. A machine can still run past its hours by the length of that
-last run, and the day's `compute.max_hours_per_day` counts the hours asked
-for, not the hours run.
+last run, and the day's `compute.max_hours_per_day` counts the hours it ran:
+each machine counts the time from when it was made to when it was released
+(or until now while it runs), inside the UTC day, rounded up to whole hours;
+an open request also holds the asked hours it has not run yet, and a
+pending one the hours it asks. `0` means no machine-hours at all, both when
+a request would be approved on its own and when the worker provisions it.
+Measured before this rule: two machines approved for 4 hours ran 5.2 and
+8.0, and the day counted 4 for each.
 
-Once it is released nothing waits before the next request. A queue that
-still waits gets a fresh machine on the daemon's usual terms, for another
-four hours, and again when those are up, until the day's
-`compute.max_hours_per_day` is reached. So a queue that used to keep one
+Once a machine that ran past its hours is released, the daemon's next
+request waits as after a failed one: 5 minutes, then 15, 45 and 135, then
+6 hours while each released machine ran past its hours or each request
+failed (`CR-012's machine ran 8.0 hour(s) on 4 approved and was released
+(…); the daemon asks again after …`). One released on time - within 5
+minutes of its hours - is followed at once. A queue that still waits gets
+a fresh machine on the daemon's usual terms, for another four hours, until
+the day's `compute.max_hours_per_day` is reached. So a queue that used to keep one
 machine busy long past its hours now gets a new machine each time the hours
 are up: over a day fewer hours are rented once the cap binds, and more
 machines are bought, each with its own start. Measured before this rule: a
