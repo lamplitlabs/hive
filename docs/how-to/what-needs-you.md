@@ -106,7 +106,7 @@ of its answers:
 ```bash
 hive show 20261123T042647Z-quartz-14
 hive decide 20261123T042647Z-quartz-14 yes --words 'Yes, and cap the total wait at ten seconds.'
-hive decide 20261123T042647Z-cinder-3 'A local fake'
+hive decide 20261123T042647Z-cinder-3 --option 'A local fake'
 ```
 
 ```text
@@ -115,7 +115,11 @@ queued job-20261123T042652Z-85dbad: Act on the human's yes: Retry upstream calls
 ```
 
 A pick records the answer, what it does and whether it was the
-recommended one; `--words` adds your note.
+recommended one; `--words` adds your note. A pick of an `Option:` answer
+is recorded as that pick, never as a yes: the job it queues does what the
+picked answer says. An ask whose yes runs a command (a `pair:` or
+`onboard:` line, say) takes **Yes** or **No** only, so declining it can
+never authorize the command.
 
 ## 4. Answer a lead on a task
 

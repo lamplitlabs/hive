@@ -332,6 +332,22 @@ pub(crate) fn create_post_conn(
     if summary.is_empty() {
         return Err(refuse(2, "A one-line --summary is required"));
     }
+    // An ask whose yes runs a command (a `pair:` or `onboard:` marker line,
+    // ADR-021) is answered yes or no: an `Option:` answer there would be a
+    // pick the gate could not read (PR #278 review).
+    if crate::jobs::authorizes_command(&input.body)
+        && crate::ask_options::ask_options(&input.body)
+            .options
+            .iter()
+            .any(|o| o.answer.is_empty())
+    {
+        return Err(refuse_fix(
+            2,
+            "an ask that authorizes a command takes `Yes:` / `No:` answers only",
+            "a marker line (pair:, onboard:, lead-role:, toolkit:, goal:) means the owner's yes runs a command",
+            "Yes: <label> - <what it does>\nNo: <label> - <what it does>\nRecommended: Yes|No - <why>",
+        ));
+    }
     let n = summary.chars().count();
     if n > MAX_SUMMARY_CHARS {
         return Err(refuse(
