@@ -1025,7 +1025,14 @@ pub fn decide_option(
 ) -> Result<Decision> {
     let target = crate::posts::post_by_id(s, post_id)?
         .ok_or_else(|| refuse(2, format!("No post {}", py_repr(post_id))))?;
-    let options = crate::ask_options::ask_options(&target.body);
+    // An older major-upgrade finding names no answers; the hub shows it
+    // with the watcher's own, so a pick reads the same ones.
+    let body = if crate::owner_asks::is_security_major_finding(&*s.conn()?, post_id) {
+        crate::owner_asks::with_security_major_answers(&target.body)
+    } else {
+        target.body.clone()
+    };
+    let options = crate::ask_options::ask_options(&body);
     let Some(picked) = options.find(option).cloned() else {
         let names = options
             .options

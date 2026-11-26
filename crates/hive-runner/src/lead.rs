@@ -1089,13 +1089,7 @@ pub(crate) fn owner_addressed_questions(
 /// `dependencies.major_updates` setting's - never the lead's, since a
 /// dependency jump is Tier 2 work.
 pub(crate) fn is_security_major_finding(conn: &rusqlite::Connection, post_id: &str) -> bool {
-    !must_one(
-        conn,
-        "SELECT 1 AS x FROM events WHERE action = 'security.major' AND json_extract(detail, '$.post') = ? LIMIT 1",
-        &[&post_id],
-    )
-    .0
-    .is_empty()
+    hive_board::is_security_major_finding(conn, post_id)
 }
 
 /// Whether a finding, handoff or suggestion addressed to the owner still

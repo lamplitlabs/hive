@@ -75,9 +75,90 @@ pub fn hard_stop_ask(kind: &str, summary: &str, body: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Whether `post_id` is the security watcher's finding about a major
+/// dependency upgrade: the one test the hub and the runner share, read from
+/// the `security.major` event the watcher writes with the post it told,
+/// never from the finding's words (PR #278 review).
+pub fn is_security_major_finding(conn: &rusqlite::Connection, post_id: &str) -> bool {
+    use rusqlite::OptionalExtension;
+    conn.query_row(
+        "SELECT 1 FROM events WHERE action = 'security.major' AND json_extract(detail, '$.post') = ? LIMIT 1",
+        [post_id],
+        |r| r.get::<_, i64>(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .is_some()
+}
+
+/// The posts that are the watcher's major-upgrade findings, of `project`
+/// or of every project ([`is_security_major_finding`] for every post at
+/// once).
+pub fn security_major_findings(
+    conn: &rusqlite::Connection,
+    project: Option<&str>,
+) -> rusqlite::Result<std::collections::BTreeSet<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT json_extract(detail, '$.post') FROM events WHERE action = 'security.major' AND (?1 IS NULL OR subject = ?1)",
+    )?;
+    let rows = stmt.query_map([project], |r| r.get::<_, Option<String>>(0))?;
+    let mut out = std::collections::BTreeSet::new();
+    for r in rows {
+        if let Some(id) = r? {
+            out.insert(id);
+        }
+    }
+    Ok(out)
+}
+
+/// The answers the security watcher writes on a major-upgrade finding, for
+/// one posted before it wrote them (an older finding has no `Recommended:`
+/// line): with `dependencies.major_updates = ask` such a finding is the
+/// owner's, and the owner answers with one pick.
+pub const SECURITY_MAJOR_ANSWERS: &str = "Yes: Upgrade it\nNo: Leave it to me\nRecommended: Yes - the job lands only when the project's checks pass on the new major\n";
+
+/// `body` with the watcher's answers to a major upgrade appended when it
+/// names none ready to pick ([`crate::ask_options`]).
+pub fn with_security_major_answers(body: &str) -> String {
+    if crate::ask_options::ask_options(body).ready() {
+        return body.to_string();
+    }
+    format!("{}\n\n{SECURITY_MAJOR_ANSWERS}", body.trim_end())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_major_upgrade_is_named_by_the_watchers_event_and_gets_its_answers() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE events (seq INTEGER PRIMARY KEY, action TEXT, subject TEXT, detail TEXT);
+             INSERT INTO events (action, subject, detail) VALUES ('security.major', 'one', '{\"post\":\"P-major\"}');
+             INSERT INTO events (action, subject, detail) VALUES ('security.unfixable', 'one', '{\"post\":\"P-unfixable\"}');",
+        )
+        .unwrap();
+        assert!(is_security_major_finding(&conn, "P-major"));
+        assert!(!is_security_major_finding(&conn, "P-unfixable"));
+        assert!(!is_security_major_finding(&conn, "P-words-only"));
+        let all = security_major_findings(&conn, None).unwrap();
+        assert_eq!(all.into_iter().collect::<Vec<_>>(), vec!["P-major"]);
+        assert!(
+            security_major_findings(&conn, Some("two"))
+                .unwrap()
+                .is_empty()
+        );
+        // An older finding without answers gets the watcher's; one with
+        // answers keeps its own.
+        let o = crate::ask_options::ask_options(&with_security_major_answers("Dependabot #7."));
+        assert!(o.ready());
+        assert_eq!(o.options[0].label, "Upgrade it");
+        let own =
+            "Dependabot #20.\n\nYes: Upgrade it\nNo: Leave it to me\nRecommended: No - not yet";
+        assert_eq!(with_security_major_answers(own), own);
+    }
 
     #[test]
     fn routine_asks_are_the_leads_and_hard_stops_the_owners() {
