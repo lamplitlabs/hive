@@ -8,7 +8,7 @@ The console is where you give work, answer questions and watch every agent. This
 - Open `http://127.0.0.1:8765`. The console listens on this machine only.
 
 The pictures show a machine with three projects: `demo-app`, `demo-lib` and
-`hive`. A new machine shows less. Home starts with the card **Set up Hive**
+`hive`. A new machine shows less. Sessions starts with the card **Set up Hive**
 ([Set up your first project](first-project.md)).
 
 ## The frame around every page
@@ -19,13 +19,13 @@ The sidebar on the left is the same on every page.
   **Add project**.
 - **Search** (⌘K, or Ctrl-K) finds pages, projects, tasks and records. A
   question typed there goes to **Ask**.
-- The pages come in three groups. **Home**, **For you**, **Sessions** and
-  **Tasks** are the ones you use every day. **Knowledge** holds
+- The pages come in three groups. **Sessions** and **Tasks** are the ones
+  you use every day; the console opens on **Sessions**. **Knowledge** holds
   **Records**, **Reports**, **Votes** and **Memory**. **System** holds
   **Runs**, **Machines**, **Connections**, **Automations** and
   **Insights**.
 - **Projects** lists each project, with a count of what waits for you
-  there.
+  there. **Sessions** carries a count too: the decisions only you can make.
 - The foot shows two lights. The first says whether the runner is on. The
   runner is the part of Hive that plans jobs and starts agents; in a
   terminal it is `hive daemon`. The second says which model provider is
@@ -36,39 +36,29 @@ The sidebar on the left is the same on every page.
 The top bar has **Ask** (⌘J, or Ctrl-J), the bell for notifications, and
 the list of keyboard shortcuts (press `?`).
 
-## Home
+## Sessions first
 
-![The Home page: Needs you with five items, Working now with one agent, three projects and this week's numbers](images/console-home.webp)
+![Sessions: the runner and sign-in notices, three decisions only you can make, and the session list](images/console-home.webp)
 
-Home answers three questions: what needs you, what is running, and whether
-anything is broken.
+The console opens on **Sessions**. Above the new-session form it shows only
+what needs you now, and nothing when nothing does.
 
-- **Needs you** shows the first five things that wait for your answer.
-  You can answer most of them right there. **See all** opens **For you**.
-- **Working now** lists the agents at work. **See all runs** opens
-  **Runs**.
-- **Projects** lists your projects. **Add project** registers another
-  checkout.
-- **This week** counts changes landed, tasks done and the times agents
-  asked you something, over the last seven days.
+- **A notice for each thing that stops work**: the runner is off or paused,
+  or the model provider's sign-in has expired. Its button fixes it:
+  **Start runner** or **Sign in**.
+- **Set up Hive**, on a new machine only: three steps to a working machine
+  ([Set up your first project](first-project.md)).
+- **Decisions only you can make**: the asks that spend money, cannot be
+  undone, touch a credential or publish something. Each row has its own
+  buttons. Everything else is for the project's lead to decide; a project's
+  **For you** tab lists all of its asks.
+- **Working now**, under the form, lists the agents at work. **See all
+  runs** opens **Runs**.
 
-When something is wrong, a notice appears above all of this: the runner is
-off or paused, or the model provider's sign-in has expired.
-
-## For you
-
-![The For you page: questions, decisions, proposals, compute requests and suggested work, each with its buttons](images/console-for-you.webp)
-
-**For you** lists what needs your yes, your no or your answer, across all
-projects. It is grouped by kind, among them **Questions** an agent asked
-and stopped on, **Decisions** (records an agent proposed), **Proposals**
-that need your yes or no, **Compute requests** for more machines,
-**Suggested work** the agents could not settle themselves, and **Drafts**.
-Each row has its own buttons. Two things that wait for you are on other
-pages: a task whose lead stopped for you is on **Tasks** under
-**Asked you**, and a pull request handed to you is on **Sessions** under
-**Needs your review**. [Answer what waits for you](what-needs-you.md) goes
-through each kind.
+Two more things wait for you on other pages: a task whose lead stopped for
+you is on **Tasks** under **Asked you**, and a pull request handed to you is
+under **Needs your review** in the session list.
+[Answer what waits for you](what-needs-you.md) goes through each kind.
 
 ## Tasks
 
@@ -209,7 +199,7 @@ the store.
 
 | Keys | What they do |
 | --- | --- |
-| `G` then `H`, `F`, `S` or `T` | go to Home, For you, Sessions or Tasks |
+| `G` then `S` or `T` | go to Sessions or Tasks |
 | ⌘K | search |
 | ⌘J | ask |
 | `?` | list the shortcuts |

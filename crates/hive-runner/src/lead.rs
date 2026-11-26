@@ -59,6 +59,24 @@ pub(crate) struct OwnerQuestion {
     /// empty when it names none.
     pub yes: String,
     pub no: String,
+    /// Why only the owner can decide it (`hive_board::hard_stop_ask`);
+    /// empty for a routine ask the lead decides (TASK-129).
+    pub hard_stop: String,
+    /// What the ask still lacks before the owner may be asked (TASK-129):
+    /// empty when it names two answers or more and one recommended, else
+    /// [`hive_board::AskOptions::missing`]. Such an ask is the lead's.
+    pub needs_options: String,
+}
+
+/// What an ask's body still lacks before it may reach the owner (TASK-129);
+/// empty when it is ready.
+pub(crate) fn ask_needs_options(body: &str) -> String {
+    let o = hive_board::ask_options(body);
+    if o.ready() {
+        String::new()
+    } else {
+        o.missing()
+    }
 }
 
 /// The post kinds, besides a question, that wait for the owner when marked
@@ -67,7 +85,7 @@ pub(crate) struct OwnerQuestion {
 pub(crate) const OWNER_ASK_DECIDE_KINDS: &[&str] = &["finding", "handoff", "suggestion"];
 
 /// The yes/no rubric for a routine ask addressed to the owner: the lead's
-/// brief gives it while the owner is away, and the decide role (ADR-072,
+/// brief gives it whatever `owner.presence` says, and the decide role (ADR-072,
 /// `crate::decide`) answers by it.
 pub(crate) const ROUTINE_ASK_RUBRIC: &str = "A finding whose advisory names no fixed version is a no (keep watching) unless the package can be dropped or replaced inside the project's checks. A handoff or suggestion that is Tier 0 or 1 work inside the constitution and the accepted decisions is a yes; one that is stale, already done, or needs the owner's knowledge is a no with the reason. Major dependency upgrades are not listed: the `dependencies.major_updates` setting decides those, never you.";
 
@@ -247,10 +265,10 @@ pub(crate) fn lead_brief(
     let (rules, next) = away_lead_rules(slug.clone(), away, 7);
     b.push_str(&format!("## What to do\n\n\
 1. For each task: read `hive task show <id>` (brief, revisions, messages, jobs so far) and the owner's messages above.\n\
-2. Reply to the owner with `hive msg send --project {slug} --task <id> \"...\"` (or `hive task reply <id> \"...\"`; `hive msg send --project {slug} \"...\"` for the project as a whole): what you understood, what you will do, and any question only the owner can answer. Short and concrete. When the owner has to decide, offer two to four answers to tap instead of a blank to fill: `--choice \"<your recommendation>\" --choice \"<the alternative>\"` (a plain label is sent back as the owner's reply; `LABEL=done` closes the task, `LABEL=amend` opens the brief); ask for written words only when no short list of answers exists. Never repeat a question the owner has not answered yet.\n\
+2. Reply to the owner with `hive msg send --project {slug} --task <id> \"...\"` (or `hive task reply <id> \"...\"`; `hive msg send --project {slug} \"...\"` for the project as a whole): what you understood, what you will do, and any question only the owner can answer. Short and concrete. When the owner has to decide, offer two to four answers to tap - the owner never types an answer, so a question without them is refused: `--choice \"<your recommendation> - what it does\" --choice \"<the alternative> - what it does\" --recommend \"<your recommendation>\"` (exactly one recommended; a plain label is sent back as the owner's reply; `LABEL=done` closes the task, `LABEL=amend` opens the brief). When you cannot name the answers, the question is not ready for the owner: find out more, or decide it yourself. Never repeat a question the owner has not answered yet.\n\
 3. Break each task into jobs a worker can finish in one run and verify with the project's own checks: `hive job add --project {slug} --kind task --source task:<id> --title \"...\" --brief \"...\" [--tier 0|1] --priority <the task's priority>`. Few, whole jobs: one task is one or two jobs that each finish a whole slice with its tests, not a chain of five - every job lands separately and each landing runs the project's verify. When one task needs several jobs, the first takes `--source task:<id>` and the rest `--source task:<id>:<label>` (`hive job add` keeps one open job per source); all of them count as the task's jobs. Every task gets its own job: never fold two tasks into one job - a task is known to be planned only by a job whose source names it (or whose brief names it on a `Covers: <id>, <id>` line), so the task a merged job does not name sits planned with nothing behind it; when one change truly does two tasks, queue it under the first task's source and write `Covers: <the other task ids>` on a line of its brief so every task it covers moves with it and closes when it lands; when two tasks touch the same code, queue one job per task and keep the second waiting on the first (or say in the second's brief what the first lands). The brief says exactly what to change, where, and how the worker proves it; the task's priority is the jobs' priority, so urgent work runs first. Queue independent, non-overlapping changes together; keep dependent changes in one job or wait for the prerequisite to land. Slice vertically, never by layer: the first job makes the thinnest path work end to end (the control, its route, the store call, what the model or the user sees) with a test that walks the whole path, and the next jobs widen it; a UI job, a store job and one job per provider each pass their own tests and leave the join to nobody - six such slices once landed with the owner's picture never reaching the model. Once every job of a split task has landed, the daemon queues one more (`task:<id>:accept`) that checks the whole against the ask on the default branch before the owner is asked; when it ends `blocked: missing ...`, that comes back to you as a failed job to plan. Reuse active jobs and claims instead of asking two workers to repair the same cause. Do not create jobs for a task whose open questions the owner has not answered - ask instead (once). A missing tool, dependency or fixture in a worker clone is not a reason to park a task: queue the job with the gap written into its brief and let the worker report what it could not verify - the owner asked that nothing wait on a human that agents can do.\n\
 4. Set `hive task status <id> planned` once its jobs exist, and only then: the daemon sends a planned task that no job names back to you (`unplanned`), and to the owner in review when it happens again. Tell the owner \"queued\" only for jobs you queued.\n\
-5. A parked task (open, no jobs since your last run): re-check the blocker yourself now - environments change (`hive env show --project {slug}`, the clone in front of you) - and plan the jobs when it is gone. When the only blocker is an answer the owner alone can give, queue nothing and end with `SUMMARY: waiting on the owner: <the question>`; the daemon wakes you again on the owner's next message or amendment, and on a schedule that doubles each time. A blocker you can check yourself - a decision record not yet merged or accepted, a branch not yet landed, an environment still missing - is never a reason to put a task in review: review is for a decision the owner alone can take, and the hub shows every review as *waits for your decision*. A task you did send to review (`held` below) comes back to you on the same doubling schedule: re-check the blocker, and when it is gone put the task back with `hive task status <id> in_progress` and plan it; when it stands, say so in one message with `--choice` answers the owner can tap.\n\
+5. A parked task (open, no jobs since your last run): re-check the blocker yourself now - environments change (`hive env show --project {slug}`, the clone in front of you) - and plan the jobs when it is gone. When the only blocker is an answer the owner alone can give, queue nothing and end with `SUMMARY: waiting on the owner: <the question>`; the daemon wakes you again on the owner's next message or amendment, and on a schedule that doubles each time. A blocker you can check yourself - a decision record not yet merged or accepted, a branch not yet landed, an environment still missing - is never a reason to put a task in review: review is for a decision the owner alone can take, and the hub shows every review as *waits for your decision*. A task you did send to review (`held` below) comes back to you on the same doubling schedule: re-check the blocker, and when it is gone put the task back with `hive task status <id> in_progress` and plan it; when it stands, say so in one message with `--choice` answers the owner can tap, one of them `--recommend`ed.\n\
 6. A task whose jobs failed and none runs: read each failure (`hive task show <id>` lists the results), then queue a corrected job - smaller, or another approach. Inspect the evidence and try to resolve an ordinary blocker yourself; ask a relevant peer for a focused diagnosis when useful. Fix a shared prerequisite once before retrying its dependents, and do not duplicate a recovery already queued by the daemon. When the failure is a decision only the owner can take, `hive task status <id> review` and tell the owner why in one message that carries the answers to pick (`--choice`) - a review without answers to pick gets them from the daemon in your name, so write them yourself; a task with three failed jobs goes to review by itself, with the choices to carry on, close, or change it. The owner's next message on a task in review puts it back in progress and wakes you: act on the answer. When the owner's task has landed, the daemon asks the owner in the chat whether it is what they wanted; an answer of \"Not what I meant\" (or words to that effect) means: read the brief against what landed, say in one message what you will change, and queue it - when you cannot tell what is missing, ask one question that carries the answers to pick.\n"));
     b.push_str(&rules);
     b.push_str(&format!("{next}. With the owner answered and every task planned, spend what is left of this run as the maintainer: a flaky test, doc drift, a failing scheduled check, a watcher or monitor the project lacks (`hive schedule add --project {slug} --title \"...\" --every 1d --kind check|watch --script .hive/automations/<name>.sh` once the script is landed under .hive/) - fix it here, commit with a message that names the cause, and the runner lands it. Leave anything larger to a job. Do not commit while the default branch is red (its fix job owns that).\n\
@@ -376,57 +394,82 @@ pub(crate) fn write_lead_answered_asks_section(b: &mut String, slug: String, lin
 pub(crate) fn write_lead_owner_questions_section(
     b: &mut String,
     slug: String,
-    away: Option<AwayBrief>,
+    _away: Option<AwayBrief>,
     questions: Vec<OwnerQuestion>,
 ) {
     b.push_str("## Questions addressed to the owner\n\n");
+    let (routine, hard_stops): (Vec<_>, Vec<_>) =
+        questions.into_iter().partition(|q| q.hard_stop.is_empty());
     let mut asks = 0;
-    if questions.is_empty() {
-        b.push_str("No open questions addressed to the owner.\n");
-    } else {
-        for q in questions {
-            if q.kind.is_empty() || q.kind == "question" {
-                let _ = writeln!(
-                    b,
-                    "- {} {}/{} by {}: {}",
-                    q.id, q.area, q.thread, q.agent, q.summary
-                );
-                continue;
-            }
-            asks += 1;
+    let mut bare = 0;
+    if routine.is_empty() {
+        b.push_str("No open routine questions addressed to the owner.\n");
+    }
+    for q in routine {
+        if q.kind.is_empty() || q.kind == "question" {
             let _ = writeln!(
                 b,
-                "- {} ({} for the owner) {}/{} by {}: {}",
-                q.id, q.kind, q.area, q.thread, q.agent, q.summary
+                "- {} {}/{} by {}: {}",
+                q.id, q.area, q.thread, q.agent, q.summary
             );
-            if !q.yes.is_empty() || !q.no.is_empty() {
-                let _ = writeln!(
-                    b,
-                    "  yes: {}; no: {}",
-                    if q.yes.is_empty() {
-                        "act on it"
-                    } else {
-                        &q.yes
-                    },
-                    if q.no.is_empty() { "close it" } else { &q.no }
-                );
-            }
+            continue;
+        }
+        asks += 1;
+        let _ = writeln!(
+            b,
+            "- {} ({} for the owner) {}/{} by {}: {}",
+            q.id, q.kind, q.area, q.thread, q.agent, q.summary
+        );
+        if !q.yes.is_empty() || !q.no.is_empty() {
+            let _ = writeln!(
+                b,
+                "  yes: {}; no: {}",
+                if q.yes.is_empty() {
+                    "act on it"
+                } else {
+                    &q.yes
+                },
+                if q.no.is_empty() { "close it" } else { &q.no }
+            );
         }
     }
     b.push('\n');
-    if away.is_some() {
+    let _ = write!(
+        b,
+        "Nothing waits on the owner by default: these are routine asks, and you decide them whether the owner is here or away. Answer each question with hive post answer --project {slug} --area A --thread T --on POST-ID --summary ... - a question that offers options gets the Recommended one unless the evidence says otherwise, and your answer says which and why. Leave money, compute, Tier 2 decisions, the constitution, hard stops and anything only the owner knows unanswered. A question the daemon asked (a lead seat, the toolkit) is not yours to answer: a seat is compute, and the toolkit the daemon adds itself while the owner is away.\n\n"
+    );
+    if asks > 0 {
         let _ = write!(
             b,
-            "The owner is away: answer what you can with hive post answer --project {slug} --area A --thread T --on POST-ID --summary ... ; leave money, compute, Tier 2 decisions, the constitution, hard stops and anything only the owner knows unanswered. A question the daemon asked (a lead seat, the toolkit) is not yours to answer: a seat is compute, and the toolkit the daemon adds itself while the owner is away.\n\n"
+            "A finding, handoff or suggestion marked \"for the owner\" above is your call: end the report with one `DECIDE: <post-id> yes|no <reason>` line for each. Yes queues the work the post's Yes line names as a job recorded as your decision; no closes it with your reason - read the full post first (`hive show POST-ID`). {ROUTINE_ASK_RUBRIC} Leave none for the owner.\n\n"
         );
-        if asks > 0 {
-            let _ = write!(
+    }
+    if !hard_stops.is_empty() {
+        b.push_str("### At a hard stop: the owner's\n\n");
+        for q in hard_stops {
+            let kind = if q.kind.is_empty() || q.kind == "question" {
+                String::new()
+            } else {
+                format!(" ({} for the owner)", q.kind)
+            };
+            let _ = writeln!(
                 b,
-                "A finding, handoff or suggestion marked \"for the owner\" above is your call while the owner is away: end the report with one `DECIDE: <post-id> yes|no <reason>` line for each. Yes queues the work the post's Yes line names as a job recorded as your decision; no closes it with your reason - read the full post first (`hive show POST-ID`). {ROUTINE_ASK_RUBRIC} Leave none for the owner.\n\n"
+                "- {}{} {}/{} by {}: {} - {}",
+                q.id, kind, q.area, q.thread, q.agent, q.summary, q.hard_stop
             );
+            // The loop's stop carries its own answers in the console.
+            if !q.needs_options.is_empty() && q.summary != hive_evolve::STOP_SUMMARY {
+                bare += 1;
+                let _ = writeln!(b, "  not shown to the owner: {}", q.needs_options);
+            }
         }
-    } else {
-        b.push_str("These wait for the owner; do not answer them, but say in the task thread when one blocks a task.\n\n");
+        b.push_str("\nThese are listed for context only: they wait for the owner. Do not answer, decide, queue or close them, and write no `DECIDE:` line for them; say in the task thread when one blocks a task.\n\n");
+    }
+    if bare > 0 {
+        let _ = write!(
+            b,
+            "An ask marked \"not shown to the owner\" names no answers to pick or no recommended one, so the console does not put it in front of the owner (TASK-129: the owner answers with one pick, never by typing): it is yours to fix. Only the owner can decide it (`hive decide` refuses it to you), so ask again with the answers written out and answer the bare ask with a pointer to the new one: a post body with `Option: <label> - <what it does>` lines (or `Yes:` and `No:`) and one `Recommended: <label> - <why>` line, or `hive task reply TASK-ID '<question>' --choice '<label> - <what it does>' --choice ... --recommend '<label>'`.\n\n"
+        );
     }
 }
 
@@ -436,7 +479,7 @@ pub(crate) fn write_owner_away_section(b: &mut String, _slug: String, away: Opti
     };
     let _ = write!(
         b,
-        "## The owner is away\n\nThe owner set `owner.presence = away`. Decide on the owner's behalf with your best judgement; the decision is recorded as yours, never as the owner's.\n\n### Awaiting proposals ({})\n\n",
+        "## Routine asks are yours\n\nNothing waits on the owner by default, whatever `owner.presence` says: decide the routine asks on the owner's behalf with your best judgement; the decision is recorded as yours, never as the owner's. Only the hard stops (money, destructive or irreversible acts, credentials, publication, Tier 2) wait for the owner, and those are not listed here.\n\n### Awaiting proposals ({})\n\n",
         away.proposals.len()
     );
     if away.proposals.is_empty() {
@@ -464,7 +507,7 @@ pub(crate) fn write_owner_away_section(b: &mut String, _slug: String, away: Opti
     }
     let _ = write!(
         b,
-        "### Eligible suggestions addressed to the owner ({})\n\nThe planner never queues these (they are `{}`); with the owner away they are yours to queue as work or close.\n\n",
+        "### Eligible suggestions addressed to the owner ({})\n\nThe planner never queues these (they are `{}`); they are yours to queue as work or close.\n\n",
         away.owner_cards.len(),
         hive_tally::GATE_OWNER
     );
@@ -483,10 +526,25 @@ pub(crate) fn write_owner_away_section(b: &mut String, _slug: String, away: Opti
     b.push('\n');
 }
 
-pub(crate) fn owner_cards(items: Vec<hive_tally::WorkItem>) -> Vec<hive_tally::WorkItem> {
+/// The eligible suggestions addressed to the owner that the lead may queue
+/// or close. A card at a hard stop (`hive_board::hard_stop_ask` on its
+/// summary and body) is left out: it is the owner's, and the rule below
+/// would have the lead queue or close it (PR #278 review).
+pub(crate) fn owner_cards(
+    s: &hive_store::Store,
+    items: Vec<hive_tally::WorkItem>,
+) -> Vec<hive_tally::WorkItem> {
+    let conn = s.conn().ok();
     items
         .into_iter()
         .filter(|it| it.kind == hive_tally::WORK_ELIGIBLE && it.blocked == hive_tally::GATE_OWNER)
+        .filter(|it| {
+            let body = conn
+                .as_ref()
+                .map(|c| must_one(c, "SELECT body FROM posts WHERE id = ?", &[&it.id]).str("body"))
+                .unwrap_or_default();
+            hive_board::hard_stop_ask("suggestion", &it.summary, &body).is_empty()
+        })
         .collect()
 }
 
@@ -502,8 +560,8 @@ pub(crate) fn away_lead_rules(slug: String, away: Option<AwayBrief>, start: i32)
     };
     rule("For each proposal listed above, end the report with one line per proposal: `DECIDE: <post-id> yes|no <reason>`. Say yes only when the proposal is small, reversible, inside the constitution and the accepted decisions, and its evidence holds; say no with the reason otherwise. If you cannot judge, say no with what is missing - the author can re-propose.".into());
     rule("Never decide hard stops (`STOP`), Tier 2 decisions (new or changed ADRs under docs/decisions/), the constitution's protected sections, `docs/evolution/evaluators.md`, `.github/`, money (compute), or anything with a `pair:` or `onboard:` marker; say why instead.".into());
-    rule("Do not park tasks on the owner while away: decide and write the reasoning in the task's thread. Only a hard stop or a Tier 2 decision goes to `review` with `SUMMARY: waiting on the owner: ...`.".into());
-    rule("Do not post questions addressed to the owner while away, and never repeat one that already exists: a stopped evolution loop, a sign-in, a missing secret are cards on the hub already. Name what only the owner can do in the report instead.".into());
+    rule("Do not park tasks on the owner: decide and write the reasoning in the task's thread. Only a hard stop or a Tier 2 decision goes to `review` with `SUMMARY: waiting on the owner: ...`.".into());
+    rule("Do not post questions addressed to the owner unless they are at a hard stop, and never repeat one that already exists: a stopped evolution loop, a sign-in, a missing secret are cards on the hub already. Name what only the owner can do in the report instead. A question at a hard stop carries a line `Hard stop: <class>` (money, credentials, publication, deletion, goal, constitution, tier 2) besides its answers: that line, not its other words, keeps it the owner's.".into());
     if !away.owner_cards.is_empty() {
         rule(format!(
             "For each eligible suggestion addressed to the owner listed above: queue it as one worker job when it is Tier 0 or 1 work inside the constitution and the accepted decisions - `hive job add --project {slug} --kind improve --source suggestion:<id> --title \"...\" --brief \"...\" [--tier 0|1]` (the source ties the job to the card, so the ballot shows it in flight and then built) - or close its thread with the reason: `hive post result --project {slug} --area <area> --thread <thread> --on <id> --resolution declined --summary \"<why>\"`. Leave none for the owner."
@@ -812,7 +870,7 @@ pub(crate) fn lead_due(
         if now < follow_up_due(t.clone(), since) {
             continue;
         }
-        due.push(DueTask { detail: format!("held: you sent it to review at {held_at} and the owner has not answered. Re-check the blocker you named: when it is gone (a record merged or accepted, a branch landed, an environment ready), `hive task status {} in_progress` and plan the jobs; when only the owner can decide, say so in one message with `--choice` answers to pick.", t.id), why: HELD_WHY.into(), task: t });
+        due.push(DueTask { detail: format!("held: you sent it to review at {held_at} and the owner has not answered. Re-check the blocker you named: when it is gone (a record merged or accepted, a branch landed, an environment ready), `hive task status {} in_progress` and plan the jobs; when only the owner can decide, say so in one message with `--choice` answers to pick and `--recommend` the one you would take.", t.id), why: HELD_WHY.into(), task: t });
     }
     for t in hive_tasks::list(s, &slug, "in_progress")? {
         let jobs = task_jobs(s, &t)?;
@@ -857,29 +915,28 @@ pub(crate) fn lead_due(
             .cmp(&a.task.priority)
             .then_with(|| a.task.id.cmp(&b.task.id))
     });
-    let mut away = None;
-    if s.owner_away() {
-        let mut a = AwayBrief {
-            proposals: awaiting_lead_proposals(s, slug.clone(), now.clone(), true)?,
+    // Nothing waits on the owner by default (TASK-129): the lead decides
+    // the routine asks as it once did only while the owner was away,
+    // whatever owner.presence says; hard stops stay the owner's.
+    let mut a = AwayBrief {
+        proposals: awaiting_lead_proposals(s, slug.clone(), now.clone(), true)?,
+        ..Default::default()
+    };
+    let q = hive_tally::work_wanted(
+        s,
+        Some(vec![slug.clone()]),
+        &lead,
+        hive_tally::Thresholds {
+            now: now.clone(),
             ..Default::default()
-        };
-        let q = hive_tally::work_wanted(
-            s,
-            Some(vec![slug.clone()]),
-            &lead,
-            hive_tally::Thresholds {
-                now: now.clone(),
-                ..Default::default()
-            },
-        )?;
-        for c in owner_cards(q.work) {
-            if !recently_presented_to_lead(s, slug.clone(), now.clone(), c.id.clone()) {
-                a.owner_cards.push(c);
-            }
+        },
+    )?;
+    for c in owner_cards(s, q.work) {
+        if !recently_presented_to_lead(s, slug.clone(), now.clone(), c.id.clone()) {
+            a.owner_cards.push(c);
         }
-        away = Some(a);
     }
-    Ok((owner, due, away))
+    Ok((owner, due, Some(a)))
 }
 
 /// Workers' reports the lead has not read: one per finished job of an open
@@ -979,7 +1036,7 @@ pub(crate) fn awaiting_lead_proposals(
             body: row.get(4)?,
         };
         if LEAD_HUMAN_ONLY_MARKER_RE.is_match(&p.body)
-            || !hive_board::owner_only_proposal(&p.summary, &p.body).is_empty()
+            || !hive_board::hard_stop_ask("proposal", &p.summary, &p.body).is_empty()
         {
             continue;
         }
@@ -1012,17 +1069,98 @@ pub(crate) fn owner_addressed_questions(
             crate::plan::is_owner_addressed_post(q.clone())
                 || crate::plan::owner_targeted(q.clone())
         })
-        .map(|q| OwnerQuestion {
-            id: q.str("id"),
-            area: q.str("area"),
-            thread: q.str("thread"),
-            agent: q.str("agent"),
-            summary: q.str("summary"),
-            kind: "question".into(),
-            yes: String::new(),
-            no: String::new(),
+        .map(|q| {
+            let (agent, summary) = (q.str("agent"), q.str("summary"));
+            // The hub's rule: the daemon's question is the owner's (a
+            // person fixes it on the machine), shown with the daemon's own
+            // answers when it names none.
+            let body = hive_board::with_default_owner_answers(
+                "question",
+                &agent,
+                &summary,
+                &q.str("body"),
+                false,
+            );
+            let mut hard_stop = hive_board::hard_stop_ask("question", &summary, &body);
+            if hard_stop.is_empty() && agent == "daemon" {
+                hard_stop = "was asked by the daemon".into();
+            }
+            OwnerQuestion {
+                id: q.str("id"),
+                area: q.str("area"),
+                thread: q.str("thread"),
+                summary,
+                kind: "question".into(),
+                yes: String::new(),
+                no: String::new(),
+                hard_stop,
+                needs_options: ask_needs_options(&body),
+                agent,
+            }
         })
         .collect()
+}
+
+/// The meta key that marks the one pass handing the open asks without
+/// answers to their leads (PR #278 review, point 5).
+pub(crate) const BARE_ASKS_HANDED_META: &str = "migration.bare-owner-asks-handed";
+
+/// How many open asks without answers one project's pass hands its lead.
+pub(crate) const BARE_ASKS_HANDED_CAP: usize = 50;
+
+/// Once per store, on the first daemon start with TASK-129's rule: the open
+/// asks addressed to the owner that name no answers to pick (posted before
+/// every owner question had to carry them) are handed to their project's
+/// lead in one pass - at most [`BARE_ASKS_HANDED_CAP`] per project - so the
+/// lead asks again with answers or decides them. The daemon's own
+/// questions are not among them: they keep the daemon's answers and stay
+/// the owner's. Returns the log line, or nothing when the pass ran before.
+pub(crate) fn hand_bare_asks_once(
+    s: &hive_store::Store,
+    projects: &[String],
+    now: &str,
+    actor: &str,
+) -> Vec<String> {
+    if s.meta(BARE_ASKS_HANDED_META)
+        .map(|(_, set)| set)
+        .unwrap_or(true)
+    {
+        return Vec::new();
+    }
+    let mut handed = 0;
+    let mut leads = 0;
+    for slug in projects {
+        let asks: Vec<String> = owner_addressed_questions(s, slug.clone(), now.to_string())
+            .into_iter()
+            .chain(owner_addressed_asks(s, slug.clone()))
+            .filter(|q| {
+                !q.needs_options.is_empty()
+                    && q.agent != "daemon"
+                    && q.summary != hive_evolve::STOP_SUMMARY
+            })
+            .map(|q| q.id)
+            .take(BARE_ASKS_HANDED_CAP)
+            .collect();
+        if asks.is_empty() {
+            continue;
+        }
+        handed += asks.len();
+        leads += 1;
+        if let Ok(conn) = s.conn() {
+            event_at(
+                &conn,
+                now,
+                actor,
+                "owner_asks.handed",
+                slug,
+                json!({"project": slug, "asks": asks, "why": "no answers to pick (TASK-129)"}),
+            );
+        }
+    }
+    let _ = s.set_meta(BARE_ASKS_HANDED_META, now);
+    vec![format!(
+        "handed {handed} open ask(s) without answers to the leads of {leads} project(s), once: the owner answers with one pick, so their leads ask again with answers or decide them"
+    )]
 }
 
 /// Whether the post is the security watcher's finding about a major
@@ -1030,13 +1168,7 @@ pub(crate) fn owner_addressed_questions(
 /// `dependencies.major_updates` setting's - never the lead's, since a
 /// dependency jump is Tier 2 work.
 pub(crate) fn is_security_major_finding(conn: &rusqlite::Connection, post_id: &str) -> bool {
-    !must_one(
-        conn,
-        "SELECT 1 AS x FROM events WHERE action = 'security.major' AND json_extract(detail, '$.post') = ? LIMIT 1",
-        &[&post_id],
-    )
-    .0
-    .is_empty()
+    hive_board::is_security_major_finding(conn, post_id)
 }
 
 /// Whether a finding, handoff or suggestion addressed to the owner still
@@ -1113,8 +1245,10 @@ pub(crate) fn owner_addressed_asks(s: &hive_store::Store, slug: String) -> Vec<O
             agent: r.str("agent"),
             summary: r.str("summary"),
             kind: r.str("kind"),
+            needs_options: ask_needs_options(&r.str("body")),
             yes,
             no,
+            hard_stop: hive_board::hard_stop_ask(&r.str("kind"), &r.str("summary"), &r.str("body")),
         }
     })
     .collect()
@@ -1353,26 +1487,34 @@ pub(crate) fn tend_lead(
             .concat();
         }
     };
+    // The findings, handoffs and suggestions addressed to the owner are the
+    // lead's to decide too, and the questions its to answer, whatever
+    // owner.presence says (TASK-129). The hard stops (a stopped loop,
+    // money, credentials, publication ...) are listed as context but never
+    // wake the lead: they wait for the owner on the Sessions strip.
     let mut owner_questions = owner_addressed_questions(s, slug.clone(), now.clone());
-    if away.is_some() {
-        // While the owner is away, the findings, handoffs and suggestions
-        // addressed to the owner are the lead's to decide too.
-        // Less the ones the decide role (ADR-072) still holds: while it is
-        // on and not in an outage, an ask costs one small call, not also a
-        // lead run. What it passes, fails on or may not answer comes back
-        // here on a later pass.
-        let asks = owner_addressed_asks(s, slug.clone());
-        let held = crate::decide::held_by_role(s, &slug, &asks, &now);
-        owner_questions.extend(asks.into_iter().filter(|q| !held.contains(&q.id)));
-    }
+    // Less the ones the decide role (ADR-072) still holds: while it is on
+    // and not in an outage, an ask costs one small call, not also a lead
+    // run. What the role may not answer (a hard stop, an owner-only
+    // proposal) is never held; what it passes or fails on comes back here
+    // on a later pass.
+    let asks = owner_addressed_asks(s, slug.clone());
+    let held = crate::decide::held_by_role(s, &slug, &asks, &now);
+    owner_questions.extend(asks.into_iter().filter(|q| !held.contains(&q.id)));
     let mut away_question_count = 0;
-    if away.is_some() {
-        for q in &owner_questions {
-            if q.summary != hive_evolve::STOP_SUMMARY
-                && !recently_presented_to_lead(s, slug.clone(), now.clone(), q.id.clone())
-            {
-                away_question_count += 1;
-            }
+    for q in &owner_questions {
+        // A question the daemon asked (a restart drain, a login gate, a
+        // lead seat) the daemon answers itself: it never wakes the lead.
+        // Its findings (the security watcher's) are the lead's to decide.
+        // A hard stop that names no answers to pick wakes the lead too: it
+        // never reaches the owner until the lead asks again with them.
+        let routine = q.hard_stop.is_empty();
+        let bare_hard_stop = !q.needs_options.is_empty() && q.summary != hive_evolve::STOP_SUMMARY;
+        if (routine || bare_hard_stop)
+            && !(q.kind == "question" && q.agent == "daemon")
+            && !recently_presented_to_lead(s, slug.clone(), now.clone(), q.id.clone())
+        {
+            away_question_count += 1;
         }
     }
     if msgs.is_empty()
@@ -1598,16 +1740,16 @@ pub(crate) fn lead_idle_brief(
         "You are the lead of project `{}`, and its maintainer. The owner has no open task and no unread message for you, and nothing is queued or running: this is your standing brief. Find the next most valuable Tier 0 or Tier 1 work and queue it yourself - the owner asked that nothing wait on a human that agents can do. Small maintenance you can finish in this run - a flaky test, doc drift, a failing scheduled check, a watcher or monitor the project lacks - do yourself in this clone and commit; the runner lands your commits like any worker's. Larger work goes to a job.\n\n",
         slug
     );
-    let mut away = None;
-    if s.owner_away() {
+    let away = {
         let proposals =
             awaiting_lead_proposals(s, slug.clone(), s.now(), false).unwrap_or_default();
-        away = Some(AwayBrief {
+        let away = Some(AwayBrief {
             proposals,
-            owner_cards: owner_cards(items.clone()),
+            owner_cards: owner_cards(s, items.clone()),
         });
         write_owner_away_section(&mut b, slug.clone(), away.clone());
-    }
+        away
+    };
     let (rules, finish_rule) = away_lead_rules(slug.clone(), away, 7);
     let _ = write!(b, "## The board's queue for {} (top 15)\n\n", slug);
     if items.is_empty() {
@@ -2080,7 +2222,7 @@ fn lead_spoke(
 /// itself ends the review.
 pub(crate) fn review_choices() -> Vec<hive_tasks::Choice> {
     vec![
-        hive_tasks::Choice::reply("Try again another way"),
+        hive_tasks::Choice::reply("Try again another way").recommended(),
         hive_tasks::Choice::with_action("Good enough, close it", "done"),
         hive_tasks::Choice::with_action("Change what I asked", "amend"),
     ]
@@ -2091,7 +2233,7 @@ pub(crate) fn review_choices() -> Vec<hive_tasks::Choice> {
 /// with a plain reply, closes the task, or changes the ask.
 pub(crate) fn hold_choices() -> Vec<hive_tasks::Choice> {
     vec![
-        hive_tasks::Choice::reply("Use your judgement"),
+        hive_tasks::Choice::reply("Use your judgement").recommended(),
         hive_tasks::Choice::with_action("Good enough, close it", "done"),
         hive_tasks::Choice::with_action("Change what I asked", "amend"),
     ]
@@ -2224,7 +2366,7 @@ pub(crate) const LANDED_CLOSE: &str = "Yes, close it";
 /// reply the lead reads against the brief), or change the ask.
 pub(crate) fn landed_choices() -> Vec<hive_tasks::Choice> {
     vec![
-        hive_tasks::Choice::with_action(LANDED_CLOSE, "done"),
+        hive_tasks::Choice::with_action(LANDED_CLOSE, "done").recommended(),
         hive_tasks::Choice::reply("Not what I meant"),
         hive_tasks::Choice::with_action("Change what I asked", "amend"),
     ]
@@ -2707,6 +2849,44 @@ mod tests {
     use super::*;
     use crate::test_helpers::*;
 
+    #[test]
+    fn owner_cards_leave_out_a_card_at_a_hard_stop() {
+        let _serial = serial();
+        let s = new_store();
+        let card = |id: &str, summary: &str| hive_tally::WorkItem {
+            kind: hive_tally::WORK_ELIGIBLE.into(),
+            id: id.into(),
+            summary: summary.into(),
+            blocked: hive_tally::GATE_OWNER.into(),
+            ..Default::default()
+        };
+        let kept = owner_cards(
+            &s,
+            vec![
+                card("P-routine", "Split the parser module"),
+                card("P-money", "Raise the monthly budget for the evolve loop"),
+                card("P-publish", "Publish the guide to the site"),
+            ],
+        );
+        assert_eq!(
+            kept.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            vec!["P-routine"]
+        );
+        let mut b = String::new();
+        write_lead_owner_questions_section(
+            &mut b,
+            "proj".into(),
+            None,
+            vec![OwnerQuestion {
+                id: "Q-1".into(),
+                summary: "Rotate the GitHub PAT".into(),
+                hard_stop: "touches credentials".into(),
+                ..Default::default()
+            }],
+        );
+        assert!(b.contains("listed for context only"), "{b}");
+    }
+
     fn task_job(s: &hive_store::Store, title: &str, source: &str) -> Row {
         crate::jobs::add_job(
             s,
@@ -3057,7 +3237,7 @@ mod tests {
             "proj-lead",
             "Red or blue?",
             &[
-                hive_tasks::Choice::reply("Red"),
+                hive_tasks::Choice::reply("Red").recommended(),
                 hive_tasks::Choice::reply("Blue"),
             ],
         )
@@ -4489,6 +4669,7 @@ mod tests {
             ("away question", "question", true),
             ("present message", "message", false),
             ("present task", "task", false),
+            ("present question", "question", false),
         ] {
             let s = new_store();
             new_repo(&s);
@@ -4611,15 +4792,17 @@ mod tests {
                     "{name}: fresh owner brief lacks {want:?}:\n{brief}"
                 );
             }
-            let guidance = if away {
-                "leave money, compute, Tier 2 decisions, the constitution, hard stops and anything only the owner knows unanswered"
-            } else {
-                "These wait for the owner; do not answer them"
-            };
-            assert!(
-                brief.contains(guidance),
-                "{name}: owner-only guidance changed:\n{brief}"
-            );
+            // Present or away (TASK-129): the routine questions are the
+            // lead's, the stopped loop (a hard stop) the owner's.
+            for guidance in [
+                "Leave money, compute, Tier 2 decisions, the constitution, hard stops and anything only the owner knows unanswered",
+                "These are listed for context only: they wait for the owner",
+            ] {
+                assert!(
+                    brief.contains(guidance),
+                    "{name}: owner-only guidance changed:\n{brief}"
+                );
+            }
             assert!(
                 work == "question" || !jobs[1].str("title").contains("owner question(s)"),
                 "{name}: paced questions were counted as new work: {}",
@@ -4682,5 +4865,62 @@ mod tests {
             .filter(|m| !m.choices.is_empty())
             .count();
         assert_eq!(asks, 1);
+    }
+
+    #[test]
+    fn open_asks_without_answers_are_handed_to_the_lead_once() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = hive_testutil::env_lock();
+        let s = new_store();
+        new_bare_repo(&s);
+        join(&s, "aurora");
+        let post = |agent: &str, thread: &str, summary: &str, body: &str| {
+            crate::board::create_post(
+                &s,
+                plus_hours(TEST_NOW, -2.0),
+                crate::board::PostOpts {
+                    kind: "question".into(),
+                    project: "proj".into(),
+                    area: "api".into(),
+                    thread: thread.into(),
+                    summary: summary.into(),
+                    body: body.into(),
+                    for_owner: true,
+                    agent: crate::board::actor_agent(&s, agent.into()),
+                    ..Default::default()
+                },
+            )
+            .expect("ask")
+        };
+        let bare = post("aurora", "cache", "Keep the cache?", "It is slow.");
+        post(
+            "aurora",
+            "port",
+            "Which port?",
+            "Yes: 8080\nNo: 9090\nRecommended: Yes\n",
+        );
+        let daemon = post("daemon", "login", "Login wanted", "Sign in with GitHub.");
+        let lines = hand_bare_asks_once(&s, &["proj".into()], TEST_NOW, "daemon");
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].starts_with("handed 1 open ask(s)"), "{lines:?}");
+        let events = must_rows(
+            &s.conn().unwrap(),
+            "SELECT detail FROM events WHERE action = 'owner_asks.handed'",
+            &[],
+        );
+        assert_eq!(events.len(), 1);
+        assert!(events[0].str("detail").contains(&bare.str("id")));
+        assert!(!events[0].str("detail").contains(&daemon.str("id")));
+        // The daemon's question stays the owner's, with its own answers.
+        let q = owner_addressed_questions(&s, "proj".into(), TEST_NOW.into())
+            .into_iter()
+            .find(|q| q.id == daemon.str("id"))
+            .expect("daemon question listed");
+        assert!(
+            !q.hard_stop.is_empty() && q.needs_options.is_empty(),
+            "{q:?}"
+        );
+        // One pass: the next start hands nothing and says nothing.
+        assert!(hand_bare_asks_once(&s, &["proj".into()], TEST_NOW, "daemon").is_empty());
     }
 }

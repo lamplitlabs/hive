@@ -938,7 +938,7 @@ final class ConsoleWindowController: NSWindowController, NSWindowDelegate, NSMen
     @objc func showForYou(_ sender: Any?) {
         webView.evaluateJavaScript(PageBridge.showForYou, in: nil, in: PageBridge.world) { [weak self] result in
             if case .success(let done) = result, done as? Bool == true { return }
-            self?.navigate(to: "/#for-you")
+            self?.navigate(to: "/chat/#hard-stops")
         }
     }
 

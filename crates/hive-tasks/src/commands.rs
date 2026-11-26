@@ -180,7 +180,12 @@ fn task_flags(fs: &mut FlagSet) {
     fs.string_var("file", "", "file holding the reply text (reply)");
     fs.strings_var(
         "choice",
-        "an answer the owner can pick instead of writing, repeatable: LABEL or LABEL=reply|done|amend (reply)",
+        "an answer the owner can pick, repeatable (two or more): LABEL, 'LABEL - what it does' or LABEL=reply|done|amend; a leading * marks the recommended one (reply)",
+    );
+    fs.string_var(
+        "recommend",
+        "",
+        "the label of the recommended --choice: shown first and as the default (reply)",
     );
 }
 
@@ -195,7 +200,12 @@ fn msg_flags(fs: &mut FlagSet) {
     fs.string_var("file", "", "file holding the message text (send)");
     fs.strings_var(
         "choice",
-        "an answer the owner can pick instead of writing, repeatable: LABEL or LABEL=reply|done|amend (send, needs --task)",
+        "an answer the owner can pick, repeatable (two or more): LABEL, 'LABEL - what it does' or LABEL=reply|done|amend; a leading * marks the recommended one (send, needs --task)",
+    );
+    fs.string_var(
+        "recommend",
+        "",
+        "the label of the recommended --choice: shown first and as the default (send)",
     );
 }
 
@@ -297,20 +307,78 @@ fn printf(c: &mut Context, args: std::fmt::Arguments<'_>) -> Result<()> {
 }
 
 /// Prints the answers a message offers, one numbered line each, so a reader
-/// of the terminal sees what the hub shows as buttons.
+/// of the terminal sees what the hub shows as buttons: the recommended one
+/// first and marked, what each does after a dash.
 fn print_choices(c: &mut Context, choices: &[Choice], indent: &str) -> Result<()> {
-    for (i, ch) in choices.iter().enumerate() {
+    let mut ordered: Vec<&Choice> = choices.iter().collect();
+    ordered.sort_by_key(|ch| !ch.recommended);
+    for (i, ch) in ordered.into_iter().enumerate() {
         let action = if ch.action == "reply" {
             String::new()
         } else {
             format!("  ({})", ch.action)
         };
+        let note = if ch.note.is_empty() {
+            String::new()
+        } else {
+            format!(" - {}", ch.note)
+        };
+        let mark = if ch.recommended {
+            "  (recommended)"
+        } else {
+            ""
+        };
         printf(
             c,
-            format_args!("{indent}[{}] {}{action}\n", i + 1, ch.label),
+            format_args!("{indent}[{}] {}{note}{action}{mark}\n", i + 1, ch.label),
         )?;
     }
     Ok(())
+}
+
+/// An agent's message that asks the owner something carries the answers to
+/// pick (TASK-129, item 6): a question mark with no `--choice` is refused, so
+/// the owner never has to type an answer. The owner's own messages and plain
+/// reports (no question) are left alone.
+fn check_agent_question(author: &str, body: &str, choices: &[Choice]) -> Result<()> {
+    if author == hive_store::HUMAN_AGENT || !choices.is_empty() || !asks_something(body) {
+        return Ok(());
+    }
+    Err(crate::tasks::input(
+        2,
+        "A question to the owner carries its answers",
+        "the owner answers with one pick, never by typing; one answer is marked recommended",
+        "add --choice '<your recommendation> - what it does' --choice '<the alternative> - what it does' --recommend '<your recommendation>', or decide it yourself and say what you did",
+    ))
+}
+
+/// Whether a message asks something: a sentence that ends in a question
+/// mark, outside code.
+pub(crate) fn asks_something(body: &str) -> bool {
+    let mut fenced = false;
+    for line in body.lines() {
+        if line.trim_start().starts_with("```") {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced {
+            continue;
+        }
+        let mut inline = false;
+        let mut prev = ' ';
+        for ch in line.chars() {
+            if ch == '`' {
+                inline = !inline;
+            } else if !inline && prev == '?' && ch.is_whitespace() {
+                return true;
+            }
+            prev = ch;
+        }
+        if !inline && prev == '?' {
+            return true;
+        }
+    }
+    false
 }
 
 fn print_task(c: &mut Context, t: &Task) -> Result<()> {
@@ -1404,7 +1472,11 @@ pub fn run_task(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
         "reply" => {
             need("task", rest, 1, "a task id")?;
             let body = read_body(&rest[1..].join(" "), &fs.get_string("file"))?;
-            let choices = choices_from_flags(&fs.get_strings("choice"))?;
+            let choices = choices_from_flags_recommending(
+                &fs.get_strings("choice"),
+                &fs.get_string("recommend"),
+            )?;
+            check_agent_question(&actor(c), &body, &choices)?;
             let m = reply_with_choices(store(c)?, &rest[0], &actor(c), &body, &choices)?;
             if c.json {
                 return hive_cli::write_json(&mut c.out, &MessageOut { message: &m });
@@ -1530,7 +1602,11 @@ pub fn run_msg(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
     match sub.as_str() {
         "send" => {
             let body = read_body(&rest.join(" "), &fs.get_string("file"))?;
-            let choices = choices_from_flags(&fs.get_strings("choice"))?;
+            let choices = choices_from_flags_recommending(
+                &fs.get_strings("choice"),
+                &fs.get_string("recommend"),
+            )?;
+            check_agent_question(&actor(c), &body, &choices)?;
             let m = send_message_with_choices(
                 store(c)?,
                 &c.project,

@@ -308,6 +308,10 @@ export interface Proposal extends Who {
   decided_summary: string;
   proposal_text: string;
   can_decide: boolean;
+  // Why only the owner may decide it (hive-board owner_only_ask: a
+  // compute request, money, an ADR, an owner-only path, a command it
+  // authorizes ...); empty when the lead decides it. Older hubs omit it.
+  hard_stop?: string;
   slug?: string;
   base?: string;
   kind?: string;
@@ -332,11 +336,33 @@ export interface OwnerQuestion extends Who {
   stop: boolean;
   stale: boolean;
   thread_last: string;
-  // Who alone can answer: `owner`, `lead` (owner away), or `setting` (a
+  // Who answers: `owner` (a hard stop: money, a destructive act,
+  // credentials, publication, Tier 2 - the Sessions strip lists these),
+  // `lead` (a routine ask, whatever owner.presence says), or `setting` (a
   // policy answers it). Older hubs omit it - treat a missing value as owner.
   decider?: "owner" | "lead" | "setting";
+  // Why only the owner can decide it ("is about publication"); empty for a
+  // routine ask. Older hubs omit it.
+  hard_stop?: string;
+  // The answers the owner picks from, the recommended one first and marked
+  // (TASK-129: the owner answers with one pick, never by typing). Older hubs
+  // omit them; the console reads them from the body then.
+  options?: AskOption[];
+  // Why the recommended answer is the one.
+  recommended_why?: string;
+  // What the ask still lacks before it may reach the owner; empty when ready.
+  needs_options?: string;
   slug?: string;
   base?: string;
+}
+
+// One answer a question offers. `answer` is `yes` or `no` for the two
+// answers of a yes-or-no question and empty for an `Option:` line.
+export interface AskOption {
+  label: string;
+  effect: string;
+  answer: "yes" | "no" | "";
+  recommended: boolean;
 }
 
 export interface Bucket {
@@ -2763,6 +2789,11 @@ export type MessageChoiceAction = "reply" | "done" | "amend";
 export interface MessageChoice {
   label: string;
   action?: MessageChoiceAction;
+  // What picking it does, in one line; absent when the label says it all.
+  note?: string;
+  // The one the asker recommends (TASK-129: exactly one per message with
+  // choices): shown first, filled and marked. Older hubs omit it.
+  recommended?: boolean;
 }
 
 export interface Message {
@@ -3922,6 +3953,15 @@ export const writes = {
       id,
       post_id: id,
       answer,
+      words,
+    }),
+  // The owner picked one of the answers a question names; the hub reads
+  // what it means from the question itself. `words` is an optional note.
+  decideOption: (id: string, option: string, words: string) =>
+    post<{ ok?: boolean; answer?: string }>("decide", {
+      id,
+      post_id: id,
+      option,
       words,
     }),
   setSetting: (name: string, value: string) =>

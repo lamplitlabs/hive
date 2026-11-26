@@ -66,6 +66,15 @@ pub fn self_review_due(s: &hive_store::Store, question: &str) -> Result<Option<(
     if wait == 0 || !heal_enabled(s) || question.is_empty() {
         return Ok(None);
     }
+    // The owner said keep it paused: the loop never reviews over that.
+    let decided: bool = s.conn()?.query_row(
+        "SELECT EXISTS (SELECT 1 FROM decisions WHERE post_id = ?)",
+        [question],
+        |r| r.get(0),
+    )?;
+    if decided {
+        return Ok(None);
+    }
     let date: Option<String> = s
         .conn()?
         .query_row("SELECT date FROM posts WHERE id = ?", [question], |r| {

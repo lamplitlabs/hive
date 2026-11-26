@@ -1,4 +1,4 @@
-//! Daily KPIs for the Home page's "Over time" panel: what the fleet got
+//! Daily KPIs for the Insights page's "Over time" panel: what the fleet got
 //! done, what it did on its own, and what it spent, per UTC day.
 //!
 //! `GET /api/v1/kpis?days=N[&project=SLUG]` answers with one row per day

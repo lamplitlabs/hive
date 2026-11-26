@@ -1610,6 +1610,20 @@ pub(crate) fn daemon(
     for line in crate::selfupdate::check_restored(s, self_env.clone()) {
         say(&o, line);
     }
+    // PR #278 review, point 5: once per store, the open asks that name no
+    // answers to pick go to their leads (counted in the log).
+    if !o.dry_run {
+        let slugs = s
+            .conn()
+            .map(|c| crate::util::must_rows(&c, "SELECT slug FROM projects ORDER BY slug", &[]))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| r.str("slug"))
+            .collect::<Vec<_>>();
+        for line in crate::lead::hand_bare_asks_once(s, &slugs, &s.now(), &actor) {
+            say(&o, line);
+        }
+    }
     let compute = crate::compute::new_compute_worker(
         &compute_ctx,
         s,

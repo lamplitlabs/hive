@@ -5,8 +5,6 @@
 export type Shortcut = { keys: string; what: string; where: string };
 
 export const SHORTCUTS: Shortcut[] = [
-  { keys: "G H", what: "Home", where: "Go to" },
-  { keys: "G F", what: "For you", where: "Go to" },
   { keys: "G S", what: "Sessions", where: "Go to" },
   { keys: "G T", what: "Tasks", where: "Go to" },
   { keys: "⌘K", what: "Search", where: "Anywhere" },
@@ -59,8 +57,6 @@ export function keyChips(keys: string): { kind: "key" | "word"; text: string }[]
 }
 
 export const GO: Record<string, string> = {
-  h: "/",
-  f: "/for-you/",
   s: "/chat/",
   t: "/tasks/",
 };

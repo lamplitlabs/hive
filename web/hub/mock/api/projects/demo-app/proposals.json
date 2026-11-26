@@ -17,6 +17,7 @@
     "session": "s-delta",
     "status": "awaiting",
     "summary": "Agreed: second reviewer for checkout and billing",
-    "thread_key": "governance/review-depth"
+    "thread_key": "governance/review-depth",
+    "hard_stop": ""
   }
 ]

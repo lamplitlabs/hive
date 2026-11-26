@@ -364,7 +364,13 @@ pub(crate) fn create_post(
         },
     )?;
     let conn = s.conn()?;
-    Ok(post_row(&conn, p.id))
+    let mut row = post_row(&conn, p.id);
+    // An owner question the board folded onto an open one with the same
+    // summary is that one, not a new post.
+    if p.deduped {
+        row.insert("deduped", Value::Bool(true));
+    }
+    Ok(row)
 }
 
 #[cfg(test)]

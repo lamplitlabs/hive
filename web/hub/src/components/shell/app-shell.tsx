@@ -28,6 +28,7 @@ import {
 import { AskHost } from "@/components/ask/ask-panel";
 import { ProjectAvatar } from "@/components/hive/avatar";
 import { useInbox } from "@/components/hive/inbox";
+import { useHardStops } from "@/components/sessions/hard-stops";
 import {
   Kbd,
   ShortcutHelp,
@@ -330,7 +331,8 @@ function NavGroups({
   pathname: string;
   projects: React.ReactNode;
 }) {
-  const { total } = useInbox();
+  // Sessions counts the asks only the owner may answer (the hard-stop strip on it).
+  const total = useHardStops().rows.length;
   return (
     <>
       {NAV_GROUPS.map((g, gi) => (
@@ -354,7 +356,7 @@ function NavGroups({
                   <NavLink
                     item={n}
                     active={n.match(pathname)}
-                    count={n.icon === "inbox" ? total : undefined}
+                    count={n.icon === "sessions" ? total : undefined}
                   />
                 </li>
               ))}

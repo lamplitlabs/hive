@@ -11,23 +11,24 @@ import { Avatar, When } from "@/components/hive/who";
 import type { Claim, Task } from "@/lib/api";
 import { sentence } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
-import { WORKING_SHOWN } from "./home-state";
+import { WORKING_SHOWN } from "./sessions-state";
 
-// "Working now" (spec "Home" 5): the agents at work, one row each - the
+// "Working now" (on Home until TASK-129, now under the new-session box on
+// Sessions): the agents at work, one row each - the
 // agent's face, "agent · what", the project and when it started, and a
 // running badge. The rows come from workingRows (the same fold the project
 // page uses: a task's workers first, then the claims on the board). At most
-// six; "See all runs" leads to the Runs page.
+// six; "See all runs" leads to the Runs page. Nothing running, nothing shown.
 export function WorkingNow({ claims, tasks, names }: { claims: Claim[]; tasks: Task[]; names: Map<string, string> }) {
   const rows = workingRows(claims, tasks);
   const shown = rows.slice(0, WORKING_SHOWN);
+  if (!shown.length) return null;
   return (
-    <section aria-labelledby="home-working-now" className="min-w-0">
-      <SectionHeading id="home-working-now" icon={ActivityIcon} count={rows.length} action={rows.length ? <Link href={hrefs.harness({ status: "running" })}>See all runs</Link> : undefined}>
+    <section aria-labelledby="sessions-working-now" className="min-w-0">
+      <SectionHeading id="sessions-working-now" icon={ActivityIcon} count={rows.length} action={rows.length ? <Link href={hrefs.harness({ status: "running" })}>See all runs</Link> : undefined}>
         Working now
       </SectionHeading>
-      {shown.length ? (
-        <ListRows ariaLabel="Agents working now">
+      <ListRows ariaLabel="Agents working now">
           {shown.map((r) => {
             const agent = r.agent === "(unknown)" ? "An agent" : r.agent;
             const latest = r.claims[0];
@@ -62,10 +63,7 @@ export function WorkingNow({ claims, tasks, names }: { claims: Claim[]; tasks: T
               />
             );
           })}
-        </ListRows>
-      ) : (
-        <p className="rounded-lg border border-dashed px-4 py-3 text-sm text-muted-foreground">Nothing is running.</p>
-      )}
+      </ListRows>
     </section>
   );
 }

@@ -2161,8 +2161,11 @@ async function handle(req, res) {
             "reload the page",
           );
         const [qn] = state.questions.splice(i, 1);
+        // TASK-129: the console sends the picked answer's label as `option`.
+        if (body.option) body.answer = /^(no|keep|leave|not)\b/i.test(body.option) ? "no" : "yes";
         emit("human", "question.decided", qn.id, {
           project: qn.slug,
+          option: body.option || "",
           answer: body.answer,
           words: body.words || "",
           stop: qn.stop,

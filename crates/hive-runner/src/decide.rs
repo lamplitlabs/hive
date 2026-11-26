@@ -10,8 +10,9 @@
 //!
 //! The asks are the ones the lead decides today: `owner_addressed_asks`
 //! (finding, handoff or suggestion marked for the owner, still open, not a
-//! major dependency upgrade) while the owner is away, less the owner-only
-//! proposals and anything that waits on a compute request.
+//! major dependency upgrade) whatever `owner.presence` says (TASK-129:
+//! nothing waits on the owner but a hard stop), less the hard stops, the
+//! owner-only proposals and anything that waits on a compute request.
 
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
@@ -89,7 +90,7 @@ pub(crate) struct DecideAnswer {
 }
 
 /// The daemon's hook: starts one decide pass for `slug` in the background
-/// when the role is on (or in shadow), the owner is away and an ask waits,
+/// when the role is on (or in shadow) and an ask waits,
 /// and returns the lines the last finished pass wrote. A pass may wait up to
 /// `decide.timeout_seconds` per ask, so it never holds the daemon's loop.
 pub(crate) fn tend_decide(s: &hive_store::Store, slug: &str, now: &str) -> Vec<String> {
@@ -141,11 +142,11 @@ pub(crate) fn tend_decide(s: &hive_store::Store, slug: &str, now: &str) -> Vec<S
     lines
 }
 
-/// Whether the role runs at all now: `decide.mode` is not off and the owner
-/// is away, the condition under which the lead decides the owner's routine
-/// asks.
+/// Whether the role runs at all now: `decide.mode` is not off. The lead
+/// decides the owner's routine asks whatever `owner.presence` says
+/// (TASK-129), so the role does too.
 fn role_due(s: &hive_store::Store) -> bool {
-    s.decide_mode() != "off" && s.owner_away()
+    s.decide_mode() != "off"
 }
 
 fn panic_text(panic: &Box<dyn std::any::Any + Send>) -> String {
@@ -166,11 +167,13 @@ fn role_by(s: &hive_store::Store) -> hive_board::DecidedBy {
 }
 
 /// The asks of `slug` the lead's pass leaves to the role: while
-/// `decide.mode` is on, the owner is away, the lead is active and no outage
-/// is open, the ones the role still lists (`role_asks`). An ask the role
-/// passed, failed on, or may not answer stays in the lead's brief; in shadow
-/// the lead decides them all. Without this every ask cost one small call
-/// and a lead run besides.
+/// `decide.mode` is on, the lead is active and no outage is open, the ones
+/// the role still lists (`role_asks`), whatever `owner.presence` says: the
+/// role runs with the owner at hand too (TASK-129, `role_due`), so the same
+/// asks are held then. An ask the role passed, failed on, or may not answer
+/// (a hard stop among them) stays in the lead's brief; in shadow the lead
+/// decides them all. Without this every ask cost one small call and a lead
+/// run besides.
 pub(crate) fn held_by_role(
     s: &hive_store::Store,
     slug: &str,
@@ -179,7 +182,6 @@ pub(crate) fn held_by_role(
 ) -> std::collections::BTreeSet<String> {
     if questions.is_empty()
         || s.decide_mode() != "on"
-        || !s.owner_away()
         || !s
             .meta(OUTAGE_META)
             .map(|(v, _)| v)
@@ -231,6 +233,10 @@ fn role_asks(
     questions
         .into_iter()
         .filter_map(|q| {
+            // A hard stop is the owner's alone (TASK-129): never the role's.
+            if !q.hard_stop.is_empty() {
+                return None;
+            }
             let post =
                 crate::util::must_one(&conn, "SELECT body FROM posts WHERE id = ?", &[&q.id]);
             let ask = DecideAsk {
@@ -288,11 +294,12 @@ fn role_asks(
 /// One decide pass over the open asks of `slug`, in the caller's thread.
 /// Returns one line per ask it touched.
 ///
-/// Mode and presence are read again before each ask and after its answer,
-/// so an owner who returns, or a mode switched off or to shadow, mid-pass
-/// stops the pass before it records or decides anything more. Right before
-/// a write the ask is checked again as the lead's own path checks it: still
-/// open, and not a major security upgrade.
+/// The mode is read again before each ask and after its answer, so a mode
+/// switched off or to shadow mid-pass stops the pass before it records or
+/// decides anything more. `owner.presence` plays no part (TASK-129): an
+/// owner who returns mid-pass changes nothing, the routine asks are the
+/// role's either way. Right before a write the ask is checked again as the
+/// lead's own path checks it: still open, and not a major security upgrade.
 ///
 /// A call that fails (no answer, a late or an unreadable one) records one
 /// `decide.failed` try on that ask, which then waits `RETRY_MINUTES` and is
@@ -335,9 +342,7 @@ pub(crate) fn decide_pass(s: &hive_store::Store, slug: &str, now: &str) -> Vec<S
     };
     for ask in asks {
         if !role_due(s) {
-            lines.push(format!(
-                "decide {slug}: stopped: decide.mode is off or the owner is back"
-            ));
+            lines.push(format!("decide {slug}: stopped: decide.mode is off"));
             break;
         }
         let prompt = decide_prompt(s, &ask);
@@ -364,11 +369,11 @@ pub(crate) fn decide_pass(s: &hive_store::Store, slug: &str, now: &str) -> Vec<S
             }
         };
         recovered(s, now, &by);
-        // The answer may have taken `timeout`: read mode, presence and the
-        // ask again before anything is recorded.
+        // The answer may have taken `timeout`: read the mode and the ask
+        // again before anything is recorded.
         if !role_due(s) {
             lines.push(format!(
-                "decide {slug}: {} not recorded: decide.mode is off or the owner is back",
+                "decide {slug}: {} not recorded: decide.mode is off",
                 ask.id
             ));
             break;
@@ -423,9 +428,10 @@ pub(crate) fn decide_pass(s: &hive_store::Store, slug: &str, now: &str) -> Vec<S
             )),
             Err(e) => {
                 let why = crate::run::err_message(&e);
-                // A refusal because the owner came back or the mode moved
-                // between the check and the write is not the ask's: it is
-                // not recorded, so the role may answer it on a later away.
+                // A refusal because the role was turned off, or the mode
+                // moved, between the check and the write is not the ask's:
+                // it is not recorded, so the role may answer it on a later
+                // pass.
                 if !role_due(s) || s.decide_mode() != "on" {
                     lines.push(format!("decide {slug}: {} not decided: {why}", ask.id));
                     break;
@@ -583,7 +589,7 @@ fn call_role(
 pub(crate) fn decide_prompt(s: &hive_store::Store, ask: &DecideAsk) -> String {
     let (yes, no) = crate::lead::ask_meanings(&ask.body);
     let mut b = String::new();
-    b.push_str("You decide a routine ask addressed to the owner of a software project while the owner is away, as the project's lead would. Answer yes, no or pass.\n\n");
+    b.push_str("You decide a routine ask addressed to the owner of a software project, as the project's lead would: nothing waits on the owner but a hard stop. Answer yes, no or pass.\n\n");
     b.push_str("Rubric: ");
     b.push_str(crate::lead::ROUTINE_ASK_RUBRIC);
     b.push_str("\nAnswer pass when the post does not give you enough to decide; the lead then reads it in full.\n\n");
@@ -990,7 +996,7 @@ mod tests {
         assert_eq!(v["decided_model"], "decide-small");
         assert_eq!(v["decided_provider"], "decidefake");
         assert_eq!(v["via"], "decide-role");
-        assert_eq!(v["on_behalf"], "owner-away");
+        assert_eq!(v["on_behalf"], "owner-routine");
     }
 
     fn assert_left_to_lead(s: &hive_store::Store, post: &str) {
@@ -1186,18 +1192,28 @@ mod tests {
     }
 
     #[test]
-    fn off_or_an_owner_at_hand_makes_no_call() {
+    fn off_makes_no_call() {
         let _serial = serial();
         let s = decide_store(r#"{"answer":"yes","reason":"fine"}"#);
         let post = ask(&s, "off-ask");
         set(&s, "decide.mode", "off");
         decide_pass(&s, "proj", TEST_NOW);
-        set(&s, "decide.mode", "on");
-        set(&s, "owner.presence", "present");
-        decide_pass(&s, "proj", TEST_NOW);
         assert!(tend_decide(&s, "proj", TEST_NOW).is_empty());
         assert_eq!(calls(&s).calls, 0);
         assert!(is_nil_row(&decision(&s, &post)));
+    }
+
+    /// TASK-129: the lead decides routine asks whatever owner.presence
+    /// says, so the role answers them with the owner present too.
+    #[test]
+    fn an_owner_at_hand_still_leaves_routine_asks_to_the_role() {
+        let _serial = serial();
+        let s = decide_store(r#"{"answer":"yes","reason":"fine"}"#);
+        set(&s, "owner.presence", "present");
+        let post = ask(&s, "present-ask");
+        decide_pass(&s, "proj", TEST_NOW);
+        assert_eq!(calls(&s).calls, 1);
+        assert_decided(&s, &post, "yes");
     }
 
     #[test]
@@ -1229,9 +1245,27 @@ mod tests {
             json!({"post": major}).to_string(),
         )
         .unwrap();
+        let hard = crate::board::create_post(
+            &s,
+            TEST_NOW.into(),
+            crate::board::PostOpts {
+                kind: "handoff".into(),
+                project: "proj".into(),
+                area: "build".into(),
+                thread: "hard-stop".into(),
+                summary: "Delete the old release tags".into(),
+                body: "This crosses a hard stop.\n\nYes: Delete them\nNo: Keep them\n".into(),
+                agent: crate::board::actor_agent(&s, "daemon".into()),
+                for_owner: true,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .str("id");
         let asks = decide_asks(&s, "proj", TEST_NOW);
         assert!(
-            asks.iter().all(|a| a.id != spend && a.id != major),
+            asks.iter()
+                .all(|a| a.id != spend && a.id != major && a.id != hard),
             "{asks:?}"
         );
         decide_pass(&s, "proj", TEST_NOW);
@@ -1352,6 +1386,52 @@ mod tests {
         decide_pass(&s, "proj", TEST_NOW);
         crate::lead::tend_lead(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
         assert_eq!(lead_jobs_naming(&s, &post), 1, "a passed ask is the lead's");
+    }
+
+    /// TASK-129 with TASK-137: the role runs with the owner at hand too, so
+    /// the lead leaves the same asks to it then. A hard stop is never the
+    /// role's, so it is never held: one without a recommended answer wakes
+    /// the lead, whose brief still leaves the held ask out.
+    #[test]
+    fn the_role_holds_its_asks_with_the_owner_at_hand_too() {
+        let _serial = serial();
+        let s = decide_store(r#"{"answer":"yes","reason":"fine"}"#);
+        set(&s, "owner.presence", "present");
+        // The hard stop first: the second post's id ends in -2, so no id
+        // here is the start of another one a brief names.
+        let hard = crate::board::create_post(
+            &s,
+            TEST_NOW.into(),
+            crate::board::PostOpts {
+                kind: "handoff".into(),
+                project: "proj".into(),
+                area: "build".into(),
+                thread: "hard-stop".into(),
+                summary: "Delete the old release tags".into(),
+                body: "This crosses a hard stop.\n\nYes: Delete them\nNo: Keep them\n".into(),
+                agent: crate::board::actor_agent(&s, "daemon".into()),
+                for_owner: true,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .str("id");
+        let post = ask(&s, "at-hand");
+        assert!(post.starts_with(&hard) && post != hard, "{hard} {post}");
+        let asks = crate::lead::owner_addressed_asks(&s, "proj".into());
+        let held = held_by_role(&s, "proj", &asks, TEST_NOW);
+        assert!(held.contains(&post), "{held:?}");
+        assert!(!held.contains(&hard), "{held:?}");
+        crate::lead::tend_lead(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        assert_eq!(lead_jobs_naming(&s, &post), 0, "the role holds the ask");
+        assert_eq!(
+            lead_jobs_naming(&s, &hard),
+            1,
+            "the hard stop is the lead's to ask again"
+        );
+        decide_pass(&s, "proj", TEST_NOW);
+        assert_decided(&s, &post, "yes");
+        assert!(is_nil_row(&decision(&s, &hard)));
     }
 
     #[test]
@@ -1511,7 +1591,34 @@ mod tests {
     }
 
     #[test]
-    fn the_owner_back_mid_pass_stops_it_and_refuses_nothing() {
+    fn the_mode_switched_off_mid_pass_stops_it_and_refuses_nothing() {
+        let _serial = serial();
+        let s = decide_store(r#"{"answer":"yes","reason":"fine"}"#);
+        let first = ask(&s, "off-1");
+        let second = ask(&s, "off-2");
+        let store = (*s).clone();
+        during(&s, move || {
+            store
+                .set_setting(crate::util::HUMAN_AGENT, "decide.mode", "off")
+                .unwrap();
+        });
+        let lines = decide_pass(&s, "proj", TEST_NOW);
+        assert_eq!(calls(&s).calls, 1, "the pass stopped: {lines:?}");
+        assert!(events(&s, "decide.refused").is_empty());
+        assert!(is_nil_row(&decision(&s, &first)));
+        assert!(is_nil_row(&decision(&s, &second)));
+        // On again: both reach the role.
+        during(&s, || {});
+        set(&s, "decide.mode", "on");
+        decide_pass(&s, "proj", TEST_NOW);
+        assert_decided(&s, &first, "yes");
+        assert_decided(&s, &second, "yes");
+    }
+
+    /// TASK-129: presence plays no part, so an owner who returns while the
+    /// role waits for an answer does not stop the pass.
+    #[test]
+    fn the_owner_back_mid_pass_changes_nothing() {
         let _serial = serial();
         let s = decide_store(r#"{"answer":"yes","reason":"fine"}"#);
         let first = ask(&s, "back-1");
@@ -1523,12 +1630,8 @@ mod tests {
                 .unwrap();
         });
         decide_pass(&s, "proj", TEST_NOW);
-        assert_eq!(calls(&s).calls, 1, "the pass stopped");
+        assert_eq!(calls(&s).calls, 2, "the pass went on");
         assert!(events(&s, "decide.refused").is_empty());
-        assert!(is_nil_row(&decision(&s, &first)));
-        // Away again: both reach the role.
-        set(&s, "owner.presence", hive_store::OWNER_AWAY);
-        decide_pass(&s, "proj", TEST_NOW);
         assert_decided(&s, &first, "yes");
         assert_decided(&s, &second, "yes");
     }

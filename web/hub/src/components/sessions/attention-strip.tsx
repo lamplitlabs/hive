@@ -12,9 +12,9 @@ import { writes, type ServicePayload } from "@/lib/api";
 import { hrefs } from "@/lib/nav";
 import { invalidate } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
-import type { AttentionFix, AttentionRow } from "./home-state";
+import type { AttentionFix, AttentionRow } from "./sessions-state";
 
-// The attention strip (spec "Home" 2): one row per thing that is wrong, with
+// The broken-strip at the top of Sessions (on Home until TASK-129): one row per thing that is wrong, with
 // its icon, one sentence and the button that fixes it. Shown only when
 // something is wrong; the page computes the rows with attentionRows(). Each
 // row takes its own tone: red for what stops all work (the runner), orange

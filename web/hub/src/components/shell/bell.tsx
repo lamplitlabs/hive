@@ -8,17 +8,18 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { KindTile } from "@/components/hive/kind-tile";
 import { useInbox } from "@/components/hive/inbox";
 import { When } from "@/components/hive/who";
-import { forYouRows, latestRows, waitingWords } from "@/components/for-you/for-you-state";
-import { rowHref } from "@/components/for-you/row-href";
+import { forYouRows, latestRows, waitingWords } from "@/components/sessions/asks-state";
+import { rowHref } from "@/components/sessions/row-href";
 import { projectLabel, type Org } from "@/lib/api";
 import { hrefs } from "@/lib/nav";
 import { useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 
-// The top bar's bell (spec "Top bar"): the For you count in marigold and,
-// opened, the five most pressing things that wait on you - machine problems
-// first, then stop questions, then the newest - each a link to where it is
-// answered, with "See all" to the For you page.
+// The top bar's bell (spec "Top bar"): the count of what waits on you in
+// marigold and, opened, the five most pressing - machine problems first,
+// then stop questions, then the newest - each a link to where it is
+// answered, with "See all" to the hard-stop strip on Sessions (For you went
+// with TASK-129).
 export function Bell({ className }: { className?: string }) {
   const inbox = useInbox();
   const { data: org } = useApi<Org>("org");
@@ -48,7 +49,7 @@ export function Bell({ className }: { className?: string }) {
       </Tooltip>
       <DropdownMenuContent align="end" className="w-80 p-1.5">
         <DropdownMenuLabel className="flex items-center justify-between px-2 py-1.5 text-xs font-medium text-muted-foreground">
-          <span>For you</span>
+          <span>Waiting on you</span>
           {n > 0 ? <span className="tnum">{n}</span> : null}
         </DropdownMenuLabel>
         {five.length ? (
@@ -76,7 +77,7 @@ export function Bell({ className }: { className?: string }) {
         )}
         <DropdownMenuSeparator />
         <DropdownMenuItem asChild className="justify-center rounded-md text-[13px] font-medium text-link focus:text-link">
-          <Link href={hrefs.forYou()}>See all</Link>
+          <Link href={hrefs.hardStops()}>See all</Link>
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
