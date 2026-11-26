@@ -352,7 +352,7 @@ pub(crate) struct Lanes {
 /// recorded landing, or a quick check keeps every lane. A share of one lane
 /// has nothing to narrow but still carries the check's run time: the owner's
 /// work runs past the share ([`owner_work_bound`]) and its runs' commit caps
-/// are widened by it ([`commit_cap_over_lanes`]).
+/// are widened by it ([`owner_commit_cap`]).
 pub(crate) fn project_lanes(s: &hive_store::Store, slug: &str) -> Lanes {
     let base = parallel_per_project(s);
     let open = Lanes {
@@ -459,9 +459,9 @@ pub(crate) fn narrowed_lanes(s: &hive_store::Store) -> Vec<(String, Lanes)> {
 /// How many work jobs ([`WORK_KINDS`]) may be in flight in a project before
 /// the owner's work job there waits, or None while it takes any free slot.
 /// With `verify.lock` on, the project's checks take turns, and a run's commit
-/// cap is fixed when it starts ([`commit_cap_over_lanes`]): a run that started
-/// first was given a cap for the checks in flight then, so more of the
-/// owner's runs past the share would queue their checks in front of it. The
+/// cap is fixed when it starts ([`owner_commit_cap`]): every owner work run
+/// of the project gets a cap that covers this many checks, so more of the
+/// owner's runs would queue checks in front of a commit past its cap. The
 /// share plus one bounds that queue; without the lock nothing waits.
 /// `verify.lock` is one setting for every project (per project or one lock
 /// for the machine), so the bound is too.
@@ -472,7 +472,8 @@ pub(crate) fn owner_work_bound(s: &hive_store::Store) -> Option<i32> {
 
 /// How many of `project`'s work jobs ([`WORK_KINDS`]) are leased or running:
 /// the checks a clone's gated commit in the project may wait for under the
-/// verify lock.
+/// verify lock. The tests count them; the commit cap reads the bound.
+#[cfg(test)]
 pub(crate) fn occupied_work_jobs(s: &hive_store::Store, project: &str) -> i64 {
     let Ok(conn) = s.conn() else {
         return 0;
@@ -490,27 +491,35 @@ pub(crate) fn occupied_work_jobs(s: &hive_store::Store, project: &str) -> i64 {
     )
 }
 
-/// The commit cap, in seconds, a run starting over `project`'s narrowed work
-/// lanes needs, or None while the project's work is within its lanes. The
-/// owner's work takes a lane beyond the narrowed count at once
-/// ([`lease_job`]), so its clone's gated `git commit` may wait for every
-/// other check in the project before its own: with `n` work jobs in flight
-/// and the check at `v` seconds that is `n * v`, plus a plain step's grace,
-/// never below the cap the harness gives anyway (`harness.commit_timeout`,
-/// never below `harness.step_timeout`). Measured on the brain: one 23-minute
+/// The commit cap, in seconds, every owner work run of `project` gets while
+/// its checks take turns under `verify.lock`, or None while the harness's
+/// own cap covers it (the lock off, no check time measured yet, or the
+/// bound's checks fit the configured cap). The owner's work takes a slot
+/// past the narrowed lanes and past the share ([`lease_job`]), up to
+/// [`owner_work_bound`] work jobs in the project, so its clone's gated
+/// `git commit` may wait for every other check in the project before its
+/// own: with the check at `v` seconds that is `bound * v`, plus a plain
+/// step's grace, never below the cap the harness gives anyway
+/// (`harness.commit_timeout`, never below `harness.step_timeout`).
+///
+/// The cap is the bound's whatever the count when the run starts: a run's
+/// cap is fixed then, and the first owner run of a project, started alone,
+/// may still wait for the checks of the runs that start after it (review of
+/// PR 276: the first run kept the plain 40 minutes while a second one's
+/// check could hold its commit 46). Measured on the brain: one 23-minute
 /// check, two runs sharing the lock, a 40-minute cap - the second commit
-/// would be killed waiting on the first's check.
-pub(crate) fn commit_cap_over_lanes(s: &hive_store::Store, project: &str) -> Option<i64> {
-    let lanes = project_lanes(s, project);
-    let verify = lanes.verify_seconds?;
-    let n = occupied_work_jobs(s, project);
-    if n <= i64::from(lanes.lanes) {
-        return None;
-    }
+/// would be killed waiting on the first's check. The fleet's work runs are
+/// counted in the bound but keep their cap: they stay within the narrowed
+/// lanes. A lead's commit and the landing's own check take the same lock
+/// and are not counted; the step's grace is what covers them.
+pub(crate) fn owner_commit_cap(s: &hive_store::Store, project: &str) -> Option<i64> {
+    let bound = i64::from(owner_work_bound(s)?);
+    let verify = project_lanes(s, project).verify_seconds?;
     let step = i64::from(crate::util::setting_int(s, "harness.step_timeout"));
     let commit = i64::from(crate::util::setting_int(s, "harness.commit_timeout"));
     let current = step.max(commit);
-    Some(current.max(n * verify + step))
+    let cap = bound * verify + step;
+    (cap > current).then_some(cap)
 }
 
 /// When `job` was last queued: its latest `job.add`, `job.queued` or
@@ -604,7 +613,7 @@ pub(crate) fn lease_job(
         // ballots and answers keep the plain limit, and so does the owner's
         // work: a lane beyond the narrowed count at once, its commit cap
         // widened for the checks it shares the lock with
-        // (commit_cap_over_lanes). On the brain one lane of five is open, a
+        // (owner_commit_cap). On the brain one lane of five is open, a
         // task there runs 1.5-2.5 h, and the owner's tasks serialised behind
         // each other through it for 10-13 h with no attempt.
         let work_kinds = work_kinds_sql();
@@ -616,10 +625,10 @@ pub(crate) fn lease_job(
             vals.push(Box::new(lanes.lanes));
         }
         // With the checks taking turns the owner's work is bounded too
-        // (owner_work_bound): each of its runs past the share gets a commit
-        // cap for the checks in flight when it starts, and a run started
-        // later would queue one more check in front of an earlier run's
-        // commit. At a share of one, eight owner tasks of the brain leasing
+        // (owner_work_bound): each of its runs gets a commit cap for the
+        // bound's checks when it starts (owner_commit_cap), and a run past
+        // the bound would queue one check more than that in front of an
+        // earlier run's commit. At a share of one, eight owner tasks of the brain leasing
         // at once would each wait out the others' 23-minute checks.
         if let Some(bound) = owner_work_bound(s) {
             sql.push_str(&format!(
@@ -630,10 +639,16 @@ pub(crate) fn lease_job(
         // One slot is kept back from the owner's work past its share
         // (LeaseOpts::keep_slot): eight owner tasks once took every slot
         // they could, and the lead's sitting for the owner's next message
-        // would have waited one out.
+        // would have waited one out. The share counted is the owner's own
+        // work jobs in the project, not all of its jobs: a project whose
+        // share the fleet fills would otherwise refuse the owner's first
+        // task the last free slot while no fleet run is asked to hold (the
+        // fleet is not full), and the task waited beside an idle slot
+        // (review of PR 276, item A).
         if o.keep_slot {
             sql.push_str(&format!(
-                " AND NOT (j.kind IN ({work_kinds}) AND {OWNER_DRIVEN_SQL} AND (SELECT COUNT(*) FROM jobs k WHERE k.project = j.project AND {OCCUPIED_JOB_SQL}) >= ?)"
+                " AND NOT (j.kind IN ({work_kinds}) AND {OWNER_DRIVEN_SQL} AND (SELECT COUNT(*) FROM jobs k WHERE k.project = j.project AND k.kind IN ({work_kinds}) AND {} AND {OCCUPIED_JOB_SQL}) >= ?)",
+                owner_driven_sql("k")
             ));
             vals.push(Box::new(limit));
         }
@@ -1333,12 +1348,23 @@ mod tests {
     }
 
     #[test]
-    fn commit_cap_over_lanes_covers_the_checks_a_run_over_the_count_shares_the_lock_with() {
+    fn every_owner_run_of_a_locked_project_gets_the_commit_cap_of_the_lock_bound() {
+        // Review of PR 276, item C: the cap was widened for the checks in
+        // flight when a run started, so the owner's first run, started
+        // alone, kept the plain cap while the runs after it queued their
+        // checks in front of its commit. Every owner work run of a project
+        // whose checks take turns gets the cap of the bound (share plus one
+        // checks and a step's grace), whenever it starts.
         let _serial = crate::test_helpers::serial();
         let s = crate::test_helpers::new_store();
         crate::test_helpers::new_bare_repo(&s);
         one_narrowed_lane(&s);
-        for name in ["aurora", "borealis", "cinder"] {
+        assert_eq!(super::owner_work_bound(&s), Some(5));
+        // Nothing in flight: the bound's five 10-minute checks and a
+        // 15-minute step's grace, not the 15-minute cap.
+        assert_eq!(super::owner_commit_cap(&s, "proj"), Some(5 * 600 + 900));
+        // The same with runs in flight: the cap does not move with them.
+        for name in ["aurora", "borealis"] {
             join(&s, name);
         }
         let lease = |agent: &str| {
@@ -1353,35 +1379,16 @@ mod tests {
             )
             .unwrap()
         };
-        // Nothing in flight, then one fleet job in the one lane: within the
-        // lanes, the harness's own cap does.
-        assert_eq!(super::commit_cap_over_lanes(&s, "proj"), None);
         let fleet = queue(&s, "proj", "improve", "lead-idle:proj:1", 10);
         assert_eq!(lease("aurora").str("id"), fleet);
-        assert_eq!(super::commit_cap_over_lanes(&s, "proj"), None);
-        // The owner's task over the count: its commit may wait for the
-        // fleet's 10-minute check before its own, so two checks and a
-        // 15-minute step's grace - 35 minutes, not the 15-minute cap.
         let owner = queue(&s, "proj", "task", "task:TASK-001", 80);
         assert_eq!(lease("borealis").str("id"), owner);
-        assert_eq!(
-            super::commit_cap_over_lanes(&s, "proj"),
-            Some(2 * 600 + 900)
-        );
-        // A third run over the count waits for two checks.
-        let owner_2 = queue(&s, "proj", "task", "task:TASK-002", 80);
-        assert_eq!(lease("cinder").str("id"), owner_2);
-        assert_eq!(
-            super::commit_cap_over_lanes(&s, "proj"),
-            Some(3 * 600 + 900)
-        );
-        // A commit cap four checks fit opens every lane: nobody is over the
-        // count, and the harness's own cap does.
-        s.set_setting(hive_store::HUMAN_AGENT, "harness.commit_timeout", "2400")
+        assert_eq!(super::owner_commit_cap(&s, "proj"), Some(5 * 600 + 900));
+        // A configured cap the bound's checks fit: the harness's own cap does.
+        s.set_setting(hive_store::HUMAN_AGENT, "harness.commit_timeout", "4000")
             .unwrap();
-        assert_eq!(super::project_lanes(&s, "proj").lanes, 4);
-        assert_eq!(super::commit_cap_over_lanes(&s, "proj"), None);
-        // A project without the lock has no median to widen by.
+        assert_eq!(super::owner_commit_cap(&s, "proj"), None);
+        // Without the lock no check waits on another's.
         s.set_setting(hive_store::HUMAN_AGENT, "harness.commit_timeout", "900")
             .unwrap();
         s.set_setting(
@@ -1390,7 +1397,7 @@ mod tests {
             crate::verify_lock::OFF,
         )
         .unwrap();
-        assert_eq!(super::commit_cap_over_lanes(&s, "proj"), None);
+        assert_eq!(super::owner_commit_cap(&s, "proj"), None);
     }
 
     #[test]
@@ -1441,13 +1448,14 @@ mod tests {
         let first = queue(&s, "proj", "task", "task:TASK-001", 80);
         let second = queue(&s, "proj", "task", "task:TASK-002", 80);
         let third = queue(&s, "proj", "task", "task:TASK-003", 80);
-        // The first run alone: the harness's own cap does.
+        // The first run, alone, already gets the cap of the bound: the
+        // second's check may come before its commit (2 x 23 min = 46 min
+        // against the plain 40), two checks and a step's grace.
         assert_eq!(lease("aurora").str("id"), first);
-        assert_eq!(super::commit_cap_over_lanes(&s, "proj"), None);
-        // The second, past the share: its commit may wait for the first's
-        // check before its own, two checks and a step's grace.
+        assert_eq!(super::owner_commit_cap(&s, "proj"), Some(2 * 1380 + 900));
+        // The second, past the share, the same.
         assert_eq!(lease("borealis").str("id"), second);
-        let cap = super::commit_cap_over_lanes(&s, "proj");
+        let cap = super::owner_commit_cap(&s, "proj");
         assert_eq!(cap, Some(2 * 1380 + 900));
         // A third would queue its check in front of the second's commit,
         // whose cap was fixed when it started: it waits.
@@ -1518,6 +1526,130 @@ mod tests {
         assert_eq!(lease("cinder", true).str("id"), answer);
         // Any slot but the last still takes the task past the share.
         assert_eq!(lease("dusk", false).str("id"), second);
+    }
+
+    #[test]
+    fn the_kept_slot_counts_the_projects_owner_work_not_its_fleet_jobs() {
+        // Review of PR 276, item A: at a share of three, project `proj`
+        // runs three fleet jobs and `other` one, one slot is free and the
+        // owner queues a task in `proj`. The keep clause counted every job
+        // of the project, so the last free slot refused the owner's first
+        // task there, and with the fleet not full nothing yielded: the task
+        // waited beside an idle slot. It counts the owner's work jobs.
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        add_second_project(&s, "other");
+        crate::capacity::pin_per_project(&s, 3);
+        let agents = ["a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8"];
+        for name in agents {
+            join(&s, name);
+        }
+        let lease = |agent: &str, keep_slot: bool| {
+            super::lease_job(
+                &s,
+                agent.into(),
+                crate::test_helpers::TEST_NOW.into(),
+                super::LeaseOpts {
+                    any_proj: true,
+                    keep_slot,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        for (n, agent) in agents[..3].iter().enumerate() {
+            let fleet = queue(&s, "proj", "improve", &format!("lead-idle:proj:{n}"), 10);
+            assert_eq!(lease(agent, false).str("id"), fleet);
+        }
+        let elsewhere = queue(&s, "other", "improve", "lead-idle:other:1", 10);
+        assert_eq!(lease(agents[3], false).str("id"), elsewhere);
+        // The owner's first task in the busy project takes the last slot.
+        let first = queue(&s, "proj", "task", "task:TASK-001", 80);
+        assert_eq!(lease(agents[4], true).str("id"), first);
+        // Its tasks within the share do too; past it, the kept slot refuses.
+        let second = queue(&s, "proj", "task", "task:TASK-002", 80);
+        assert_eq!(lease(agents[5], true).str("id"), second);
+        let third = queue(&s, "proj", "task", "task:TASK-003", 80);
+        assert_eq!(lease(agents[6], true).str("id"), third);
+        let fourth = queue(&s, "proj", "task", "task:TASK-004", 80);
+        let none = lease(agents[7], true);
+        assert!(
+            none.0.is_empty(),
+            "the owner's fourth task past its share took the kept slot: {none:?}"
+        );
+        assert_eq!(lease(agents[7], false).str("id"), fourth);
+    }
+
+    #[test]
+    fn a_locked_project_at_a_share_of_three_runs_the_owners_work_to_the_bound() {
+        // Review of PR 276, item G: a locked project at a share of three.
+        // A 23-minute check in a 40-minute commit cap leaves one work lane
+        // of three for the fleet; the owner's work leases past it to the
+        // share plus one work jobs in flight, every one of its runs with a
+        // commit cap for those four checks.
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        crate::capacity::pin_per_project(&s, 3);
+        s.set_setting(hive_store::HUMAN_AGENT, "harness.step_timeout", "900")
+            .unwrap();
+        s.set_setting(hive_store::HUMAN_AGENT, "harness.commit_timeout", "2400")
+            .unwrap();
+        s.set_setting(
+            hive_store::HUMAN_AGENT,
+            crate::verify_lock::SETTING,
+            crate::verify_lock::PROJECT,
+        )
+        .unwrap();
+        record_landing_verify(&s, "proj", "2026-09-01T00:00:00Z", 1380);
+        let lanes = super::project_lanes(&s, "proj");
+        assert_eq!((lanes.lanes, lanes.base), (1, 3), "{lanes:?}");
+        assert_eq!(super::owner_work_bound(&s), Some(4));
+        assert_eq!(super::owner_commit_cap(&s, "proj"), Some(4 * 1380 + 900));
+        let agents = ["a1", "a2", "a3", "a4", "a5", "a6"];
+        for name in agents {
+            join(&s, name);
+        }
+        let lease = |agent: &str| {
+            super::lease_job(
+                &s,
+                agent.into(),
+                crate::test_helpers::TEST_NOW.into(),
+                super::LeaseOpts {
+                    any_proj: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        // The fleet fills its one narrowed lane; its second job waits.
+        let fleet = queue(&s, "proj", "improve", "lead-idle:proj:1", 10);
+        assert_eq!(lease(agents[0]).str("id"), fleet);
+        let fleet_2 = queue(&s, "proj", "improve", "lead-idle:proj:2", 10);
+        assert!(lease(agents[1]).0.is_empty());
+        // Three owner tasks lease past the lane and the share, to the
+        // bound of four work jobs; the fourth task waits.
+        let tasks = (1..=4)
+            .map(|n| queue(&s, "proj", "task", &format!("task:TASK-00{n}"), 80))
+            .collect::<Vec<_>>();
+        for (task, agent) in tasks[..3].iter().zip(&agents[1..4]) {
+            assert_eq!(&lease(agent).str("id"), task);
+        }
+        assert_eq!(super::occupied_work_jobs(&s, "proj"), 4);
+        let none = lease(agents[4]);
+        assert!(
+            none.0.is_empty(),
+            "an owner run leased past the lock's bound: {none:?}"
+        );
+        let conn = s.conn().unwrap();
+        assert_eq!(
+            super::job_row(&conn, tasks[3].clone()).str("status"),
+            "queued"
+        );
+        assert_eq!(super::job_row(&conn, fleet_2).str("status"), "queued");
+        // The cap the runs got is the bound's, whatever ran beside them.
+        assert_eq!(super::owner_commit_cap(&s, "proj"), Some(4 * 1380 + 900));
     }
 
     /// A held harness session of `job` by `agent`: what a run leaves when
