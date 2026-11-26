@@ -23,7 +23,7 @@ static HARD_STOP_WORDS: LazyLock<Vec<(&'static str, regex::Regex)>> = LazyLock::
         ),
         (
             "a destructive or irreversible act",
-            r"\b(irreversibl\w*|destructive|force[- ]push\w*|push (-f|--force)|rm -rf|drop (the |a |an |this |that )?(\w+ )?(tables?|databases?|columns?|schemas?)|wipe\w*|purg(e|es|ed|ing)|deallocat\w*|(delete|deletes|deleting|destroy|destroys|destroying) (the |a |an |this |that |these |those |all |every |old |stale |remote |unused |our |its )*([\w.-]+ )?(repo|repository|repositories|databases?|accounts?|projects?|buckets?|resource groups?|vms?|machines?|history|backups?|branch|branches|tags?|releases?|tables?|users?|volumes?|disks?|data)\b|push (origin )?--delete|data migrations?|rewrite (the )?history|cannot be undone|can't be undone)\b",
+            r"\b(irreversibl\w*|destructive|force[- ]push\w*|push (-f|--force)|rm -rf|drop (the |a |an |this |that )?(\w+ )?(tables?|databases?|columns?|schemas?)|wipe\w*|purg(e|es|ed|ing)|deallocat\w*|(delete|deletes|deleting|destroy|destroys|destroying) (the |a |an |this |that |these |those |all |every |old |stale |remote |unused |our |its )*([\w.-]+ )?(repos?|repository|repositories|databases?|accounts?|projects?|buckets?|resource groups?|vms?|machines?|history|backups?|branch|branches|tags?|releases?|tables?|users?|volumes?|disks?|data)\b|push (origin )?--delete|data migrations?|rewrite (the )?history|cannot be undone|can't be undone)\b",
         ),
         (
             "credentials",
@@ -31,7 +31,7 @@ static HARD_STOP_WORDS: LazyLock<Vec<(&'static str, regex::Regex)>> = LazyLock::
         ),
         (
             "publication",
-            r"\b(publish\w*|publication|deploy\w*|go live|goes live|go public|(to|in|into|on) (production|prod)|ship (it |this |that )?to (users|customers)|public repo\w*|make (it|\w+ [\w-]+|\w+ [\w-]+ [\w-]+) public|app store|play store|(cut|ship|tag|publish) (the |a |our )?(v?\d+(\.\d+)*|new|next|first) release|release (v?\d|to )|tag v?\d|(send|sends|sending|sent) (an? |the |our |this |that )?(\w+ )?(e-?mails?|newsletters?|announcements?)|e-?mail (the|all|every|our) (users|customers|subscribers|list)|mailing list|press release|announce\w*)\b",
+            r"\b(publish\w*|publication|deploy\w*|go live|goes live|go public|(to|in|into|on) (production|prod)|ship (it |this |that )?to (users|customers)|public repo\w*|make ((it|\w+ [\w-]+|\w+ [\w-]+ [\w-]+) )?public|app store|play store|(cut|ship|tag|publish) (the |a |our )?(v?\d+(\.\d+)*|new|next|first) release|release (v?\d|to )|tag v?\d|(send|sends|sending|sent) (an? |the |our |this |that )?(\w+ )?(e-?mails?|newsletters?|announcements?)|e-?mail (the|all|every|our) (users|customers|subscribers|list)|mailing list|press release|announce\w*)\b",
         ),
         (
             "a Tier 2 decision",
@@ -49,6 +49,9 @@ static EXPLICIT: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r"(?im)^[ \t>*-]*(?:question:\s*)?hard[ -]stop:[ \t]*([^\n|]*)")
         .expect("explicit hard stop regex")
 });
+
+/// What an agent writes on a `Hard stop:` line to say there is none.
+const NO_HARD_STOP: &[&str] = &["none", "no", "n/a", "na", "nothing", "not one"];
 
 /// Money written as an amount: `$26/month`, `40 USD`, `€5`. Tested on the
 /// text before the path-like tokens go, since `$26/month` is one of them.
@@ -78,7 +81,14 @@ pub fn hard_stop_ask(kind: &str, summary: &str, body: &str) -> String {
     if kind == "question" && summary == hive_store::EVOLUTION_FLAT_SUMMARY {
         return "the evolution loop paused (flat fixtures)".into();
     }
-    if let Some(c) = EXPLICIT.captures(&format!("{summary}\n{body}")) {
+    // Every explicit line is read: the first that names a class decides.
+    // A line that says there is none (`Hard stop: none`) is no evidence
+    // either way: its label goes before the words are read ("hard stop" on
+    // it would otherwise count as naming one) and the rest of the line
+    // stays, so `Hard stop: none - delete the old release tags?` is still
+    // read for what it asks.
+    let mut said_none = false;
+    for c in EXPLICIT.captures_iter(&format!("{summary}\n{body}")) {
         // The class is the line's first words, before any explanation.
         let class = c[1]
             .split([';', ',', '.', '(', '\u{2014}'])
@@ -87,13 +97,27 @@ pub fn hard_stop_ask(kind: &str, summary: &str, body: &str) -> String {
             .split(" - ")
             .next()
             .unwrap_or_default()
-            .trim();
+            .trim()
+            .to_lowercase();
+        if NO_HARD_STOP.contains(&class.as_str()) {
+            said_none = true;
+            continue;
+        }
         return if class.is_empty() {
             "names a hard stop".into()
         } else {
-            format!("names a hard stop: {}", class.to_lowercase())
+            format!("names a hard stop: {class}")
         };
     }
+    let (summary, body) = if said_none {
+        (
+            EXPLICIT.replace_all(summary, "$1").into_owned(),
+            EXPLICIT.replace_all(body, "$1").into_owned(),
+        )
+    } else {
+        (summary.to_string(), body.to_string())
+    };
+    let (summary, body) = (summary.as_str(), body.as_str());
     let what = crate::jobs::owner_only_proposal(summary, body);
     if !what.is_empty() {
         return what;
@@ -365,6 +389,69 @@ mod tests {
         assert_eq!(
             hard_stop_ask("question", "Hard stop: credentials - the deploy key", ""),
             "names a hard stop: credentials"
+        );
+        // `Hard stop: none` says there is none: the words decide, as without
+        // the line (second review of pull request 278).
+        assert_eq!(
+            hard_stop_ask(
+                "handoff",
+                "Tidy the helper",
+                "Hard stop: none\nRemove the unused helper function.\n"
+            ),
+            ""
+        );
+        assert_eq!(
+            hard_stop_ask(
+                "question",
+                "Clean up?",
+                "Hard stop: n/a\nThis force-pushes main.\n"
+            ),
+            "is about a destructive or irreversible act"
+        );
+        // A none line is still read for what follows on it: the words, and
+        // the paths and names only the owner decides on.
+        assert_eq!(
+            hard_stop_ask(
+                "question",
+                "Go on?",
+                "Hard stop: none - Delete the old release tags?\n"
+            ),
+            "is about a destructive or irreversible act"
+        );
+        assert_eq!(
+            hard_stop_ask(
+                "question",
+                "Go on?",
+                "Hard stop: none, but it deletes the release tags\n"
+            ),
+            "is about a destructive or irreversible act"
+        );
+        assert!(
+            !hard_stop_ask(
+                "suggestion",
+                "Tidy the workflow",
+                "Hard stop: none - edits .github/workflows/ci.yml\n"
+            )
+            .is_empty()
+        );
+        assert!(!hard_stop_ask("suggestion", "Hard stop: none - accept ADR-081", "").is_empty());
+        // A line that says none does not hide a line that names one.
+        assert_eq!(
+            hard_stop_ask(
+                "question",
+                "Go on?",
+                "Hard stop: none\nLater in the thread:\nHard stop: money\n"
+            ),
+            "names a hard stop: money"
+        );
+        // Two phrases the net caught before it was widened, and lost.
+        assert_eq!(
+            hard_stop_ask("question", "Remove them?", "Delete the repos we left."),
+            "is about a destructive or irreversible act"
+        );
+        assert_eq!(
+            hard_stop_ask("question", "Open it up?", "Make public the roadmap."),
+            "is about publication"
         );
         // The loop's flat-fixture pause is the owner's like its stop.
         assert_eq!(

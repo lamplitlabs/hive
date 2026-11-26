@@ -448,7 +448,9 @@ impl crate::server::Handler {
                         &str_key(row, "body"),
                     )
                 })
-                .unwrap_or_default();
+                // The console reads an empty value as "routine, a lead
+                // decides": a store that cannot be read must not say so.
+                .unwrap_or_else(|_| "could not be checked (the store did not open)".into());
             row.insert("hard_stop".to_string(), json!(hard_stop));
         }
         order(&mut d.proposals, &["-date", "id"]);
