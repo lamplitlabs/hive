@@ -16,7 +16,8 @@
     "stale": false,
     "thread_last": "2026-09-02T07:15:00Z",
     "slug": "demo-app",
-    "base": "/p/demo-app"
+    "base": "/p/demo-app",
+    "hard_stop": "the evolution loop stopped (ADR-043)"
   },
   {
     "agent": "cinder",
@@ -35,6 +36,7 @@
     "stale": false,
     "thread_last": "2026-09-01T18:30:00Z",
     "slug": "demo-app",
-    "base": "/p/demo-app"
+    "base": "/p/demo-app",
+    "hard_stop": "is about money"
   }
 ]

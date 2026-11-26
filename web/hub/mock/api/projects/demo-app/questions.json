@@ -14,7 +14,8 @@
     "on_post": "",
     "stop": true,
     "stale": false,
-    "thread_last": "2026-09-02T07:15:00Z"
+    "thread_last": "2026-09-02T07:15:00Z",
+    "hard_stop": "the evolution loop stopped (ADR-043)"
   },
   {
     "agent": "cinder",
@@ -31,6 +32,7 @@
     "on_post": "",
     "stop": false,
     "stale": false,
-    "thread_last": "2026-09-01T18:30:00Z"
+    "thread_last": "2026-09-01T18:30:00Z",
+    "hard_stop": "is about money"
   }
 ]
