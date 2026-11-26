@@ -70,6 +70,10 @@ export interface DaemonUpdate {
   // The runs the new build waits for, slowest first; empty when an older
   // daemon only wrote `restarting: N in flight`.
   waits: DaemonUpdateWait[];
+  // When the handover's bound (daemon.restart_max_minutes) is up and nothing
+  // new starts, the owner's work included; null without a bound or from an
+  // older daemon.
+  until: string | null;
 }
 
 // The update a live heartbeat announces, from the structured `restart` record
@@ -81,11 +85,11 @@ export function pendingUpdate(daemon: Pick<Runner["daemon"], "note" | "restart">
       .filter((w): w is DaemonRestart["waits_for"][number] => !!w && typeof w === "object")
       .map((w) => ({ agent: String(w.agent || ""), kind: String(w.kind || "run"), project: String(w.project || ""), job: String(w.job || ""), started_at: String(w.started_at || "") }))
       .sort((a, b) => (startedAt(a) ?? now) - (startedAt(b) ?? now));
-    return { since: r.since || null, inflight: Number.isFinite(Number(r.inflight)) ? Number(r.inflight) : waits.length, dispatching: r.dispatching !== false, waits };
+    return { since: r.since || null, inflight: Number.isFinite(Number(r.inflight)) ? Number(r.inflight) : waits.length, dispatching: r.dispatching !== false, waits, until: r.until || null };
   }
   const m = /^restarting:\s*(\d+)\s+in flight/.exec(daemon.note || "");
-  if (!m) return daemon.note?.startsWith("restarting") ? { since: null, inflight: 0, dispatching: true, waits: [] } : null;
-  return { since: null, inflight: Number(m[1]), dispatching: true, waits: [] };
+  if (!m) return daemon.note?.startsWith("restarting") ? { since: null, inflight: 0, dispatching: true, waits: [], until: null } : null;
+  return { since: null, inflight: Number(m[1]), dispatching: true, waits: [], until: null };
 }
 
 // This module is run by node straight from the `.ts` source in tests, so it
@@ -99,14 +103,38 @@ function count(n: number, noun: string): string {
   return n + " " + noun + (n === 1 ? "" : "s");
 }
 
+function minutesText(ms: number): string {
+  const min = Math.max(0, Math.round(ms / 60000));
+  if (min < 60) return count(min, "minute");
+  const h = Math.floor(min / 60);
+  return count(h, "hour") + (min % 60 ? " " + count(min % 60, "minute") : "");
+}
+
 function runAge(w: DaemonUpdateWait, now: number): string {
   const t = startedAt(w);
   if (t === null) return "";
-  const min = Math.max(0, Math.round((now - t) / 60000));
-  if (min < 1) return "just started";
-  if (min < 60) return count(min, "minute") + " so far";
-  const h = Math.floor(min / 60);
-  return count(h, "hour") + (min % 60 ? " " + count(min % 60, "minute") : "") + " so far";
+  if (Math.round((now - t) / 60000) < 1) return "just started";
+  return minutesText(now - t) + " so far";
+}
+
+// Since when the handover is pending and when its bound
+// (daemon.restart_max_minutes) stops new runs: a restart held open by the
+// owner's queue reads as waiting, with an end, rather than as forgotten.
+// Empty when the heartbeat carries neither.
+export function updatePendingText(update: DaemonUpdate | null | undefined, now: number = Date.now()): string {
+  if (!update) return "";
+  const since = update.since ? Date.parse(update.since) : NaN;
+  const until = update.until ? Date.parse(update.until) : NaN;
+  const parts: string[] = [];
+  if (Number.isFinite(since)) parts.push("Pending for " + minutesText(now - since));
+  if (Number.isFinite(until)) {
+    parts.push(until > now ? "new runs, yours included, stop starting in " + minutesText(until - now) : "its time limit is up, so nothing new starts until it has swapped");
+  } else if (!update.dispatching) {
+    parts.push("nothing new starts");
+  }
+  if (!parts.length) return "";
+  const text = parts.join("; ");
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 // The job kinds a runner supervises, as the owner reads them; anything else is a run.
@@ -135,7 +163,8 @@ function updateDescription(update: DaemonUpdate, now: number): string {
   const more = update.waits.length - named.length;
   const list = named.length ? named.join(", ") + (more > 0 ? " and " + count(more, "more run") : "") : update.inflight > 0 ? count(update.inflight, "run") + " in progress" : "its last runs";
   const meanwhile = update.dispatching ? " Meanwhile it starts only runs that end before those do." : " It has stopped taking new work.";
-  return "The daemon is running and has a newer hive built. It swaps to the new build once the runs it supervised when that build landed finish: " + list + "." + meanwhile + " Its service brings the new build back within seconds; nothing to start by hand.";
+  const pending = updatePendingText(update, now);
+  return "The daemon is running and has a newer hive built. It swaps to the new build once the runs it supervised when that build landed finish: " + list + "." + meanwhile + (pending ? " " + pending + " (daemon.restart_max_minutes)." : "") + " Its service brings the new build back within seconds; nothing to start by hand.";
 }
 
 const onSentence = "The runner is on, so agents can pick up work.";

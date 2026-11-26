@@ -63,7 +63,11 @@ If Homebrew installed your `hive`, upgrade it with `brew upgrade hivefleet`:
 You restart nothing: the services see the new program and restart on it. The
 runner restarts as soon as no run is in flight. A run still going after
 `daemon.restart_drain_minutes` (30) is asked to hold: it saves its
-conversation, and the next runner carries its job on in the same clone. The
+conversation, and the next runner carries its job on in the same clone.
+However much of your own work keeps arriving, the restart comes within
+`daemon.restart_max_minutes` (90): after that nothing new starts, yours
+included, until the new runner is up; `hive status` and **Settings → This
+machine** say since when the restart has waited and for what. The
 console restarts once no session is at work, or after 30 minutes.
 
 Run by hand, both commands look at Hive's own releases on GitHub. To hear of a

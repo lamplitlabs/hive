@@ -6690,6 +6690,179 @@ mod tests {
         );
     }
 
+    /// Resets the restart bound's minute to sixty when the test ends,
+    /// passed or not.
+    struct MaxMinuteSecs;
+
+    impl Drop for MaxMinuteSecs {
+        fn drop(&mut self) {
+            crate::restart::TEST_MAX_MINUTE_SECS.store(60, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn a_restart_comes_within_its_bound_while_the_owner_s_work_keeps_arriving() {
+        let _serial = crate::test_helpers::serial();
+        // On 2026-11-26 a restart armed at 05:42Z had not come by 12:07Z:
+        // every owner's run started while it was pending anchored the window
+        // again and the owner's queue never emptied. Here the drain is half
+        // an hour, no fleet kind fits it, and the owner's tasks are queued
+        // every quarter second for as long as the daemon lives; the bound
+        // (daemon.restart_max_minutes, one minute made a second here) still
+        // ends the handover, starting nothing more, the owner's work included.
+        let bound = Duration::from_secs(8);
+        let _minute = MaxMinuteSecs;
+        crate::restart::TEST_MAX_MINUTE_SECS.store(1, std::sync::atomic::Ordering::SeqCst);
+        hive_bus::reset_default();
+        let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
+        let s = new_store();
+        new_bare_repo(&s);
+        join(&s, "aurora");
+        join(&s, "borealis");
+        crate::capacity::pin_per_project(&s, 3);
+        for (key, value) in [
+            ("jobs_per_day", "none"),
+            ("capacity", "3"),
+            ("daemon.restart_drain_minutes", "30"),
+            ("daemon.restart_max_minutes", &bound.as_secs().to_string()),
+        ] {
+            s.set_setting(hive_store::HUMAN_AGENT, key, value).unwrap();
+        }
+        let add = |s: &hive_store::Store, title: &str, source: &str| {
+            crate::jobs::add_job(
+                s,
+                "proj".into(),
+                "task".into(),
+                title.into(),
+                "fake worker only".into(),
+                0,
+                100,
+                source.into(),
+                hive_store::HUMAN_AGENT.into(),
+                false,
+            )
+            .unwrap();
+        };
+        add(&s, "Slow run", "test");
+        let old_stamp = *BINARY_STAMP.read().unwrap();
+        TEST_RESTART_CHANGED.store(false, std::sync::atomic::Ordering::SeqCst);
+        set_binary_stamp(test_restart_stamp);
+        let out = OutBuf::new();
+        let (leased_tx, leased_rx) = crossbeam_channel::bounded(1);
+        let writer: DaemonOut = std::sync::Arc::new(std::sync::Mutex::new(SignalWriter {
+            out: out.clone(),
+            waiting: leased_tx,
+            needle: "leased job-".into(),
+            sent: false,
+        }));
+        let opts = DaemonOpts {
+            interval: 300,
+            out: Some(writer),
+            worker_cmd: "sh -c 'sleep 2; echo SUMMARY: ok'".into(),
+            restart_on_change: true,
+            ..Default::default()
+        };
+        let s_daemon = s.clone();
+        let cancel = hive_bus::CancellationToken::new();
+        let cancel_daemon = cancel.clone();
+        let (done_tx, done_rx) = crossbeam_channel::bounded(1);
+        std::thread::spawn(move || {
+            let _ = done_tx.send(daemon(&cancel_daemon, &s_daemon, opts));
+        });
+        let stop_feeding = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            leased_rx
+                .recv_timeout(test_wait(Duration::from_secs(60)))
+                .expect("the slow run was never leased");
+            TEST_RESTART_CHANGED.store(true, std::sync::atomic::Ordering::SeqCst);
+            hive_bus::emit(
+                &s,
+                "human",
+                "post.question",
+                "wake-restart",
+                serde_json::json!({"project": "proj"}),
+            )
+            .unwrap();
+            let waited = std::time::Instant::now();
+            while !out.string().contains("hive changed on disk") {
+                assert!(
+                    waited.elapsed() < test_wait(Duration::from_secs(60)),
+                    "the daemon never noticed the binary change:\n{}",
+                    out.string()
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            let armed = std::time::Instant::now();
+            // The owner's work keeps arriving until the daemon has gone.
+            let feeder = {
+                let s = s.clone();
+                let stop = stop_feeding.clone();
+                std::thread::spawn(move || {
+                    let mut n = 0;
+                    while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                        n += 1;
+                        add(&s, &format!("Owner's task {n}"), &format!("task:TASK-{n}"));
+                        let _ = hive_bus::emit(
+                            &s,
+                            "human",
+                            "post.question",
+                            "wake-owner",
+                            serde_json::json!({"project": "proj"}),
+                        );
+                        std::thread::sleep(Duration::from_millis(250));
+                    }
+                    n
+                })
+            };
+            let result = done_rx.recv_timeout(test_wait(bound + Duration::from_secs(60)));
+            let took = armed.elapsed();
+            stop_feeding.store(true, std::sync::atomic::Ordering::SeqCst);
+            let fed = feeder.join().unwrap();
+            let result = result.unwrap_or_else(|_| {
+                panic!(
+                    "the daemon did not leave within the bound while the owner's work kept arriving:\n{}",
+                    out.string()
+                )
+            });
+            (result, took, fed)
+        }));
+        stop_feeding.store(true, std::sync::atomic::Ordering::SeqCst);
+        cancel.cancel();
+        set_binary_stamp(old_stamp);
+        TEST_RESTART_CHANGED.store(false, std::sync::atomic::Ordering::SeqCst);
+        let (result, took, fed) = match result {
+            Ok(v) => v,
+            Err(panic) => panic!("{}\n{}", panic_message(&panic), out.string()),
+        };
+        let out = out.string();
+        assert_eq!(result, "restart", "{out}");
+        // The bound, then the owner's runs it let start (two seconds each)
+        // finishing; never the hours of a queue that does not empty.
+        assert!(
+            took < bound + test_wait(Duration::from_secs(20)),
+            "left {took:?} after the restart was armed:\n{out}"
+        );
+        let said = out
+            .find("(daemon.restart_max_minutes): nothing new starts, the owner's work included")
+            .unwrap_or_else(|| panic!("the bound never ended the handover:\n{out}"));
+        assert!(
+            !out[said..].contains("leased job-"),
+            "a run started after the bound was up:\n{out}"
+        );
+        // The owner's work did start inside the bound - it is the starting
+        // that kept the handover open - and more of it was queued than ran.
+        let owner_ran = count(
+            &s,
+            "SELECT COUNT(*) AS n FROM runs r JOIN jobs j ON j.id = r.job_id WHERE j.source LIKE 'task:TASK-%'",
+            &[],
+        );
+        assert!(
+            owner_ran >= 1,
+            "no owner's run started in the window:\n{out}"
+        );
+        assert!(fed > owner_ran, "fed {fed}, ran {owner_ran}:\n{out}");
+    }
+
     impl Write for SignalWriter {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
             let text = String::from_utf8_lossy(buf);
