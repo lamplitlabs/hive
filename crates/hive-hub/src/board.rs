@@ -434,6 +434,22 @@ impl crate::server::Handler {
                 json!(proposal_text(&str_key(row, "body"))),
             );
             row.insert("can_decide".to_string(), json!(true));
+            // Why only the owner may decide it (the rule the lead's
+            // `decide` refuses it by): the Sessions strip lists such a
+            // proposal, the lead the others (TASK-129, PR #278 review).
+            let hard_stop = store
+                .conn()
+                .map(|conn| {
+                    hive_board::owner_only_ask(
+                        &conn,
+                        &id,
+                        &str_key(row, "kind"),
+                        &str_key(row, "summary"),
+                        &str_key(row, "body"),
+                    )
+                })
+                .unwrap_or_default();
+            row.insert("hard_stop".to_string(), json!(hard_stop));
         }
         order(&mut d.proposals, &["-date", "id"]);
         d.proposals.sort_by(|a, b| {
@@ -1922,6 +1938,59 @@ mod tests {
             "## Proposal for the human: ship the fix\n\nIt is ready."
         );
         assert_eq!(data.proposals[0]["proposal_text"], "ship the fix");
+        assert_eq!(
+            data.proposals[0]["hard_stop"], "",
+            "a routine proposal is the lead's"
+        );
+        // Every proposal row says whether only the owner may decide it, by
+        // the rule the lead's `decide` refuses it by: the console's strip
+        // (asks-state.test.mjs) reads this mark, no word list of its own.
+        for (thread, summary, body, want) in [
+            (
+                "helper",
+                "Delete the unused helper",
+                "Fix the production build warning too.",
+                "",
+            ),
+            ("adr", "Adopt ADR-080", "Accept it.", "names ADR-080"),
+            (
+                "ci",
+                "Cache modules in CI",
+                "Edit .github/workflows/ci.yml",
+                "points at .github/",
+            ),
+            (
+                "spend",
+                "Let compute start itself",
+                "Set compute.auto_approve to on.",
+                "changes compute.auto_approve",
+            ),
+            (
+                "seat",
+                "Seat a lead",
+                "lead-role: docs\n",
+                "authorizes a command (ADR-021)",
+            ),
+        ] {
+            post(
+                "result",
+                thread,
+                "alpha",
+                false,
+                summary,
+                &format!("## Proposal for the human: {summary}\n\n{body}\n"),
+                "",
+                "agreed",
+                "2026-09-06T08:03:00Z",
+            );
+            let data = h.snapshot("one", "").unwrap();
+            let row = data
+                .proposals
+                .iter()
+                .find(|r| r["summary"] == summary)
+                .unwrap_or_else(|| panic!("{summary} listed"));
+            assert_eq!(row["hard_stop"], want, "{summary}");
+        }
 
         let detail = h.post_detail(&data, &ask.id).unwrap();
         assert_eq!(detail["body"], "Pick one.");

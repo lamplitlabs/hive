@@ -184,21 +184,25 @@ test("order puts newer first whichever way the rows arrive", () => {
   assert.deepEqual(bell.map((r) => r.key), ["m", "b"]);
 });
 
-test("only the hard stops reach the strip: money, what can't be undone, credentials, publication", () => {
+test("only the hard stops reach the strip, by the hub's one rule: its hard_stop, a compute request, a proposed record, suggested work it left to the owner", () => {
   const rows = forYouRows({
     ...empty,
     questions: [
-      { id: "Q-1", slug: "web", summary: "Which payment sandbox should the fixtures hit?", body: "Two exist in the vault.", date: "2026-11-01T00:00:00Z" },
-      { id: "Q-2", slug: "web", summary: "Keep the old API?", date: "2026-11-02T00:00:00Z" },
-      { id: "Q-3", slug: "web", summary: "Rotate the deploy key?", body: "The SSH key the CI uses leaked into a log.", date: "2026-11-03T00:00:00Z" },
-      { id: "Q-4", slug: "web", summary: "Evolution stopped; owner review needed", body: "experiment target matches an immutable path (src/billing/ledger.rs)", date: "2026-11-04T00:00:00Z", stop: true },
+      { id: "Q-1", slug: "web", summary: "Which payment sandbox should the fixtures hit?", body: "Two exist in the vault.", date: "2026-11-01T00:00:00Z", hard_stop: "is about money" },
+      { id: "Q-2", slug: "web", summary: "Keep the old API?", date: "2026-11-02T00:00:00Z", hard_stop: "" },
+      { id: "Q-3", slug: "web", summary: "Rotate the deploy key?", body: "The SSH key the CI uses leaked into a log.", date: "2026-11-03T00:00:00Z", hard_stop: "is about credentials" },
     ],
     proposals: [
-      { id: "P-1", slug: "web", summary: "Drop the table of old sessions", proposal_text: "It is irreversible.", date: "2026-11-05T00:00:00Z" },
-      { id: "P-2", slug: "web", summary: "Raise the retry budget", proposal_text: "From 3 to 5 tries.", date: "2026-11-05T00:00:00Z" },
-      { id: "P-3", slug: "web", summary: "Let compute start itself", proposal_text: "Set compute.auto_approve to on.", date: "2026-11-06T00:00:00Z" },
+      { id: "P-1", slug: "web", summary: "Drop the table of old sessions", proposal_text: "It is irreversible.", date: "2026-11-05T00:00:00Z", hard_stop: "is about a destructive or irreversible act" },
+      // Routine words the old console list matched: the hub says the lead's.
+      { id: "P-2", slug: "web", summary: "Delete the unused helper", proposal_text: "Fix the production build warning too.", date: "2026-11-05T00:00:00Z", hard_stop: "" },
+      { id: "P-3", slug: "web", summary: "Let compute start itself", proposal_text: "Set compute.auto_approve to on.", date: "2026-11-06T00:00:00Z", hard_stop: "changes compute.auto_approve" },
+      // No hard-stop words at all: the hub refuses it to the lead.
+      { id: "P-4", slug: "web", summary: "Adopt ADR-080", proposal_text: "Accept it.", date: "2026-11-06T00:00:00Z", hard_stop: "names ADR-080" },
+      { id: "P-5", slug: "web", summary: "Cache modules in CI", proposal_text: "Edit .github/workflows/ci.yml", date: "2026-11-06T00:00:00Z", hard_stop: "points at .github/" },
     ],
-    work: [{ id: "SUG-1", project: "web", title: "Publish the docs site", brief: "Go public with the guide.", created_at: "2026-11-07T00:00:00Z" }],
+    decisions: [{ id: "ADR-081", project: "web", title: "Use one store", kind: "adr", date: "2026-11-02T00:00:00Z" }],
+    work: [{ id: "SUG-1", project: "web", title: "Tidy the docs", brief: "Small.", created_at: "2026-11-07T00:00:00Z" }],
     compute: [{ id: "C-1", project: "web", size: "Standard_D2s_v5", hours: 1, requested_by: "quartz", at: "2026-11-01T00:00:00Z" }],
     drafts: [{ slug: "web", r: { id: "EVO-constitution", draft: { at: "2026-11-04T00:00:00Z" } } }],
     machine: true,
@@ -208,21 +212,22 @@ test("only the hard stops reach the strip: money, what can't be undone, credenti
   assert.equal(kinds["question:Q-1"], "money");
   assert.equal(kinds["question:Q-2"], null, "a routine question is the lead's");
   assert.equal(kinds["question:Q-3"], "credentials");
-  assert.equal(kinds["question:Q-4"], null, "a path that says billing is no spend");
   assert.equal(kinds["proposal:P-1"], "destructive");
-  assert.equal(kinds["proposal:P-2"], null, "a retry budget is no money");
+  assert.equal(kinds["proposal:P-2"], null, "routine words are the lead's when the hub says so");
   assert.equal(kinds["proposal:P-3"], "money", "a spend setting is money");
-  assert.equal(kinds["work:SUG-1"], "publication");
+  assert.equal(kinds["proposal:P-4"], "owner", "an ADR is the owner's");
+  assert.equal(kinds["proposal:P-5"], "owner", "an owner path is the owner's");
+  assert.equal(kinds["decision:ADR-081"], "owner", "agents cannot accept a record");
+  assert.equal(kinds["work:SUG-1"], "owner", "suggested work in owner status is the owner's");
   assert.equal(kinds["compute:C-1"], "money", "a compute request is money whatever it says");
   assert.equal(kinds["machine"], null, "the broken-strip carries the runner");
   assert.equal(kinds["provider:copilot"], null);
   assert.equal(kinds["draft:web:EVO-constitution"], null);
 
   const strip = hardStopRows(rows);
-  assert.deepEqual(strip.map((r) => r.key), ["proposal:P-3", "compute:C-1", "question:Q-1", "proposal:P-1", "question:Q-3", "work:SUG-1"]);
-  assert.deepEqual(strip.map((r) => r.stopKind), ["money", "money", "money", "destructive", "credentials", "publication"]);
+  assert.deepEqual(strip.map((r) => r.key), ["proposal:P-3", "compute:C-1", "question:Q-1", "proposal:P-1", "question:Q-3", "work:SUG-1", "proposal:P-4", "proposal:P-5", "decision:ADR-081"]);
   for (const k of HARD_STOP_ORDER) assert.ok(HARD_STOP_LABEL[k], k + " has a label");
-  assert.deepEqual(hardStopRows(forYouRows({ ...empty, questions: [rows[0]].map(() => ({ id: "Q", summary: "Keep the old API?", date: "" })) })), [], "nothing at a hard stop: no strip");
+  assert.deepEqual(hardStopRows(forYouRows({ ...empty, questions: [{ id: "Q", summary: "Delete the old branch?", date: "" }] })), [], "the console has no word list of its own: no hub mark, no strip");
   assert.equal(hardStopWords(1), "1 decision only you can make");
   assert.equal(hardStopWords(3), "3 decisions only you can make");
 });

@@ -68,15 +68,15 @@ export interface ForYouRow {
   yesNo?: boolean;
   /** The button word on a row whose fix is a page away (the row links there). */
   fix?: string;
-  /** The ask's own words (a question's body, a proposal's text, a suggestion's brief), read for the hard stop it names. */
+  /** The ask's own words (a question's body, a proposal's text, a suggestion's brief). */
   text?: string;
-  /** Why only the owner may decide it, as the hub marks a question (`hard_stop`, TASK-129); empty or absent when the hub did not say. */
+  /** Why only the owner may decide it, as the hub marks a question or a proposal (`hard_stop`, TASK-129); empty or absent when the lead decides it. */
   hardStop?: string;
 }
 
 export interface ForYouInput {
   decisions: { id: string; project: string; title: string; kind: string; updated_at?: string; date?: string }[];
-  proposals: { id: string; slug?: string; summary: string; proposal_text?: string; date: string; thread_key?: string }[];
+  proposals: { id: string; slug?: string; summary: string; proposal_text?: string; date: string; thread_key?: string; hard_stop?: string }[];
   questions: { id: string; slug?: string; summary: string; body?: string; date: string; stop?: boolean; thread_key?: string; on_post?: string; hard_stop?: string }[];
   compute: { id: string; project: string; size: string; hours: number; requested_by: string; at: string }[];
   work: { id: string; project: string; title: string; brief?: string; updated_at?: string; created_at?: string; reviewed_at?: string }[];
@@ -104,7 +104,7 @@ export function forYouRows(i: ForYouInput): ForYouRow[] {
   if (i.provider) rows.push({ key: "provider:" + i.provider.name, section: "problems", kind: "tool", project: "", title: i.provider.expired ? (i.provider.label || i.provider.name) + " sign-in expired" : "Connect " + (i.provider.label || i.provider.name), meta: i.provider.expired ? "Sign in again so agents can use their model" : "Agents have no model provider yet", href: "/settings/?connect=" + encodeURIComponent(i.provider.name) + "#harness", at: "", urgent: true, fix: i.provider.expired ? "Sign in" : "Connect" });
   for (const q of i.questions) rows.push({ key: "question:" + q.id, section: "questions", kind: "question", project: q.slug || brain, title: isStop(q) ? STOP_TITLE : q.summary, text: q.body, hardStop: q.hard_stop || undefined, at: q.date, urgent: !!q.stop, yesNo: true });
   for (const r of i.decisions) rows.push({ key: "decision:" + r.id, section: "decisions", kind: "decision", project: r.project, title: r.title, meta: r.id, at: first(r.updated_at, r.date), yesNo: true });
-  for (const p of i.proposals) rows.push({ key: "proposal:" + p.id, section: "proposals", kind: "proposal", project: p.slug || brain, title: p.summary, text: p.proposal_text, at: p.date, yesNo: true });
+  for (const p of i.proposals) rows.push({ key: "proposal:" + p.id, section: "proposals", kind: "proposal", project: p.slug || brain, title: p.summary, text: p.proposal_text, hardStop: p.hard_stop || undefined, at: p.date, yesNo: true });
   for (const c of i.compute) rows.push({ key: "compute:" + c.id, section: "compute", kind: "machine", project: c.project, title: c.size + " for " + c.hours + (c.hours === 1 ? " hour" : " hours"), meta: "Asked by " + c.requested_by, at: c.at, yesNo: true });
   for (const w of i.work) rows.push({ key: "work:" + w.id, section: "work", kind: "suggestion", project: w.project, title: w.title, text: w.brief, meta: w.id, at: first(w.reviewed_at, w.updated_at, w.created_at), yesNo: true });
   for (const d of i.drafts) rows.push({ key: "draft:" + d.slug + ":" + d.r.id, section: "drafts", kind: "record", project: d.slug, title: d.r.id === "EVO-evaluators" ? "New evaluators drafted" : "A new constitution drafted", meta: d.r.draft?.author ? "By " + d.r.draft.author : undefined, at: d.r.draft?.at || "" });
@@ -170,37 +170,31 @@ export const HARD_STOP_LABEL: Record<HardStop, string> = {
   owner: "Only you",
 };
 
-// The words that name each kind, matched on whole words in the ask's title
-// and text. The spend settings (hive-board SPEND_SETTINGS) count as money:
-// a proposal that changes one changes what Hive may spend.
-const HARD_STOP_WORDS: Record<Exclude<HardStop, "owner">, RegExp> = {
-  money: /\b(money|spends?|spending|costs?|billing|billed|payments?|paid|purchases?|invoices?|pricing|subscriptions?|compute\.(auto_approve|budget_credits|max_vms|max_hours_per_day))\b/i,
-  destructive: /\b(delete|deletes|deleting|deletion|destroy|destroys|destructive|irreversible|wipe|wipes|purge|purges|drop (the )?(table|database|data)|truncate|force[- ]push|rm -rf|data migrations?|migrations?|rewrite (the )?history)\b/i,
-  credentials: /\b(credentials?|secrets?|passwords?|api[ -]keys?|private keys?|signing keys?|ssh keys?|access tokens?|auth tokens?|oauth|vault|keychain)\b/i,
-  publication: /\b(publish|publishes|publishing|publication|go public|make (it )?public|open[- ]source it|app store|play store|announce|announcement|press release|deploy|deploys|deployment|production)\b/i,
-};
-
-// The hard stop a row names, or null when the lead may decide it. A compute
-// request is money whatever it says; the runner, the provider, drafts and
-// gate steps are no asks at all (the broken-strip and the project carry them).
-export function hardStopOf(r: Pick<ForYouRow, "section" | "title" | "text" | "hardStop">): HardStop | null {
+// The hard stop a row names, or null when the lead may decide it. One rule,
+// the hub's (hive-board owner_only_ask): a question or proposal is the
+// owner's when the hub marks it `hard_stop`, whatever its words; the reason
+// picks the label. A compute request is money whatever it says; a proposed
+// decision record (agents cannot accept one) and suggested work the review
+// left in `owner` status are the owner's by what they are. The runner, the
+// provider, drafts and gate steps are no asks at all (the broken-strip and
+// the project carry them).
+export function hardStopOf(r: Pick<ForYouRow, "section" | "hardStop">): HardStop | null {
   if (r.section === "compute") return "money";
   if (r.section === "problems" || r.section === "drafts" || r.section === "steps") return null;
-  // A question the hub marked (hive-board hard_stop_ask: "is about money",
-  // "changes ...", "the evolution loop stopped (ADR-043)") is a hard stop
-  // whatever its words; the reason picks the label.
-  if (r.hardStop) {
-    const why = r.hardStop.toLowerCase();
-    if (/money|spend|budget|compute/.test(why)) return "money";
-    if (/destructive|irreversible|undone|delet/.test(why)) return "destructive";
-    if (/credential/.test(why)) return "credentials";
-    if (/publication/.test(why)) return "publication";
-    return "owner";
-  }
-  // A path names a file, not what the ask does: "src/billing/ledger.rs" is no spend.
-  const words = ((r.title || "") + "\n" + (r.text || "")).replace(/\S*\/\S*/g, " ");
-  for (const k of HARD_STOP_ORDER) if (k !== "owner" && HARD_STOP_WORDS[k].test(words)) return k;
+  if (r.hardStop) return hardStopKind(r.hardStop);
+  if (r.section === "decisions" || r.section === "work") return "owner";
   return null;
+}
+
+// The label for the hub's reason ("is about money", "names a hard stop:
+// credentials", "the evolution loop stopped (ADR-043)").
+export function hardStopKind(why: string): HardStop {
+  const w = why.toLowerCase();
+  if (/money|spend|budget|compute/.test(w)) return "money";
+  if (/destructive|irreversible|undone|delet/.test(w)) return "destructive";
+  if (/credential/.test(w)) return "credentials";
+  if (/publication/.test(w)) return "publication";
+  return "owner";
 }
 
 export type HardStopRow = ForYouRow & { stopKind: HardStop };

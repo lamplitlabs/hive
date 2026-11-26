@@ -120,6 +120,34 @@ pub fn hard_stop_ask(kind: &str, summary: &str, body: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Why an ask is the owner's alone, as the hub marks every row of the
+/// owner's (`hard_stop`) and the lead's `decide` refuses it: a proposal a
+/// compute request names is money whatever it says; any other ask is
+/// [`hard_stop_ask`]. Empty when the project's lead decides it.
+pub fn owner_only_ask(
+    conn: &rusqlite::Connection,
+    post_id: &str,
+    kind: &str,
+    summary: &str,
+    body: &str,
+) -> String {
+    use rusqlite::OptionalExtension;
+    let compute = conn
+        .query_row(
+            "SELECT 1 FROM compute_requests WHERE proposal_post = ? LIMIT 1",
+            [post_id],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()
+        .ok()
+        .flatten()
+        .is_some();
+    if compute {
+        return "is about money: a compute request".into();
+    }
+    hard_stop_ask(kind, summary, body)
+}
+
 /// Whether `post_id` is the security watcher's finding about a major
 /// dependency upgrade: the one test the hub and the runner share, read from
 /// the `security.major` event the watcher writes with the post it told,

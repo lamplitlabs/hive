@@ -308,6 +308,10 @@ export interface Proposal extends Who {
   decided_summary: string;
   proposal_text: string;
   can_decide: boolean;
+  // Why only the owner may decide it (hive-board owner_only_ask: a
+  // compute request, money, an ADR, an owner-only path, a command it
+  // authorizes ...); empty when the lead decides it. Older hubs omit it.
+  hard_stop?: string;
   slug?: string;
   base?: string;
   kind?: string;
