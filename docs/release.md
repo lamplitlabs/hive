@@ -383,9 +383,22 @@ turns.
 The version a binary prints comes from `crates/hive/build.rs`: an exact
 release tag at HEAD gives `vX.Y.Z`; a later commit on `main` gives
 `vX.Y.(Z+1)-0.<stamp>-<rev>`, which the update check and `hive version`
-treat as newer than `vX.Y.Z` and older than the next release. Release tags
-must stay reachable from `main`: squashing `main` to a new root orphans them
-and every build falls back to `v0.0.0-...`.
+treat as newer than `vX.Y.Z` and older than the next release. The release
+`vX.Y.Z` such a build follows is the nearest release tag the checkout
+reaches or the version in `Cargo.toml`, whichever is higher. cut-release
+writes that version in the commit it tags, so a checkout without the newer
+tags still stamps its builds past the release they contain. The daemon
+fetches a project's upstream with `--no-tags`, and one checkout held no tag
+after `v0.1.6`: its build six commits past `v0.1.8` called itself
+`v0.1.7-0.<stamp>-<rev>`, and `hive update --check` offered it `v0.1.8`.
+Only a tag at HEAD makes a build read as the release itself: built at the
+release commit without that tag, it reads as `vX.Y.(Z+1)-0.<stamp>-<rev>`
+too. A tag at HEAD that is lower than the version in `Cargo.toml` is not
+the version either: it counts as one more older tag, so no build is stamped
+older than the version in `Cargo.toml`. Squashing `main` to a new root
+orphans the release tags, and the version in `Cargo.toml` alone then gives
+the base; `v0.0.0-<stamp>-<rev>` is left for a tree whose `Cargo.toml` names
+no plain `X.Y.Z` either.
 
 ### The Homebrew tap
 

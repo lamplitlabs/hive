@@ -1,8 +1,10 @@
 //! Stamps the binary with a version derived from the checkout: the exact
-//! semver tag at HEAD, else the pseudo-version
-//! `vX.Y.Z-0.yyyymmddhhmmss-<12hex>` (the patch after the latest reachable
-//! tag) or `v0.0.0-yyyymmddhhmmss-<12hex>` (no tag at all), each with
-//! `+dirty` when the tree has uncommitted changes.
+//! semver tag at HEAD (when it is not below the workspace version), else the
+//! pseudo-version `vX.Y.Z-0.yyyymmddhhmmss-<12hex>` (the patch after the
+//! latest reachable tag or after the workspace version, whichever is higher)
+//! or `v0.0.0-yyyymmddhhmmss-<12hex>` (neither is a plain version), each with
+//! `+dirty` when the tree has uncommitted changes. The decision is
+//! `version_stamp::source_version`, in a file the crate's tests compile too.
 //!
 //! The script belongs to the `hive` binary crate, the leaf of the
 //! workspace, and the text it generates reaches `hive-cli`'s `version()`
@@ -19,24 +21,15 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+#[path = "src/version_stamp.rs"]
+mod version_stamp;
+
 fn git(args: &[&str]) -> Option<String> {
     let out = Command::new("git").args(args).output().ok()?;
     if !out.status.success() {
         return None;
     }
     Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
-}
-
-fn semver(tag: &str) -> Option<(u64, u64, u64)> {
-    let rest = tag.strip_prefix('v')?;
-    let mut it = rest.split('.');
-    let major = it.next()?.parse().ok()?;
-    let minor = it.next()?.parse().ok()?;
-    let patch = it.next()?.parse().ok()?;
-    if it.next().is_some() {
-        return None;
-    }
-    Some((major, minor, patch))
 }
 
 /// Unix seconds -> yyyymmddhhmmss in UTC, the pseudo-version timestamp.
@@ -156,37 +149,26 @@ fn main() {
     let rev = git(&["rev-parse", "HEAD"]).unwrap_or_default();
     let short = rev.chars().take(12).collect::<String>();
     let dirty = git(&["status", "--porcelain"]).is_some_and(|s| !s.is_empty());
-    let suffix = if dirty { "+dirty" } else { "" };
     let mut version = "dev".to_string();
     if short.len() == 12 {
-        let exact = git(&["tag", "--points-at", "HEAD"])
-            .unwrap_or_default()
-            .lines()
-            .filter(|t| semver(t).is_some())
-            .max_by_key(|t| semver(t))
-            .map(str::to_string);
         let secs = git(&["log", "-1", "--format=%ct", "HEAD"])
             .and_then(|s| s.parse::<i64>().ok())
             .unwrap_or(0);
-        version = match exact {
-            Some(tag) => format!("{tag}{suffix}"),
-            None => {
-                let base = git(&[
-                    "describe",
-                    "--tags",
-                    "--abbrev=0",
-                    "--match",
-                    "v[0-9]*.[0-9]*.[0-9]*",
-                ])
-                .and_then(|t| semver(&t));
-                match base {
-                    Some((ma, mi, pa)) => {
-                        format!("v{ma}.{mi}.{}-0.{}-{short}{suffix}", pa + 1, stamp(secs))
-                    }
-                    None => format!("v0.0.0-{}-{short}{suffix}", stamp(secs)),
-                }
-            }
-        };
+        version = version_stamp::source_version(
+            &git(&["tag", "--points-at", "HEAD"]).unwrap_or_default(),
+            &git(&[
+                "describe",
+                "--tags",
+                "--abbrev=0",
+                "--match",
+                "v[0-9]*.[0-9]*.[0-9]*",
+            ])
+            .unwrap_or_default(),
+            &std::env::var("CARGO_PKG_VERSION").unwrap_or_default(),
+            &stamp(secs),
+            &short,
+            dirty,
+        );
     }
     write_build_info(&version, &rev, Some(dirty));
 }
