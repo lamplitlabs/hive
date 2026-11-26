@@ -144,23 +144,55 @@ pub(crate) fn yield_lanes_if_admitted(
             continue;
         }
         let lanes = crate::jobs::project_lanes(s, &slug).lanes.max(1);
+        // The lanes are a machine's (jobs::occupied_on_sql): the runs in
+        // the way are those of a machine whose lanes or share are full, so a
+        // run on a paired or rented machine is not asked to hold for a lane
+        // that is open here (TASK-144).
         let occupied = must_rows(
             &conn,
             &format!(
-                "SELECT k.id, k.kind, k.source FROM jobs k WHERE k.project = ? AND {}",
+                "SELECT k.id, k.kind, k.source, {} AS machine FROM jobs k WHERE k.project = ? AND {}",
+                crate::jobs::job_machine_sql("k"),
                 crate::jobs::OCCUPIED_JOB_SQL
             ),
             &[&slug],
         );
         let is_work = |k: &Row| crate::jobs::WORK_KINDS.contains(&k.str("kind").as_str());
-        let work_held = occupied.iter().filter(|k| is_work(k)).count() as i32;
-        let in_the_way: Vec<Row> = if work_held >= lanes {
-            occupied.into_iter().filter(|k| is_work(k)).collect()
-        } else if occupied.len() as i32 >= limit {
-            occupied
-        } else {
-            continue;
+        let machine_of = |k: &Row| {
+            let m = k.str("machine");
+            if m.is_empty() {
+                crate::executor::LOCAL_EXECUTOR.to_string()
+            } else {
+                m
+            }
         };
+        let mut by_machine: std::collections::BTreeMap<String, Vec<Row>> =
+            std::collections::BTreeMap::new();
+        for k in occupied {
+            by_machine.entry(machine_of(&k)).or_default().push(k);
+        }
+        // A lane open here, on a machine that would admit the owner's job,
+        // starts it without stopping anyone.
+        let local = crate::executor::LOCAL_EXECUTOR;
+        let here = by_machine.get(local).map(Vec::as_slice).unwrap_or(&[]);
+        if admission.refusal(local).is_none()
+            && (here.iter().filter(|k| is_work(k)).count() as i32) < lanes
+            && (here.len() as i32) < limit
+        {
+            continue;
+        }
+        let mut in_the_way: Vec<Row> = Vec::new();
+        for (_, rows) in by_machine {
+            let work_held = rows.iter().filter(|k| is_work(k)).count() as i32;
+            if work_held >= lanes {
+                in_the_way.extend(rows.into_iter().filter(|k| is_work(k)));
+            } else if rows.len() as i32 >= limit {
+                in_the_way.extend(rows);
+            }
+        }
+        if in_the_way.is_empty() {
+            continue;
+        }
         let mut fleet = in_the_way
             .into_iter()
             .filter(|k| !crate::jobs::is_owner_driven(k))
@@ -413,6 +445,33 @@ mod tests {
         assert_eq!(pass.asked.len(), 1, "{pass:?}");
         assert!(pass.asked[0].contains(&task), "{pass:?}");
         assert!(yielded(&s, &fleet, &run));
+    }
+
+    #[test]
+    fn a_fleet_run_on_another_machine_is_not_asked_to_hold_for_a_lane_open_here() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        one_lane(&s);
+        join(&s, "aurora");
+        let fleet = queue(&s, "improve", "suggestion:abc");
+        assert_eq!(lease(&s, "aurora", Vec::new()).str("id"), fleet);
+        let run = running(&s, &fleet, "aurora", "2026-09-01T01:00:00Z");
+        s.conn()
+            .unwrap()
+            .execute("UPDATE runs SET executor = 'hands-1' WHERE id = ?", [&run])
+            .unwrap();
+        queue(&s, "task", "task:TASK-001");
+        // The run holds the rented machine's lane, not this one's: the
+        // owner's task starts here without stopping it (TASK-144).
+        let pass = yield_lanes_if_admitted(
+            &s,
+            crate::test_helpers::TEST_NOW,
+            "daemon",
+            &OwnerAdmission::default(),
+        );
+        assert!(pass.asked.is_empty(), "{pass:?}");
+        assert!(!hold_requested(&s, &fleet));
     }
 
     #[test]

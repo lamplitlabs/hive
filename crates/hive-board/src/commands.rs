@@ -38,7 +38,7 @@ pub fn register_commands() {
         cli_register(Command { name:"vote".into(), group:"agents".into(), summary:"shortcut: vote up or down on a suggestion or amendment".into(), usage:"hive vote POST_ID up|down --summary REASON [--body TEXT | --body-file F | < stdin] [--text-hash H]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_vote, flags:Some(vote_flags) });
         cli_register(Command { name:"thread".into(), group:"agents".into(), summary:"list, show, or resolve board threads".into(), usage:"hive thread list --project SLUG [--status open|stale|closed] [--area A] [--json]\n       hive thread show AREA/THREAD --project SLUG [--bodies]\n       hive thread resolve AREA/THREAD --project SLUG --as RESOLUTION --summary TEXT [--body TEXT|--body-file PATH]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_thread, flags:Some(thread_flags) });
         cli_register(Command { name:"decide".into(), group:"human".into(), summary:"the human records yes or no on a proposal (a yes queues one job, WU-022)".into(), usage:"hive decide POST_ID yes|no [--words '...']".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_decide, flags:Some(decide_flags) });
-        cli_register(Command { name:"job".into(), group:"runner".into(), summary:"add, finish, or retry a job by hand".into(), usage:"hive job add --title T [--kind K] [--brief B] [--tier 0|1] [--priority N] [--source S] [--run-as AGENT] [--needs WORDS] [--project SLUG]\n       hive job finish JOB_ID done|failed|cancelled|blocked|queued [--result TEXT] [--branch B]\n       hive job retry JOB_ID [--as-new] [--brief TEXT] [--result TEXT]\n       hive job needs JOB_ID WORDS|-".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_job, flags:Some(job_flags) });
+        cli_register(Command { name:"job".into(), group:"runner".into(), summary:"add, finish, retry, or stop a job by hand".into(), usage:"hive job add --title T [--kind K] [--brief B] [--tier 0|1] [--priority N] [--source S] [--run-as AGENT] [--needs WORDS] [--project SLUG]\n       hive job finish JOB_ID done|failed|cancelled|blocked|queued [--result TEXT] [--branch B]\n       hive job retry JOB_ID [--as-new] [--brief TEXT] [--result TEXT]\n       hive job needs JOB_ID WORDS|-\n       hive job stop JOB_ID [--requeue]        (stops its run wherever it runs; --requeue puts the job back in the queue)".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_job, flags:Some(job_flags) });
         cli_register(Command { name:"init".into(), group:"human".into(), summary:"register a checkout as a project, queue its onboarding job, import its environment recipe".into(), usage:"hive init [PATH] [--name N] [--remote URL] [--verify CMD] [--needs WORDS] [--brain] | hive init --store-only".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_init, flags:Some(init_flags) });
         cli_register(Command { name:"move".into(), group:"human".into(), summary:"point a project at the checkout it now lives in (a folder moved or cloned again); the slug and its history stay".into(), usage:"hive move SLUG PATH [--force]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_move, flags:Some(move_flags) });
         cli_register(Command { name:"export".into(), group:"records".into(), summary:"copy the store to a .sql or .sqlite file outside every project".into(), usage:"hive export --sql PATH | --db PATH [--force]".into(), aliases:vec![], no_store:false, read_only:false, raw:false, run:run_export, flags:Some(export_flags) });
@@ -179,6 +179,11 @@ fn job_flags(fs: &mut FlagSet) {
         "as-new",
         false,
         "retry by queuing one corrected copy (retry)",
+    );
+    fs.bool_var(
+        "requeue",
+        false,
+        "put the stopped job back in the queue instead of cancelling it (stop)",
     );
 }
 fn init_flags(fs: &mut FlagSet) {
@@ -971,16 +976,46 @@ fn run_job(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
                 writeln!(c.out, "{} needs {}", j.id, j.needs)?;
             }
         }
+        Some("stop") => {
+            if args.len() != 2 {
+                return Err(usage("job", "stop JOB_ID [--requeue]"));
+            }
+            let agent = resolve_agent(s, &c.agent, false)?;
+            let name = agent
+                .as_ref()
+                .map(|a| a.name.as_str())
+                .unwrap_or(hive_store::HUMAN_AGENT);
+            let r = stop_job(s, &args[1], fs.get_bool("requeue"), name)?;
+            if c.json {
+                write_json(&mut c.out, &r)?
+            } else {
+                let machine = if r.executor.is_empty() {
+                    LOCAL_EXECUTOR.to_string()
+                } else {
+                    r.executor.clone()
+                };
+                let then = if r.requeue {
+                    "the job goes back to the queue"
+                } else {
+                    "the job ends cancelled"
+                };
+                writeln!(
+                    c.out,
+                    "stopping run {} of {} on {machine}; {then} once the run has stopped (within a few seconds)",
+                    r.run, r.job
+                )?;
+            }
+        }
         Some(other) => {
             return Err(usage(
                 "job",
                 &format!(
-                    "unknown action {}; add, finish, retry or needs",
+                    "unknown action {}; add, finish, retry, needs or stop",
                     py_repr(other)
                 ),
             ));
         }
-        None => return Err(usage("job", "add, finish, retry or needs")),
+        None => return Err(usage("job", "add, finish, retry, needs or stop")),
     }
     Ok(())
 }

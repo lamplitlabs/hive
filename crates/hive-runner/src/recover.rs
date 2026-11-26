@@ -4499,6 +4499,98 @@ mod tests {
         *crate::tmpspace::FREE_SPACE.write().expect("free space") = old_space;
     }
 
+    /// `hive job stop` on a run with no harness session here (a run on a
+    /// paired or rented machine mirrors none): before TASK-144 nothing could
+    /// stop it but a restart of the daemon.
+    fn stopped_run(requeue: bool) -> (Row, Row) {
+        let _serial = crate::test_helpers::serial();
+        let _guard = hive_testutil::env_lock();
+        let old_space = use_ample_tmp_space();
+        let s = new_store();
+        new_bare_repo(&s);
+        join(&s, "aurora");
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "t".into(),
+            "do it".into(),
+            1,
+            0,
+            "test".into(),
+            hive_store::HUMAN_AGENT.into(),
+            false,
+        )
+        .expect("add job");
+        let id = job.str("id");
+        let stopper = {
+            let s = (*s).clone();
+            let id = id.clone();
+            std::thread::spawn(move || {
+                let start = SystemTime::now();
+                loop {
+                    match hive_board::stop_job(&s, &id, requeue, hive_store::HUMAN_AGENT) {
+                        Ok(r) => return r,
+                        Err(_) => {
+                            assert!(
+                                start.elapsed().unwrap_or_default() < Duration::from_secs(60),
+                                "the run never started"
+                            );
+                            std::thread::sleep(Duration::from_millis(50));
+                        }
+                    }
+                }
+            })
+        };
+        let (r, reason) = crate::run::work_once(
+            &s,
+            "aurora",
+            "",
+            "",
+            TEST_NOW,
+            crate::run::RunOpts {
+                worker_cmd: "sh -c 'sleep 120'".into(),
+                ..Default::default()
+            },
+        )
+        .expect("work");
+        let stop = stopper.join().expect("stopper");
+        assert_eq!(stop.job, id);
+        assert!(!r.0.is_empty(), "work returned no run: {reason}");
+        assert_eq!(stop.run, r.str("id"));
+        let j = crate::jobs::job_row(&conn(&s), id);
+        *crate::tmpspace::FREE_SPACE.write().expect("free space") = old_space;
+        (r, j)
+    }
+
+    #[test]
+    fn job_stop_cancels_a_run_without_a_harness_session() {
+        let (r, j) = stopped_run(false);
+        assert_eq!(r.str("status"), "failed", "run = {r:?}");
+        assert!(
+            r.str("summary").starts_with("cancelled by the owner"),
+            "run = {r:?}"
+        );
+        assert_eq!(j.str("status"), "failed", "job = {j:?}");
+        assert!(
+            j.str("result").starts_with("cancelled by the owner"),
+            "job = {j:?}"
+        );
+    }
+
+    #[test]
+    fn job_stop_requeue_puts_the_job_back_without_spending_an_attempt() {
+        let (r, j) = stopped_run(true);
+        assert_ne!(r.str("status"), "done", "run = {r:?}");
+        assert_eq!(j.str("status"), "queued", "job = {j:?}");
+        assert_eq!(j.int("attempts"), 0, "job = {j:?}");
+        assert_eq!(
+            j.str("result"),
+            crate::run::OWNER_REQUEUE_SUMMARY,
+            "job = {j:?}"
+        );
+    }
+
     #[test]
     fn run_harness_cancel_watcher_cancels_context() {
         let _serial = crate::test_helpers::serial();
