@@ -10,7 +10,7 @@ test("four groups in the spec's order: no label, Knowledge, Projects is rendered
   );
   assert.deepEqual(
     NAV_GROUPS[0].items.map((i) => i.label),
-    ["Home", "For you", "Sessions", "Tasks"],
+    ["Sessions", "Tasks"],
   );
   assert.deepEqual(
     NAV_GROUPS[1].items.map((i) => i.label),
@@ -32,17 +32,17 @@ test("every href is unique, trailing-slashed (static export) and every item has 
   }
 });
 
-test("the four G-shortcuts map to the hrefs lib/shortcuts.ts navigates to", () => {
+test("the G-shortcuts map to the hrefs lib/shortcuts.ts navigates to", () => {
   const byKey = Object.fromEntries(NAV_ITEMS.filter((i) => i.shortcut).map((i) => [i.shortcut.toLowerCase(), i.href]));
   assert.deepEqual(byKey, GO);
-  assert.equal(shortcutWords(NAV_ITEMS[0]), "G then H");
+  assert.equal(shortcutWords(NAV_ITEMS[0]), "G then S");
   assert.equal(shortcutWords({ shortcut: undefined }), null);
 });
 
 test("each item matches its own route and nothing else's", () => {
   for (const i of NAV_ITEMS) {
     assert.ok(i.match(i.href), i.label + " matches its own href");
-    assert.ok(i.match(i.href.replace(/\/$/, "") || "/"), i.label + " matches without the slash");
+    assert.ok(i.match(i.href.replace(/\/$/, "")), i.label + " matches without the slash");
     for (const other of NAV_ITEMS) {
       if (other === i) continue;
       assert.ok(!other.match(i.href), other.label + " does not match " + i.href);
@@ -54,11 +54,12 @@ test("each item matches its own route and nothing else's", () => {
   assert.equal(activeItem("/reports/?project=demo-app")?.label, "Reports");
   assert.equal(activeItem("/settings/")?.label, "Settings");
   assert.equal(activeItem("/project/"), undefined, "a project page lights no item");
-  assert.equal(activeItem("/")?.label, "Home");
+  assert.equal(activeItem("/")?.label, "Sessions", "the console opens on Sessions");
+  assert.equal(activeItem("/for-you/"), undefined, "For you is gone");
 });
 
 test("the phone bar takes the first group and More the rest", () => {
-  assert.deepEqual(PRIMARY_ITEMS.map((i) => i.label), ["Home", "For you", "Sessions", "Tasks"]);
+  assert.deepEqual(PRIMARY_ITEMS.map((i) => i.label), ["Sessions", "Tasks"]);
   assert.deepEqual(MORE_GROUPS.map((g) => g.label), ["Knowledge", "System"]);
 });
 

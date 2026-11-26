@@ -56,7 +56,7 @@ test("everything the For-you count counts is something that waits", () => {
   assert.equal(items[3].title, "Self-improvement stopped: your review");
   assert.equal(items[4].body, "New evaluators for demo, drafted by iris");
   assert.equal(items[5].id, "step:held_out:demo,other");
-  assert.equal(items[5].href, "/#for-you", "a step shared by projects opens the home For you");
+  assert.equal(items[5].href, "/chat/#hard-stops", "a step shared by projects opens the strip on Sessions");
   assert.equal(items[6].body, "quartz asks for Standard_D4s_v5 for 2 h: bench");
   assert.equal(items[6].href, "/compute/");
   assert.equal(items[7].href, "/project/?slug=demo&tab=for-you");
@@ -173,7 +173,7 @@ test("more than a few at once become one summary", () => {
 
   const mixed = look({ ...ALL, questions: qs.slice(0, 2), chat: { conversations: [conv("c", { turns: 2 }), conv("d", { turns: 2 })], tasks: [] } }, primed);
   assert.equal(mixed.notices[0].title, "4 updates from Hive");
-  assert.equal(mixed.notices[0].href, "/");
+  assert.equal(mixed.notices[0].href, "/chat/");
   const chats = look({ ...ALL, chat: { conversations: ["a", "b", "c", "d"].map((id) => conv(id, { turns: 2 })), tasks: [] } }, primed);
   assert.equal(chats.notices[0].title, "4 things finished");
   assert.equal(chats.notices[0].href, "/chat/");

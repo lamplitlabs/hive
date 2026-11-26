@@ -5,8 +5,6 @@
 // Machines is compute).
 
 export type NavIcon =
-  | "home"
-  | "inbox"
   | "sessions"
   | "tasks"
   | "records"
@@ -25,7 +23,7 @@ export type NavItem = {
   label: string;
   hint: string;
   icon: NavIcon;
-  /** The G-chord's second key ("H" for G then H), for the four pages that have one. */
+  /** The G-chord's second key ("S" for G then S), for the pages that have one. */
   shortcut?: string;
   match: (pathname: string) => boolean;
 };
@@ -38,9 +36,8 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     label: null,
     items: [
-      { href: "/", label: "Home", hint: "What needs you, what is running, whether anything is broken", icon: "home", shortcut: "H", match: (p) => p === "/" || p === "" },
-      { href: "/for-you/", label: "For you", hint: "Everything that waits on your answer, across projects", icon: "inbox", shortcut: "F", match: under("/for-you") },
-      { href: "/chat/", label: "Sessions", hint: "Ask an agent to work, watch it, answer its questions", icon: "sessions", shortcut: "S", match: under("/chat") },
+      // The console opens on Sessions ("/" forwards there; TASK-129 removed Home and For you).
+      { href: "/chat/", label: "Sessions", hint: "Ask an agent to work, watch it, answer what only you can decide", icon: "sessions", shortcut: "S", match: (p) => p === "/" || p === "" || under("/chat")(p) },
       { href: "/tasks/", label: "Tasks", hint: "The work you gave your agents", icon: "tasks", shortcut: "T", match: under("/tasks") },
     ],
   },
@@ -71,7 +68,7 @@ export const SETTINGS_ITEM: NavItem = { href: "/settings/", label: "Settings", h
 
 export const NAV_ITEMS: NavItem[] = NAV_GROUPS.flatMap((g) => g.items);
 
-// The first group's four pages make the phone's bottom bar; the rest go under More.
+// The first group's pages make the phone's bottom bar; the rest go under More.
 export const PRIMARY_ITEMS: NavItem[] = NAV_GROUPS[0].items;
 export const MORE_GROUPS: NavGroup[] = NAV_GROUPS.slice(1);
 

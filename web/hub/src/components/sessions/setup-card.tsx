@@ -13,10 +13,11 @@ import type { HarnessStatus, ServicePayload } from "@/lib/api";
 import { hrefs } from "@/lib/nav";
 import { cn } from "@/lib/utils";
 import { FixButton } from "./attention-strip";
-import { runningFix, setupSteps, type AttentionDaemon, type SetupSnapshot } from "./home-state";
+import { runningFix, setupSteps, type AttentionDaemon, type SetupSnapshot } from "./sessions-state";
 
-// Home before Hive can work (spec "Home" - Other states, first run: no model
-// provider or no project): a three-step setup card in place of "Needs you".
+// Sessions before Hive can work (first run: no model provider or no
+// project): a three-step setup card above the new-session box (it sat on
+// Home until TASK-129).
 // Each step is a row with a tick once it is done and, until then, the button
 // that opens its wizard - the same Connect a provider wizard Settings uses,
 // the Add project dialog, and the runner's service dialog. Done steps stay
@@ -28,9 +29,9 @@ export function SetupCard({ snapshot, harness, service, daemon }: { snapshot: Se
   const steps = setupSteps(snapshot);
   const done = steps.filter((s) => s.done).length;
   return (
-    <section aria-labelledby="home-setup" className="min-w-0">
+    <section aria-labelledby="sessions-setup" className="min-w-0">
       <SectionHeading
-        id="home-setup"
+        id="sessions-setup"
         icon={RocketIcon}
         note={done + " of " + steps.length + " done"}
         action={

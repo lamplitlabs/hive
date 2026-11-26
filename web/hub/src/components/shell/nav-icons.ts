@@ -7,8 +7,6 @@ import {
   ClipboardCheckIcon,
   CalendarClockIcon,
   ChartLineIcon,
-  HomeIcon,
-  InboxIcon,
   ListTodoIcon,
   type LucideIcon,
   MessageSquareIcon,
@@ -21,8 +19,6 @@ import {
 import type { NavIcon } from "./nav-items";
 
 export const NAV_ICON: Record<NavIcon, LucideIcon> = {
-  home: HomeIcon,
-  inbox: InboxIcon,
   sessions: MessageSquareIcon,
   tasks: ListTodoIcon,
   records: BookOpenIcon,

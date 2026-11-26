@@ -351,8 +351,9 @@ through removing Hive in order.
 
 ## Something is stuck. Where do I look?
 
-The **For you** page shows what waits for your answer, and Home shows the
-first five under **Needs you**. Home also shows a notice while no runner
+**Sessions**, where the console opens, shows the decisions only you can
+make, and each project's **For you** tab shows everything that waits for
+your answer there. Sessions also shows a notice while no runner
 runs, with the button **Start runner**: until the runner runs, a task waits
 in the queue. `hive status` shows the runner, the queue and what holds each
 project's work. For failed jobs, a project's Overview links **Jobs that

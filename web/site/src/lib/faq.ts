@@ -46,7 +46,7 @@ export const FAQS: readonly FaqEntry[] = [
   },
   {
     q: "How do I stay in charge of what the agents do?",
-    a: "Hard stops, money, big changes and questions marked for you wait for your answer on the For you page, and Home shows the first five under Needs you. One question does not wait for ever: when the loop pauses because its fixtures tell nothing apart and a day passes with no answer, it answers that question itself. Each step must pass the project's own check, and code reaches you as pull requests that a review agent merges or hands to you. The constitution is yours: it holds the hard stops and the paths the loop may never touch, and `hive stop` halts the runner. These are rules the agents are held to, not a sandbox: a job runs as your user, and the event log records who changed what.",
+    a: "Hard stops - money, what cannot be undone, credentials, publication - wait for your answer on Sessions, where the console opens, and every question marked for you waits on its project's For you tab. One question does not wait for ever: when the loop pauses because its fixtures tell nothing apart and a day passes with no answer, it answers that question itself. Each step must pass the project's own check, and code reaches you as pull requests that a review agent merges or hands to you. The constitution is yours: it holds the hard stops and the paths the loop may never touch, and `hive stop` halts the runner. These are rules the agents are held to, not a sandbox: a job runs as your user, and the event log records who changed what.",
   },
 ];
 

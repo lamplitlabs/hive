@@ -93,7 +93,9 @@ function qs(params: Record<string, string | undefined>): string {
 
 // The same paths src/lib/nav.ts builds (hrefs.project/.record/.task/.conversations).
 export const notifyHref = {
-  forYou: (slug: string) => (slug ? "/project/" + qs({ slug, tab: "for-you" }) : "/#for-you"),
+  // A project's ask opens its For you tab; one shared by projects opens the
+  // hard-stop strip on Sessions (the For you page went with TASK-129).
+  forYou: (slug: string) => (slug ? "/project/" + qs({ slug, tab: "for-you" }) : "/chat/#hard-stops"),
   record: (id: string, project?: string) => "/records/" + qs({ id, project }),
   compute: () => "/compute/",
   task: (id: string) => "/chat/" + qs({ task: id }),
@@ -288,7 +290,7 @@ export function summaryNotice(items: NotifyItem[]): Notice {
   const title = waits === n ? n + " things wait for you" : waits === 0 ? n + " things finished" : n + " updates from Hive";
   const hrefs = new Set(items.map((it) => it.href));
   const allChat = items.every((it) => it.source === "chat");
-  const href = hrefs.size === 1 ? items[0].href : allChat ? "/chat/" : waits === n ? "/#for-you" : "/";
+  const href = hrefs.size === 1 ? items[0].href : allChat ? "/chat/" : waits === n ? "/chat/#hard-stops" : "/chat/";
   const named = items.slice(0, MAX_AT_ONCE).map((it) => it.title);
   const body = named.join("; ") + (n > named.length ? "; and " + (n - named.length) + " more" : "");
   return { tag: "summary:" + items[0].id, title, body, href, count: n };

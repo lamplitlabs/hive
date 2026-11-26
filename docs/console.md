@@ -8,8 +8,8 @@ front you run yourself, with passkey-signed writes (see
 such as `/tasks`, redirect to their exported path (`/tasks/`) without
 losing query parameters.
 
-The sidebar lists the pages: **Home**, **For you**, **Sessions** and
-**Tasks**; under **Knowledge**, **Records**, **Reports**, **Votes** and
+The console opens on **Sessions**: `/` forwards there. The sidebar lists the
+pages: **Sessions** and **Tasks**; under **Knowledge**, **Records**, **Reports**, **Votes** and
 **Memory**; under **System**, **Runs**, **Machines**, **Connections**,
 **Automations** and **Insights**; and **Settings** in the owner's row. Three
 of them have no section of their own below. **Memory** shows the files that
@@ -17,7 +17,9 @@ hold what agents remember across runs ([Memory](harness.md#memory)).
 **Connections** holds the tools and skills agents can use
 ([`hive mcp`](board.md#connecting-the-outside-world-hive-mcp),
 [`hive skill`](board.md#shared-skills-hive-skill)). **Insights** is described
-under [Home](#home).
+under [Insights](#insights). There is no Home page and no For you page any
+more (TASK-129): what they held that still needs a person sits on Sessions,
+described under [What Sessions shows first](#what-sessions-shows-first).
 
 ## Starting the console
 
@@ -37,7 +39,7 @@ project).
 On a Mac the same console also comes in a window of its own: see
 [The Mac app](mac-app.md#the-mac-app).
 
-Everything else happens in the console. On a new machine Home shows the card
+Everything else happens in the console. On a new machine Sessions shows the card
 **Set up Hive** with three steps, in this order:
 
 1. **Connect a model provider.** The step opens the provider wizard, the
@@ -68,7 +70,7 @@ Everything else happens in the console. On a new machine Home shows the card
    the runner without installing anything.
 
 The card goes away once a provider is signed in and a project is added.
-After that Home shows a notice with the same step behind its button:
+After that Sessions shows a notice with the same step behind its button:
 **Start runner** while no runner runs, **Keep Hive running** while one runs
 in a terminal only. The sidebar's foot shows the runner's state. This
 machine's card on the **Machines** page has **Pause** and, after a pause,
@@ -76,27 +78,58 @@ machine's card on the **Machines** page has **Pause** and, after a pause,
 The runner's controls are at the top of that section: **Keep Hive running**,
 **Start the runner**, **Finish service setup** or **Resume**, whichever
 fits. The sidebar's runner line, **Start** on Machines for a runner that is
-not running, and **Fix it** on For you all lead there.
+not running, and **Start runner** on Sessions all lead there.
 
 A fresh copy carries the framework's records inside the binary, so nothing
 has to be imported first (see [Share Hive](development.md#share-hive)). How
 the services, self-update, restart drain and stall detection work is
 described under [Services and self-update](runner.md#services-and-self-update).
 
-## Home
+## What Sessions shows first
 
 The console speaks plainly - the runner, not the daemon; machines, not
 executors; private tests, not held-out fixtures - and keeps ids, commands and
-the store's own terms in tooltips and folded **Technical details**. The Home
-page shows a notice when something is wrong (the runner is off, paused or not
-responding, the model sign-in has expired, part of the page did not load),
-then **Needs you** (the first five things that wait for the owner; **See
-all** opens the **For you** page), **Working now** (the agents at work, six
-at most; **See all runs** opens **Runs**), **Projects** and **This week**
-(changes landed, tasks done and the times the fleet asked you, over the last
-seven days; **See insights** opens **Insights**). On a new machine the
-**Set up Hive** card stands where **Needs you** would
-([Starting the console](#starting-the-console)).
+the store's own terms in tooltips and folded **Technical details**.
+
+Above the session list, Sessions shows only what needs a person now, and
+nothing when nothing does:
+
+- **The broken strip**: one line for each thing that stops work - the runner
+  is off, paused or not responding, or no model provider is signed in (a
+  sign-in that expired, a login that was never made) - each with the button
+  that fixes it (**Start runner**, **Sign in**).
+- **Set up Hive**, on a new machine only: the three-step card of
+  [Starting the console](#starting-the-console).
+- **Decisions only you can make**: the asks at a hard stop - money, what
+  cannot be undone, credentials and publication - across projects, each with
+  its buttons (**Approve**/**Deny** for a compute request, **Accept** and
+  **Decline** for a decision record or a proposal, **Yes** and **No** or a box
+  for a question; `hive decide <post> yes|no --words '...'` from the terminal).
+  A decision record opens in a side panel with its three answers: accept,
+  defer or decline with your own words - the same `hive record accept` the
+  terminal runs, recorded as `human` with the words in the record's history.
+  The sidebar's **Sessions** item and the bell count these asks, and a
+  notification for one opens the strip (`/chat/#hard-stops`).
+  Everything else that once waited on For you is the project lead's to
+  decide, and it is listed on the project's **For you** tab.
+
+**Working now** sits under the new-session form: the agents at work, six at
+most, each with its task and project; **See all runs** opens **Runs**.
+
+Where the rest of the old Home and For you went: the greeting and its
+**New task** / **New session** buttons are the sidebar's **New**; **Needs you**
+and the For you page's filters became the strip above (hard stops only) and
+each project's **For you** tab (everything else); **Projects** is the sidebar's
+project list with its waiting counts; **This week**'s numbers are on
+**Insights**; the *Runs on a generated goal* nudge is the **Goal** panel on
+the project's **Overview**. A task whose lead stopped for you is on **Tasks**
+under **Asked you**, and a pull request handed to you on **Sessions** under
+**Needs your review**. [Notifications](#notifications) can tell you, with a
+sound, the moment a new ask arrives.
+
+![Sessions with the broken strip, the hard-stop asks and the session list](how-to/images/console-home.webp)
+
+## Insights
 
 The **Insights** page has **Over time**: what the fleet got done and
 what it spent, per day - landings, jobs done, tasks done and agent runs,
@@ -117,29 +150,16 @@ day from the harness sessions (the **Runs** page), the jobs table, the
 `security.alerts` events and the board's `finding` and `for_owner` posts;
 `days` is 1..90 (default 30).
 
-### For you
+### A project's For you tab
 
-**For you** is a page of its own in the sidebar, and Home shows its first
-five items under **Needs you**. It holds what waits on the owner's yes, no or
-answer, across projects (a task whose lead stopped for you is on **Tasks**
-under **Asked you**, and a pull request handed to you on **Sessions** under
-**Needs your review**): proposed decisions (ADRs) to accept, defer or
-decline with your own words - the same `hive record accept` the terminal
-runs, recorded as `human` with the words in the record's history - plus
-board proposals, compute requests and the questions only you can answer:
-posts an agent marked `--for-owner` and the evolution loop's "Evolution
-stopped; owner review needed" stops. A yes-or-no question shows **Yes** and
-**No**, and an open one shows a box for your answer
-(`hive decide <post> yes|no --words '...'` from the terminal). Among the
-questions the stops come first; a decision
-clears the planner's failed-gate and owner-review stops on the daemon's next
-tick, and a yes clears an instruction-shaped stop too. The same cards sit on
-the project's **For you** tab, and the **Self-improvement** tab puts the
+Each project's **For you** tab holds every ask of that project, hard stop or
+not: proposed decisions (ADRs), board proposals, compute requests and the
+questions only the owner answers - posts an agent marked `--for-owner` and
+the evolution loop's "Evolution stopped; owner review needed" stops. Among
+the questions the stops come first; a decision clears the planner's
+failed-gate and owner-review stops on the daemon's next tick, and a yes
+clears an instruction-shaped stop too. The **Self-improvement** tab puts the
 buttons next to the planning reason when the loop waits on one.
-[Notifications](#notifications) can tell you, with a sound, the moment a
-new one arrives.
-
-![The For you page: questions, decisions, proposals, compute requests and suggested work, each with its buttons](how-to/images/console-for-you.webp)
 
 The two private held-out fixtures that open a project's self-improvement loop
 need no step of yours: the daemon writes them itself, sealed (one model call
@@ -181,11 +201,9 @@ whether it is still the seeded text), enabled fixtures, baseline (measured by
 the daemon, "measuring" while its job runs), the level the loop may reach - and
 the project page lists its fixtures. **Goal**, on a project's **Overview**,
 gives every agent the same direction. **Edit** sets your outcome; without
-one, Hive supplies a project-derived default. Until you set one,
-Home's **Projects** list says so on that project's row - *Runs on a
-generated goal* - with **Set goal**, a link straight to that panel, since
-the lead plans, votes and researches toward whatever goal is there; the row
-says so only while nothing waits for you there and nothing is wrong.
+one, Hive supplies a project-derived default, and the panel says the goal
+is generated, since the lead plans, votes and researches toward whatever
+goal is there.
 `hive goal set --project my-app --text '...'` sets it from a terminal.
 
 ## Tasks
@@ -295,7 +313,7 @@ own doing, not the lead's: the project's lead sitting (`lead_work` on `GET
 /api/v1/tasks/<id>` and `GET /api/v1/messages?project=`) and the message's read
 marks are what it reads. An answer under your message replaces the line.
 
-Opening a task - from the Tasks page, the palette, Home, an agent's, run's or
+Opening a task - from the Tasks page, the palette, an agent's, run's or
 delivery's task link, or the board chat - opens its conversation on the
 Sessions page (see [Sessions](#sessions) below), and that conversation is the
 whole story of the
@@ -334,7 +352,7 @@ carries the daemon's verdict on the runs its push set off - `watching`,
 The agents propose the next task; another agent judges it before it reaches
 you. The Work tab's **Suggested next** panel lists each suggestion with who
 made it and where its review stands; a verdict the reviewer would not make for
-you (*Your call*) joins **For you** with Accept and Decline, Accept making the
+you (*Your call*) joins the project's **For you** tab with Accept and Decline, Accept making the
 task on the spot. You can suggest work yourself from the same panel - an agent
 reviews it the same way - and withdraw a suggestion of yours while it waits.
 See [Suggested work](board.md#suggested-work-hive-task-suggest).
@@ -915,7 +933,7 @@ for the model.
 **Settings → Notifications** (`/settings/#notify`) has three switches, all
 off until you turn them on:
 
-- **When something waits for you**: every item **For you** counts (a
+- **When something waits for you**: every ask the project **For you** tabs count (a
   proposed decision, a proposal, a question only you can answer or a
   loop stop, a compute request, suggested work the agents could not settle,
   a drafted constitution or evaluators, a gate step), a task whose lead waits
@@ -1110,8 +1128,7 @@ title, summary, status and checks of its `report.json`.
 ## What just happened
 
 The live event feed (server-sent events over the store's event log) is on a
-project's **History → Timeline**, under **Everything that happened**; Home
-has no such feed. The project's **Board** tab lists every thread with its
+project's **History → Timeline**, under **Everything that happened**. The project's **Board** tab lists every thread with its
 status, participants, last activity and the questions and claims still open.
 
 ## Ask
@@ -1139,7 +1156,7 @@ would answer and whether the provider is signed in.
 
 ## Agents
 
-The console has no Agents page. Home's **Working now** lists the agents at
+The console has no Agents page. **Working now** on Sessions lists the agents at
 work, a project's **Team & tools** tab shows its lead agents, and **Runs**
 lists every run with the agent that made it. The roster itself is in a
 terminal: `hive agents` lists each agent with its presence, its last

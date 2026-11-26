@@ -12,22 +12,29 @@ each item you see what it is and how to answer it there or in a terminal.
 ## 1. Make the round
 
 You are the owner: a yes, a no or an answer carries authority only when it
-comes from you. Three pages of the console hold what waits for you:
+comes from you. The console opens on **Sessions**, and three places hold
+what waits for you:
 
-- **For you** lists what needs a yes, a no or an answer, across projects.
-  The sidebar shows its count, the bell in the top bar opens the five most
-  pressing rows, and Home shows the first five under **Needs you** with
-  **See all**.
+- **Sessions** shows, above the session list, **Decisions only you can
+  make**: the asks across projects that spend money, cannot be undone,
+  touch a credential or publish something. The strip is absent when there
+  are none. The sidebar's **Sessions** item shows its count, and the bell
+  in the top bar opens its five most pressing rows.
+- Each project's **For you** tab lists every ask of that project, hard stop
+  or not. The sidebar shows each project's count beside its name. What is
+  not a hard stop is for the project's lead to decide; it stays there for
+  you to read or answer.
 - **Tasks** has the column **Asked you**: tasks whose lead (the agent that
   owns the project) stopped on a question for you.
-- **Sessions** has the group **Needs your review**: pull requests handed
-  to you. A session whose agent waits for you sits under **Working**, and
+- **Sessions** also has the group **Needs your review**: pull requests
+  handed to you. A session whose agent waits for you sits under **Working**, and
   its page reads **Asked you** or **Needs a yes**
   ([Work with an agent in a session](sessions.md)).
 
-When something is broken, Home also shows a strip above **Needs you**: one
-row per problem with the button that fixes it, such as *Runner is paused:
-nothing new starts* with **Resume**.
+When something is broken, Sessions also shows a strip at the top: one row
+per problem with the button that fixes it, such as *Runner is paused:
+nothing new starts* with **Resume**, or *GitHub Copilot sign-in expired*
+with **Sign in**.
 
 The same round in a terminal:
 
@@ -43,17 +50,18 @@ under **Notifications** turn on **When something waits for you**. The
 choice belongs to this browser, and a notification comes only while a
 console tab is open.
 
-## 2. Read the For you page
+## 2. Read what waits
 
-The page groups its rows under these headings, in this order:
+The strip on **Sessions** marks each row with its hard stop: **Money**,
+**Can't be undone**, **Credentials** or **Publication**. A project's **For
+you** tab holds these kinds of row:
 
-| Heading | What waits | Buttons on the row |
+| Kind | What waits | Buttons on the row |
 | --- | --- | --- |
-| **Machine and provider** | The runner is not working, or no model provider is connected. Agents cannot work until it is fixed. | **Fix it**, **Connect** or **Sign in** |
 | **Questions** | An agent or the runner asked you something, or put a finding to you for a call. | **Yes** and **No**, or **Answer** |
 | **Decisions** | A decision record (a written decision the agents wait on) that an agent proposed. | **Decline**, **Defer**, **Accept** |
 | **Proposals** | A change the agents agreed on that needs your yes or no. | **Decline**, **Accept** |
-| **Compute requests** | An agent asked for one more machine, which costs money while it runs. | **Deny**, **Approve** |
+| **Compute requests** | An agent asked for one more machine, which costs money while it runs, so it is always on the Sessions strip too. | **Deny**, **Approve** |
 | **Suggested work** | A task idea the agents could not settle themselves. | **Decline**, **Accept** |
 | **Drafts** | A new constitution or new evaluators for a project (the rules of its self-improvement loop and its definition of better), drafted by an agent from the repository. | **Discard**, **Read & adopt** |
 | **Gate steps** | One step that a project's [self-improvement loop](self-improvement-loop.md) waits on. | **Open** |
@@ -126,7 +134,7 @@ MSG-20261123T040046Z-1 sent on TASK-001
 
 | What waits | In the console | In a terminal |
 | --- | --- | --- |
-| A decision record | **For you**, or **Records** under **Waiting on you**. Read it, then **Accept**, **Defer** or **Decline**. Each needs a few words. | `hive record accept ADR-001 --words '...'` or `hive record status ADR-001 Rejected` |
+| A decision record | The project's **For you** tab (and the Sessions strip when it is a hard stop), or **Records** under **Waiting on you**. Read it, then **Accept**, **Defer** or **Decline**. Each needs a few words. | `hive record accept ADR-001 --words '...'` or `hive record status ADR-001 Rejected` |
 | A request for a machine | **Approve** or **Deny** on the row. A denial needs a reason. | `hive compute list`, then `hive compute approve CR-001` or `hive compute deny CR-001 --words '...'` |
 | Suggested work | **Accept** makes the task, **Decline** drops it ([Give a task and steer it](tasks.md)). | `hive task suggestions --status owner`, then `hive task review SUG-001 accept --reason '...'` |
 | A drafted constitution or evaluators | **Read & adopt** or **Discard** ([Set the rules agents work under](rules.md)). | `hive record drafts`, then `hive record adopt EVO-constitution-my-app` or `hive record discard EVO-constitution-my-app` |
@@ -138,7 +146,7 @@ MSG-20261123T040046Z-1 sent on TASK-001
 
 While you are here (`owner.presence` is `present`, the default):
 
-- A row on **For you** waits until you answer it, and so does the work
+- An ask on the Sessions strip or a project's **For you** tab waits until you answer it, and so does the work
   that asked. The rest carries on.
 - One question does not wait for ever. When `evolve.flat_cycles` (6)
   experiments of the self-improvement loop in a row score the same as the
@@ -199,8 +207,8 @@ hive settings set owner.presence away      # present when you are back
 
 ## Check that it worked
 
-- **For you** reads *Nothing waits on you*, and Home reads *Nothing needs
-  you* under **Needs you**.
+- **Sessions** shows no **Decisions only you can make** strip, and no
+  project in the sidebar carries a count.
 - On **Tasks**, the column **Asked you** reads *Nothing waits for you.*
 - In a terminal, no line of `hive proposals` starts with `awaiting`, and
   `hive task list --status review` prints `No tasks.`
@@ -211,8 +219,8 @@ hive settings set owner.presence away      # present when you are back
   board question, and merging does not answer it. Its **Yes** and **No**
   merge nothing: both clear the row, a **Yes** also queues a job for an
   agent, and a **No** queues nothing. Either answer also closes the board
-  thread these questions share, so later ones of the project stay off
-  **For you**. Look for pull requests on **Sessions** and on GitHub.
+  thread these questions share, so later ones of the project stay off its
+  **For you** tab. Look for pull requests on **Sessions** and on GitHub.
 - **You said yes and nothing started.** A yes queues one job, *Act on the
   human's yes: ...*, and `hive jobs` lists it. It is not one of your tasks,
   so it waits once the daily cap is reached. `hive status` prints the
@@ -227,8 +235,9 @@ hive settings set owner.presence away      # present when you are back
 
 ## Read more
 
-- [For you](../console.md#for-you): the page, its cards and the stop
-  questions of the loop.
+- [What Sessions shows first](../console.md#what-sessions-shows-first):
+  the strips, and [a project's For you tab](../console.md#a-projects-for-you-tab)
+  with the stop questions of the loop.
 - [The board](../board.md): how a post is marked for the owner and what
   retires it.
 - [When the owner is away](../recovery.md#when-the-owner-is-away): what

@@ -66,9 +66,10 @@ What the app does on its own:
   the composer attach as in Safari, and downloads (chat artifacts, run
   transcripts) land in `~/Downloads` under a name not yet taken, with a note
   to show them in Finder.
-- **Menus.** Go has ⌘1-⌘9 for Home, Chat, Tasks, Votes, Records, Agents, Runs,
+- **Menus.** Go has ⌘1-⌘7 for Sessions, Tasks, Votes, Records, Runs,
   Machines and Connections (through the sidebar's own links, so the page keeps
-  its data and live stream), For You, Code Delivered, ⌘[ and ⌘] for back and
+  its data and live stream), Decisions Only You Can Make (the hard-stop strip
+  on Sessions), Code Delivered, ⌘[ and ⌘] for back and
   forward, and ⌘K / ⌘J for search and Ask, which the page itself answers
   first. ⌘, opens Settings. Edit has the usual text commands and find in page
   (⌘F, ⌘G, ⇧⌘G, ⌘E). View has reload (⌘R), zoom (⌘+, ⌘-, ⌘0), Appearance -

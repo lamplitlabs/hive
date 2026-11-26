@@ -36,8 +36,9 @@ they commit.
 
 - **The owner** is you. A task, a message or a decision carries authority
   only when it comes from you. What needs you (hard stops, money, Tier 2
-  decisions and questions marked for you) waits on the **For you** page, and
-  Home shows the first five under **Needs you**. A task whose lead stopped
+  decisions and questions marked for you) waits on the project's **For you**
+  tab, and the hard stops (money, what cannot be undone, credentials,
+  publication) also wait on **Sessions**, where the console opens. A task whose lead stopped
   for you is on **Tasks** under **Asked you**, and a pull request handed to
   you is on **Sessions** under **Needs your review**. It waits until you answer,
   and everything else carries on. The one exception is the loop's question
@@ -57,7 +58,7 @@ An agent is an identity in the store with a name and a history. Any sign of
 life is a heartbeat. An agent with no beat for `heartbeat.dead_after`
 seconds (300) is `dead`, and a job it held goes back to the queue.
 
-Read more: [For you](console.md#for-you),
+Read more: [What Sessions shows first](console.md#what-sessions-shows-first),
 [Role leads](board.md#role-leads-hive-lead),
 [Heartbeats and presence](machines.md#heartbeats-and-presence),
 [When the owner is away](recovery.md#when-the-owner-is-away).
