@@ -15,10 +15,12 @@ import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { DeliveryLine, reportWhere } from "@/components/chat/chat-pane";
 import { JobEvidence, JobReportLink } from "@/components/chat/job-evidence";
+import { AnswerButton } from "@/components/hive/decide-buttons";
 import { Markdown } from "@/components/hive/markdown";
 import { Disclosure, EmptyState, ErrorNotice, SkeletonRows } from "@/components/hive/panel";
 import { Avatar, Mono, ToneBadge, When } from "@/components/hive/who";
 import { fmtDate, plural, sentence } from "@/lib/format";
+import { isDefaultChoice, orderChoices } from "@/lib/message-choices";
 import { hrefs } from "@/lib/nav";
 import { postKindWord } from "@/lib/words";
 import { cn } from "@/lib/utils";
@@ -247,7 +249,7 @@ function MessageLine({ item, task, chat, overlay }: { item: ActivityItem; task: 
   const job = jobId ? overlay.jobs.get(jobId) : undefined;
   const choices = m?.choices ?? [];
   const live = !!m && overlay.lastWord === m.id && !owner && !report && open && choices.length > 0;
-  const labels = m ? choices.map((c) => c.label) : (item.choices ?? []);
+  const labels = m ? orderChoices(choices).map((c) => c.label) : (item.choices ?? []);
   let note: string | undefined;
   let meta: ReactNode;
   if (report) {
@@ -282,10 +284,8 @@ function MessageLine({ item, task, chat, overlay }: { item: ActivityItem; task: 
       <Bubble who={who} at={m?.at ?? item.at} note={note} meta={meta} icon={report ? <CornerDownRightIcon className="size-3 shrink-0 text-primary" aria-hidden /> : undefined} body={m?.body ?? item.text} truncated={m ? false : item.truncated}>
         {live && m ? (
           <div className="mt-2 flex flex-wrap items-center gap-1.5 px-1" role="group" aria-label="Answers to pick">
-            {choices.map((c, ci) => (
-              <Button key={c.label} type="button" size="sm" variant={ci === 0 ? "default" : "outline"} className="h-8 rounded-full" disabled={chat.busy} onClick={() => void chat.pick(c)}>
-                {c.label}
-              </Button>
+            {orderChoices(choices).map((c, ci, all) => (
+              <AnswerButton key={c.label} label={c.label} recommended={isDefaultChoice(all, c)} effect={c.note} size="sm" className="h-8 rounded-full" disabled={chat.busy} onClick={() => void chat.pick(c)} />
             ))}
             <span className="text-xs text-muted-foreground">or write below</span>
           </div>

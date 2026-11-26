@@ -60,6 +60,47 @@ export function DecideButtons({
   );
 }
 
+// One answer to pick: the recommended one filled, starred and marked, the
+// others outlined; `effect` (what picking it does) is its tooltip. Shared by
+// the board's questions (AnswerPicker) and a lead's message in a task or
+// chat, so the recommended answer reads the same wherever an agent asks.
+export function AnswerButton({
+  label,
+  recommended,
+  effect,
+  about,
+  size = "default",
+  disabled,
+  className,
+  onClick,
+}: {
+  label: string;
+  recommended?: boolean;
+  effect?: string;
+  about?: string;
+  size?: "xs" | "sm" | "default";
+  disabled?: boolean;
+  className?: string;
+  onClick: () => void;
+}) {
+  return (
+    <Button
+      type="button"
+      size={size}
+      variant={recommended ? "default" : "outline"}
+      className={className}
+      disabled={disabled}
+      onClick={onClick}
+      aria-label={label + (recommended ? " (recommended)" : "") + (about ? " to: " + about : "")}
+      title={effect || undefined}
+    >
+      {recommended ? <StarIcon aria-hidden /> : null}
+      {label}
+      {recommended ? <span className="rounded-sm bg-primary-foreground/20 px-1 text-[11px] font-medium leading-4">Recommended</span> : null}
+    </Button>
+  );
+}
+
 // The answers a question for the owner offers, one button each, the
 // recommended one first, filled and marked (TASK-129: "always give option no
 // text.. and add recommended one as well.. always"). Picking one asks to
@@ -98,18 +139,7 @@ export function AnswerPicker({
     <>
       <span className={cn("flex w-full flex-wrap justify-start gap-2 sm:ml-auto sm:w-auto sm:justify-end", className)} data-answers="pick">
         {answers.options.map((o) => (
-          <Button
-            key={o.label}
-            size={size}
-            variant={o.recommended ? "default" : "outline"}
-            onClick={() => setPicked(o)}
-            aria-label={o.label + (o.recommended ? " (recommended)" : "") + " to: " + summary}
-            title={o.effect || undefined}
-          >
-            {o.recommended ? <StarIcon aria-hidden /> : null}
-            {o.label}
-            {o.recommended ? <span className="rounded-sm bg-primary-foreground/20 px-1 text-[11px] font-medium leading-4">Recommended</span> : null}
-          </Button>
+          <AnswerButton key={o.label} label={o.label} recommended={o.recommended} effect={o.effect} size={size} about={summary} onClick={() => setPicked(o)} />
         ))}
       </span>
       <ConfirmDialog

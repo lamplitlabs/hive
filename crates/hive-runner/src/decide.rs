@@ -51,6 +51,25 @@ struct DecideRuns {
 static DECIDE_RUNS: LazyLock<parking_lot::Mutex<BTreeMap<String, DecideRuns>>> =
     LazyLock::new(|| parking_lot::Mutex::new(BTreeMap::new()));
 
+/// Takes a pass's in-flight mark off when its thread ends, however it ends,
+/// and hands over the lines the pass wrote. Without it a panic in the
+/// handler of a panic left the mark set: `tend_decide` then started no pass
+/// until the daemon restarted, no outage was on record, and `held_by_role`
+/// kept the role's asks out of the lead's brief all that time.
+struct PassEnd {
+    slug: String,
+    lines: Vec<String>,
+}
+
+impl Drop for PassEnd {
+    fn drop(&mut self) {
+        let mut runs = DECIDE_RUNS.lock();
+        let run = runs.entry(std::mem::take(&mut self.slug)).or_default();
+        run.inflight = false;
+        run.lines.append(&mut self.lines);
+    }
+}
+
 /// One ask the role may answer.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct DecideAsk {
@@ -77,32 +96,49 @@ pub(crate) struct DecideAnswer {
 pub(crate) fn tend_decide(s: &hive_store::Store, slug: &str, now: &str) -> Vec<String> {
     let mut runs = DECIDE_RUNS.lock();
     let run = runs.entry(slug.to_string()).or_default();
-    let lines = std::mem::take(&mut run.lines);
+    let mut lines = std::mem::take(&mut run.lines);
     if run.inflight || !role_due(s) || decide_asks(s, slug, now).is_empty() {
         return lines;
     }
     run.inflight = true;
-    let (s, slug, now) = (s.clone(), slug.to_string(), now.to_string());
-    std::thread::spawn(move || {
-        // A panic must not leave the pass marked in flight, which would keep
-        // the role off until the daemon restarts: it is an outage, said
-        // once, and the next pass tries again.
-        let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            decide_pass(&s, &slug, &now)
-        }))
-        .unwrap_or_else(|panic| {
-            let reason = format!("the decide pass panicked: {}", panic_text(&panic));
-            let by = role_by(&s);
-            fallback(&s, &now, &slug, "", &by, &reason);
-            vec![format!(
-                "decide {slug}: {reason}; the asks stay with the lead"
-            )]
+    let (s, pass_slug, now) = (s.clone(), slug.to_string(), now.to_string());
+    let spawned = std::thread::Builder::new()
+        .name("hive-decide".into())
+        .spawn(move || {
+            let slug = pass_slug;
+            // Dropped when this thread ends, by a return or by a panic.
+            let mut end = PassEnd {
+                slug: slug.clone(),
+                lines: Vec::new(),
+            };
+            // A panic must not leave the pass marked in flight, which would
+            // keep the role off until the daemon restarts: it is an outage,
+            // said once, and the next pass tries again.
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                decide_pass(&s, &slug, &now)
+            })) {
+                Ok(lines) => end.lines = lines,
+                Err(panic) => {
+                    let reason = format!("the decide pass panicked: {}", panic_text(&panic));
+                    // The line is kept before the outage is written: a store
+                    // that refuses writes is what makes a pass panic, and
+                    // then this write panics too. `end` still says the line
+                    // and takes the mark off.
+                    end.lines = vec![format!(
+                        "decide {slug}: {reason}; the asks stay with the lead"
+                    )];
+                    let by = role_by(&s);
+                    fallback(&s, &now, &slug, "", &by, &reason);
+                }
+            }
         });
-        let mut runs = DECIDE_RUNS.lock();
-        let run = runs.entry(slug).or_default();
+    if let Err(e) = spawned {
+        // No thread, no pass: the mark comes off and the next tick tries.
         run.inflight = false;
-        run.lines.extend(out);
-    });
+        lines.push(format!(
+            "decide {slug}: the pass could not start ({e}); the next pass tries again"
+        ));
+    }
     lines
 }
 
@@ -392,9 +428,10 @@ pub(crate) fn decide_pass(s: &hive_store::Store, slug: &str, now: &str) -> Vec<S
             )),
             Err(e) => {
                 let why = crate::run::err_message(&e);
-                // A refusal because the owner came back or the mode moved
-                // between the check and the write is not the ask's: it is
-                // not recorded, so the role may answer it on a later away.
+                // A refusal because the role was turned off, or the mode
+                // moved, between the check and the write is not the ask's:
+                // it is not recorded, so the role may answer it on a later
+                // pass.
                 if !role_due(s) || s.decide_mode() != "on" {
                     lines.push(format!("decide {slug}: {} not decided: {why}", ask.id));
                     break;
@@ -1454,6 +1491,58 @@ mod tests {
         let d = decision(&s, &post);
         assert_eq!(d.str("answer"), "yes", "{d:?}");
         assert_eq!(events(&s, "decide.recovered").len(), 1);
+    }
+
+    /// The review of pull request 277: a store that refuses writes is what
+    /// makes a pass panic, and then the handler's own outage write panics
+    /// too. The in-flight mark comes off all the same, so the next pass
+    /// runs; before, nothing but a restart of the daemon started one.
+    #[test]
+    fn a_panic_while_the_outage_is_written_still_ends_the_pass() {
+        let _serial = serial();
+        let s = decide_store(r#"{"answer":"yes","reason":"fine"}"#);
+        set(&s, "decide_model", "");
+        fake(&s, |f| f.panic = true);
+        let post = ask(&s, "double-panic-ask");
+        // The store takes no event from here on.
+        s.conn()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER no_events BEFORE INSERT ON events \
+                 BEGIN SELECT RAISE(ABORT, 'the store refuses the write'); END;",
+            )
+            .unwrap();
+        let inflight = || DECIDE_RUNS.lock().get("proj").is_some_and(|r| r.inflight);
+        assert!(tend_decide(&s, "proj", TEST_NOW).is_empty());
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while inflight() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!inflight(), "the pass is still marked in flight");
+        assert!(events(&s, "decide.fallback").is_empty());
+        // The store takes writes again and the provider answers: the next
+        // pass runs and decides the ask.
+        s.conn()
+            .unwrap()
+            .execute_batch("DROP TRIGGER no_events")
+            .unwrap();
+        fake(&s, |f| {
+            f.panic = false;
+            f.list = vec!["small".into(), "fake-default".into()];
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut lines = Vec::new();
+        while std::time::Instant::now() < deadline {
+            lines.extend(tend_decide(&s, "proj", TEST_NOW));
+            if lines.iter().any(|l| l.contains(&post)) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(lines.iter().any(|l| l.contains("panicked")), "{lines:?}");
+        assert!(lines.iter().any(|l| l.contains(&post)), "{lines:?}");
+        let d = decision(&s, &post);
+        assert_eq!(d.str("answer"), "yes", "{d:?}");
     }
 
     #[test]

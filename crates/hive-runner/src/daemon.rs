@@ -1666,6 +1666,20 @@ pub(crate) fn daemon(
     for line in crate::selfupdate::check_restored(s, self_env.clone()) {
         say(&o, line);
     }
+    // PR #278 review, point 5: once per store, the open asks that name no
+    // answers to pick go to their leads (counted in the log).
+    if !o.dry_run {
+        let slugs = s
+            .conn()
+            .map(|c| crate::util::must_rows(&c, "SELECT slug FROM projects ORDER BY slug", &[]))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| r.str("slug"))
+            .collect::<Vec<_>>();
+        for line in crate::lead::hand_bare_asks_once(s, &slugs, &s.now(), &actor) {
+            say(&o, line);
+        }
+    }
     let compute = crate::compute::new_compute_worker(
         &compute_ctx,
         s,
@@ -2708,6 +2722,16 @@ pub(crate) fn daemon(
                         // are the last of the cap: the work class goes first.
                         let work_first = slot == crate::executor::LOCAL_EXECUTOR
                             && local_free - local_leased <= work_reserve;
+                        // The last local slot free is kept back from the
+                        // owner's work past its project's share (jobs.rs
+                        // LeaseOpts::keep_slot): with every slot on the
+                        // owner's tasks, the lead's sitting for the owner's
+                        // message, an answer or a review would wait for a
+                        // task to end. The express slot is over the cap and
+                        // the owner's already.
+                        let keep_slot = slot == crate::executor::LOCAL_EXECUTOR
+                            && !express_slot
+                            && local_free - local_leased <= 1;
                         let mut held = BTreeMap::new();
                         if slot == crate::executor::LOCAL_EXECUTOR
                             && let Some(adm) = admission.as_ref()
@@ -2770,6 +2794,7 @@ pub(crate) fn daemon(
                                     &held,
                                     fits,
                                     work_first,
+                                    keep_slot,
                                 ) {
                                     Ok((_, _, why)) if !why.is_empty() => {
                                         reasons.insert(why, true);
@@ -2791,7 +2816,7 @@ pub(crate) fn daemon(
                             };
                             let (job, _, why) = match crate::run::take_job_first(
                                 s, &worker, "", "", o.dry_run, &now, slot, &taken, &held, fits,
-                                work_first,
+                                work_first, keep_slot,
                             ) {
                                 Ok(v) => v,
                                 Err(e) => {

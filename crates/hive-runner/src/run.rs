@@ -508,13 +508,14 @@ pub(crate) fn take_job(
     fits: &[(String, String)],
 ) -> Result<(Row, Row, String)> {
     take_job_first(
-        s, agent, project, job_id, dry_run, now, executor, taken, held, fits, false,
+        s, agent, project, job_id, dry_run, now, executor, taken, held, fits, false, false,
     )
 }
 
 /// [`take_job`] for a slot the daemon keeps for the work class
 /// (`work_first`, jobs.rs `LeaseOpts`): queued improve, task and experiment
-/// jobs go before the meta kinds.
+/// jobs go before the meta kinds. `keep_slot` marks the machine's last free
+/// slot, which the owner's work past its project's share does not take.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn take_job_first(
     s: &hive_store::Store,
@@ -528,6 +529,7 @@ pub(crate) fn take_job_first(
     held: &BTreeMap<String, String>,
     fits: &[(String, String)],
     work_first: bool,
+    keep_slot: bool,
 ) -> Result<(Row, Row, String)> {
     if let why = runner_stopped(s)
         && !why.is_empty()
@@ -700,6 +702,7 @@ pub(crate) fn take_job_first(
             fits: fits.to_vec(),
             only_source,
             work_first,
+            keep_slot,
             caps: Some(caps.clone()),
             reserved,
             executor: exrow.str("name"),

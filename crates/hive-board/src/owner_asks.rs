@@ -11,29 +11,52 @@
 use std::sync::LazyLock;
 
 /// Each hard stop with the words that put an ask there, lowercased.
-/// Matched on word boundaries against the ask's summary and body.
+/// Matched on word boundaries against the ask's summary and body once the
+/// path-like tokens are gone. The list is the net, not the rule: an ask
+/// names its hard stop on a `Hard stop: <class>` line ([`EXPLICIT`]), and
+/// the briefs tell agents to write one.
 static HARD_STOP_WORDS: LazyLock<Vec<(&'static str, regex::Regex)>> = LazyLock::new(|| {
     [
         (
             "money",
-            r"\b(spend money|spends money|(raise|increase|lift|the|a|monthly|spending|cloud|azure) budget|billing|billed|invoice\w*|payment\w*|pay for|purchas\w*|subscription\w*|credit card|costs? money|compute requests?|paid plan)\b|[$€£]\s?\d",
+            r"\b(spend money|spends money|(raise|increase|lift|the|a|monthly|spending|cloud|azure) budget|billing|billed|invoice\w*|payment\w*|pay for|purchas\w*|subscription\w*|credit card|costs? money|compute requests?|paid (plan|tier|account|seat|version|service)s?|buy|buys|buying|bought|rent|rents|rented|renting|rental|usd|eur|gbp|dollars?|euros?|per month|a month|monthly (fee|cost|price|bill)s?)\b|[$€£]\s?\d",
         ),
         (
             "a destructive or irreversible act",
-            r"\b(irreversibl\w*|destructive|force[- ]push\w*|rm -rf|drop (table|database)|wipe\w*|purg(e|es|ed|ing)|deallocat\w*|delete (the |a |this |that )?(repo|repository|database|account|project|bucket|resource group|vm|machine|history|backup)s?|data migrations?|rewrite (the )?history|cannot be undone|can't be undone)\b",
+            r"\b(irreversibl\w*|destructive|force[- ]push\w*|push (-f|--force)|rm -rf|drop (the |a |an |this |that )?(\w+ )?(tables?|databases?|columns?|schemas?)|wipe\w*|purg(e|es|ed|ing)|deallocat\w*|(delete|deletes|deleting|destroy|destroys|destroying) (the |a |an |this |that |these |those |all |every |old |stale |remote |unused |our |its )*([\w.-]+ )?(repo|repository|repositories|databases?|accounts?|projects?|buckets?|resource groups?|vms?|machines?|history|backups?|branch|branches|tags?|releases?|tables?|users?|volumes?|disks?|data)\b|push (origin )?--delete|data migrations?|rewrite (the )?history|cannot be undone|can't be undone)\b",
         ),
         (
             "credentials",
-            r"\b(credentials?|secrets?|passwords?|api[- ]keys?|(access|api|deploy|repository|repo|personal) tokens?|(the|a|your) token (that|to|which|for)|ssh keys?|signing keys?|private keys?)\b",
+            r"\b(credentials?|secrets?|passwords?|api[- ]keys?|(access|api|deploy|repository|repo|personal) tokens?|(the|a|your) token (that|to|which|for)|ssh keys?|signing keys?|private keys?|(github |personal access )?pats?|(rotate|rotates|rotating|revoke|revokes|revoking|regenerate|regenerating) (the |a |an |our |its |your )?(\w+ )?(tokens?|keys?|pats?|certificates?|certs?)|\w*_(api_key|secret|secret_key|access_key|password|auth_token|access_token|api_token)|(github|gh|npm|pypi|cargo|openai|anthropic|azure|aws|hf|huggingface)_token)\b",
         ),
         (
             "publication",
-            r"\b(publish\w*|publication|deploy\w*|go live|goes live|(to|in|into) production|public repo\w*|make (it |the \w+ )?public|app store|play store|release (v?\d|to )|tag v?\d)\b",
+            r"\b(publish\w*|publication|deploy\w*|go live|goes live|go public|(to|in|into|on) (production|prod)|ship (it |this |that )?to (users|customers)|public repo\w*|make (it|\w+ [\w-]+|\w+ [\w-]+ [\w-]+) public|app store|play store|(cut|ship|tag|publish) (the |a |our )?(v?\d+(\.\d+)*|new|next|first) release|release (v?\d|to )|tag v?\d|(send|sends|sending|sent) (an? |the |our |this |that )?(\w+ )?(e-?mails?|newsletters?|announcements?)|e-?mail (the|all|every|our) (users|customers|subscribers|list)|mailing list|press release|announce\w*)\b",
+        ),
+        (
+            "a Tier 2 decision",
+            r"\b(tier[- ]?2|owner[- ]only|project('s)? goal|hive goal set|(change|changes|set|reset|rewrite|replace|amend|edit|update) (the |this |our |its )?goal|(amend|amends|amending|change|changes|edit|edits|update|updates|rewrite|rewrites)\w* (to )?(the |its |our )?constitution|constitution(al)? (amendment|change)s?|relicens\w*|(change|changes|changing|switch|switches|switching|move|moves|moving) (the |our |its )?licen[cs]e|licen[cs]e (change|switch)\w*)\b",
         ),
     ]
     .into_iter()
     .map(|(why, re)| (why, regex::Regex::new(re).expect("hard stop regex")))
     .collect()
+});
+
+/// An explicit `Hard stop: <class>` line (or a summary that opens with
+/// one): always honoured, whatever the other words say.
+static EXPLICIT: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"(?im)^[ \t>*-]*(?:question:\s*)?hard[ -]stop:[ \t]*([^\n|]*)")
+        .expect("explicit hard stop regex")
+});
+
+/// Money written as an amount: `$26/month`, `40 USD`, `€5`. Tested on the
+/// text before the path-like tokens go, since `$26/month` is one of them.
+static AMOUNT: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(
+        r"(?i)[$€£]\s?\d|\b\d+([.,]\d+)?\s?(usd|eur|gbp|dollars?|euros?)\b|\b(usd|eur|gbp)\s?\d",
+    )
+    .expect("amount regex")
 });
 
 /// The line the runner opens a worker's `QUESTION:` post with. It says
@@ -52,6 +75,25 @@ pub fn hard_stop_ask(kind: &str, summary: &str, body: &str) -> String {
     if kind == "question" && summary == hive_store::EVOLUTION_STOP_SUMMARY {
         return "the evolution loop stopped (ADR-043)".into();
     }
+    if kind == "question" && summary == hive_store::EVOLUTION_FLAT_SUMMARY {
+        return "the evolution loop paused (flat fixtures)".into();
+    }
+    if let Some(c) = EXPLICIT.captures(&format!("{summary}\n{body}")) {
+        // The class is the line's first words, before any explanation.
+        let class = c[1]
+            .split([';', ',', '.', '(', '\u{2014}'])
+            .next()
+            .unwrap_or_default()
+            .split(" - ")
+            .next()
+            .unwrap_or_default()
+            .trim();
+        return if class.is_empty() {
+            "names a hard stop".into()
+        } else {
+            format!("names a hard stop: {}", class.to_lowercase())
+        };
+    }
     let what = crate::jobs::owner_only_proposal(summary, body);
     if !what.is_empty() {
         return what;
@@ -62,6 +104,9 @@ pub fn hard_stop_ask(kind: &str, summary: &str, body: &str) -> String {
     // A path names a file, not an act: `deploy/azure/main.bicep` or
     // `scripts/publish.sh` in a routine handoff is not a publication.
     let body = body.replace(WORKER_QUESTION_PREAMBLE, "");
+    if AMOUNT.is_match(&format!("{summary}\n{body}")) {
+        return "is about money".into();
+    }
     let text = PATH_TOKEN
         .replace_all(&format!("{summary}\n{body}").to_lowercase(), " ")
         .into_owned();
@@ -75,9 +120,303 @@ pub fn hard_stop_ask(kind: &str, summary: &str, body: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Why an ask is the owner's alone, as the hub marks every row of the
+/// owner's (`hard_stop`) and the lead's `decide` refuses it: a proposal a
+/// compute request names is money whatever it says; any other ask is
+/// [`hard_stop_ask`]. Empty when the project's lead decides it.
+pub fn owner_only_ask(
+    conn: &rusqlite::Connection,
+    post_id: &str,
+    kind: &str,
+    summary: &str,
+    body: &str,
+) -> String {
+    use rusqlite::OptionalExtension;
+    let compute = conn
+        .query_row(
+            "SELECT 1 FROM compute_requests WHERE proposal_post = ? LIMIT 1",
+            [post_id],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()
+        .ok()
+        .flatten()
+        .is_some();
+    if compute {
+        return "is about money: a compute request".into();
+    }
+    hard_stop_ask(kind, summary, body)
+}
+
+/// Whether `post_id` is the security watcher's finding about a major
+/// dependency upgrade: the one test the hub and the runner share, read from
+/// the `security.major` event the watcher writes with the post it told,
+/// never from the finding's words (PR #278 review).
+pub fn is_security_major_finding(conn: &rusqlite::Connection, post_id: &str) -> bool {
+    use rusqlite::OptionalExtension;
+    conn.query_row(
+        "SELECT 1 FROM events WHERE action = 'security.major' AND json_extract(detail, '$.post') = ? LIMIT 1",
+        [post_id],
+        |r| r.get::<_, i64>(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .is_some()
+}
+
+/// The posts that are the watcher's major-upgrade findings, of `project`
+/// or of every project ([`is_security_major_finding`] for every post at
+/// once).
+pub fn security_major_findings(
+    conn: &rusqlite::Connection,
+    project: Option<&str>,
+) -> rusqlite::Result<std::collections::BTreeSet<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT json_extract(detail, '$.post') FROM events WHERE action = 'security.major' AND (?1 IS NULL OR subject = ?1)",
+    )?;
+    let rows = stmt.query_map([project], |r| r.get::<_, Option<String>>(0))?;
+    let mut out = std::collections::BTreeSet::new();
+    for r in rows {
+        if let Some(id) = r? {
+            out.insert(id);
+        }
+    }
+    Ok(out)
+}
+
+/// The answers the security watcher writes on a major-upgrade finding, for
+/// one posted before it wrote them (an older finding has no `Recommended:`
+/// line): with `dependencies.major_updates = ask` such a finding is the
+/// owner's, and the owner answers with one pick.
+pub const SECURITY_MAJOR_ANSWERS: &str = "Yes: Upgrade it\nNo: Leave it to me\nRecommended: Yes - the job lands only when the project's checks pass on the new major\n";
+
+/// `body` with the watcher's answers to a major upgrade appended when it
+/// names none ready to pick ([`crate::ask_options`]).
+pub fn with_security_major_answers(body: &str) -> String {
+    if crate::ask_options::ask_options(body).ready() {
+        return body.to_string();
+    }
+    format!("{}\n\n{SECURITY_MAJOR_ANSWERS}", body.trim_end())
+}
+
+/// The answers of the improvement loop's flat-fixture pause
+/// (hive-evolve flat_gate): the owner's call, like the loop's stop.
+pub const FLAT_PAUSE_ANSWERS: &str = "Yes: Run more cycles - the loop plans again with the fixtures as they are and asks again after as many tied cycles\nNo: Keep it paused - the loop waits until a fixture whose score moves is enabled\nRecommended: No - more tied cycles cost worker runs and teach nothing until a fixture tells variants apart\n";
+
+/// The answers a question of the daemon offers when its body names none
+/// (TASK-129: the owner answers every question with one pick). The daemon
+/// asks about this machine - a login, a hand, a held drain - which a person
+/// fixes on the machine; a lead seat or a toolkit entry carries a marker
+/// line, and a yes acts on it.
+pub fn daemon_default_answers(body: &str) -> &'static str {
+    static MARKER: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"(?m)^[ \t]*(lead-role|toolkit):[ \t]*\S").expect("daemon marker regex")
+    });
+    match MARKER.captures(body).map(|c| c[1].to_string()).as_deref() {
+        Some("lead-role") => {
+            "Yes: Seat the lead - the daemon seats the lead role the marker line names; it fixes what it can and never decides for you\n\
+No: Not now - no lead is seated; the daemon may suggest it again later\n\
+Recommended: Yes - nobody owns this concern now, and a lead can be removed again with one command\n"
+        }
+        Some("toolkit") => {
+            "Yes: Add it - the daemon adds the tool or skill the marker line names (a server that needs a secret waits until you put it in place)\n\
+No: Not now - nothing is added; the daemon may suggest it again later\n\
+Recommended: Yes - the project shows the signal it answers, and it can be removed again with one command\n"
+        }
+        _ => {
+            "Yes: Hand it to an agent - a job looks into what it names and reports back\n\
+No: I handle it - the question closes; the daemon asks again if it still holds\n\
+Recommended: No - it is about this machine; do what the post says on it\n"
+        }
+    }
+}
+
+/// `body` with the answers the owner picks from when the asker wrote
+/// none ready to pick: the watcher's for a major upgrade (`major`), the
+/// loop's for its flat-fixture pause, the daemon's for a question the
+/// daemon asked (`agent`), also one posted before it wrote answers. Any
+/// other body comes back as it is.
+pub fn with_default_owner_answers(
+    kind: &str,
+    agent: &str,
+    summary: &str,
+    body: &str,
+    major: bool,
+) -> String {
+    if major {
+        return with_security_major_answers(body);
+    }
+    if crate::ask_options::ask_options(body).ready() {
+        return body.to_string();
+    }
+    if kind == "question" && summary == hive_store::EVOLUTION_FLAT_SUMMARY {
+        return format!("{}\n\n{FLAT_PAUSE_ANSWERS}", body.trim_end());
+    }
+    if kind == "question" && agent == "daemon" {
+        return format!("{}\n\n{}", body.trim_end(), daemon_default_answers(body));
+    }
+    body.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_major_upgrade_is_named_by_the_watchers_event_and_gets_its_answers() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE events (seq INTEGER PRIMARY KEY, action TEXT, subject TEXT, detail TEXT);
+             INSERT INTO events (action, subject, detail) VALUES ('security.major', 'one', '{\"post\":\"P-major\"}');
+             INSERT INTO events (action, subject, detail) VALUES ('security.unfixable', 'one', '{\"post\":\"P-unfixable\"}');",
+        )
+        .unwrap();
+        assert!(is_security_major_finding(&conn, "P-major"));
+        assert!(!is_security_major_finding(&conn, "P-unfixable"));
+        assert!(!is_security_major_finding(&conn, "P-words-only"));
+        let all = security_major_findings(&conn, None).unwrap();
+        assert_eq!(all.into_iter().collect::<Vec<_>>(), vec!["P-major"]);
+        assert!(
+            security_major_findings(&conn, Some("two"))
+                .unwrap()
+                .is_empty()
+        );
+        // An older finding without answers gets the watcher's; one with
+        // answers keeps its own.
+        let o = crate::ask_options::ask_options(&with_security_major_answers("Dependabot #7."));
+        assert!(o.ready());
+        assert_eq!(o.options[0].label, "Upgrade it");
+        let own =
+            "Dependabot #20.\n\nYes: Upgrade it\nNo: Leave it to me\nRecommended: No - not yet";
+        assert_eq!(with_security_major_answers(own), own);
+    }
+
+    /// The classes the PR #278 review found the word list missed, one line
+    /// each, and the explicit `Hard stop:` line that is always honoured.
+    #[test]
+    fn the_hard_stop_net_catches_the_classes_and_the_explicit_line_wins() {
+        for (text, want) in [
+            ("Move to the $26/month plan?", "is about money"),
+            ("It costs 40 USD a month.", "is about money"),
+            ("Buy a domain for the site?", "is about money"),
+            ("Rent a GPU box for the evals?", "is about money"),
+            ("Switch to the paid tier of the API?", "is about money"),
+            ("Rotate the GitHub PAT?", "is about credentials"),
+            ("Put OPENAI_API_KEY in the recipe?", "is about credentials"),
+            ("Ship to prod tonight?", "is about publication"),
+            ("Make this repo public?", "is about publication"),
+            ("Cut the 1.0 release?", "is about publication"),
+            ("Send an e-mail to the beta users?", "is about publication"),
+            (
+                "Delete the old branches?",
+                "is about a destructive or irreversible act",
+            ),
+            (
+                "Run git push --force on main?",
+                "is about a destructive or irreversible act",
+            ),
+            (
+                "Drop the events table?",
+                "is about a destructive or irreversible act",
+            ),
+            (
+                "Delete the v0 tags and releases?",
+                "is about a destructive or irreversible act",
+            ),
+            ("Change the project goal?", "is about a Tier 2 decision"),
+            (
+                "Amend the constitution for the new loop?",
+                "is about a Tier 2 decision",
+            ),
+            (
+                "Tier 2: move the store to Postgres?",
+                "is about a Tier 2 decision",
+            ),
+            (
+                "Owner-only: rename the product?",
+                "is about a Tier 2 decision",
+            ),
+            (
+                "Switch the licence to Apache-2.0?",
+                "is about a Tier 2 decision",
+            ),
+        ] {
+            assert_eq!(hard_stop_ask("question", text, ""), want, "{text}");
+        }
+        // Routine words stay the lead's.
+        for text in [
+            "Delete the unused helper?",
+            "Fix the production build warning?",
+            "Raise the test timeout to 30 s?",
+            "Bump the patch release notes wording?",
+        ] {
+            assert_eq!(hard_stop_ask("question", text, ""), "", "{text}");
+        }
+        // The explicit line is the rule; the words are only the net.
+        assert_eq!(
+            hard_stop_ask(
+                "question",
+                "Go ahead with it?",
+                "Why: see the thread.\nHard stop: money\n"
+            ),
+            "names a hard stop: money"
+        );
+        assert_eq!(
+            hard_stop_ask("question", "Hard stop: credentials - the deploy key", ""),
+            "names a hard stop: credentials"
+        );
+        // The loop's flat-fixture pause is the owner's like its stop.
+        assert_eq!(
+            hard_stop_ask("question", hive_store::EVOLUTION_FLAT_SUMMARY, ""),
+            "the evolution loop paused (flat fixtures)"
+        );
+        let answered = with_default_owner_answers(
+            "question",
+            "evolve",
+            hive_store::EVOLUTION_FLAT_SUMMARY,
+            "paused",
+            false,
+        );
+        assert!(
+            crate::ask_options::ask_options(&answered).ready(),
+            "{answered}"
+        );
+    }
+
+    /// A daemon question without answers, also one from before it wrote
+    /// them, is shown with the daemon's own; a lead seat and a toolkit
+    /// entry say what a yes does there and recommend it.
+    #[test]
+    fn a_daemon_question_gets_the_daemons_answers() {
+        let login =
+            with_default_owner_answers("question", "daemon", "Login wanted", "Sign in.", false);
+        let o = crate::ask_options::ask_options(&login);
+        assert!(o.ready(), "{login}");
+        assert!(login.contains("Hand it to an agent"), "{login}");
+        let seat = with_default_owner_answers(
+            "question",
+            "daemon",
+            "Seat a security lead?",
+            "Nobody owns it.\n\nlead-role: proj security\n",
+            false,
+        );
+        assert!(seat.contains("Yes: Seat the lead"), "{seat}");
+        assert!(seat.contains("Recommended: Yes"), "{seat}");
+        let tool = with_default_owner_answers(
+            "question",
+            "daemon",
+            "Connect GitHub?",
+            "toolkit: proj tool github\n",
+            false,
+        );
+        assert!(tool.contains("Yes: Add it"), "{tool}");
+        // An agent's bare question is left as it is: it goes to its lead.
+        assert_eq!(
+            with_default_owner_answers("question", "proj-lead", "Go on?", "Bare.", false),
+            "Bare."
+        );
+    }
 
     #[test]
     fn routine_asks_are_the_leads_and_hard_stops_the_owners() {
