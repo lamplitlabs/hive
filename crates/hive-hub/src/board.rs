@@ -913,7 +913,14 @@ impl BoardData {
                         json!(hard_stop),
                         json!(options.options),
                         json!(options.why),
-                        json!(if options.ready() { String::new() } else { options.missing() }),
+                        // The stop always has its own two answers (the
+                        // console's carry on / keep paused): it never lacks
+                        // any, so no reader needs to exempt it.
+                        json!(if stop || options.ready() {
+                            String::new()
+                        } else {
+                            options.missing()
+                        }),
                     ],
                 ));
             }
@@ -2592,6 +2599,10 @@ mod tests {
         );
         assert_eq!(data.questions[0]["stop"], true);
         assert_eq!(data.questions[0]["thread_key"], "evolution/loop-gate");
+        // The stop names no answers of its own and still lacks none: the
+        // console gives it carry on / keep paused (TASK-149 item 8).
+        assert_eq!(data.questions[0]["needs_options"], "");
+        assert_eq!(data.questions[0]["decider"], "owner");
         assert_eq!(data.questions[1]["stop"], false);
         assert_eq!(data.questions[1]["kind"], "question");
         assert!(
