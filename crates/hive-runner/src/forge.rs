@@ -1121,21 +1121,7 @@ fn app_fallback(s: &hive_store::Store, repo: &str, why: &str) {
 /// no query, no fragment, no further path - and the names hold letters,
 /// digits, `.`, `_` and `-` alone.
 pub(crate) fn ssh_url(url: &str) -> Option<String> {
-    let forge = crate::gitapp::endpoint();
-    let path = url
-        .strip_prefix(forge.web.trim_end_matches('/'))?
-        .strip_prefix('/')?;
-    let (owner, repo) = path.strip_suffix(".git").unwrap_or(path).split_once('/')?;
-    let plain = |name: &str| {
-        !name.starts_with('-')
-            && name.bytes().any(|b| b != b'.')
-            && name
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
-    };
-    let host = forge.git_host();
-    let host = host.split(':').next().unwrap_or(&host);
-    (plain(owner) && plain(repo)).then(|| format!("git@{host}:{owner}/{repo}.git"))
+    hive_gitenv::forge::ssh_form(&crate::gitapp::endpoint().web, url)
 }
 
 /// Whether `env` holds the daemon's own key: `push_credential_env` with
@@ -1185,29 +1171,7 @@ fn no_https_credential(why: &str) -> bool {
 /// that name no address, another address, or the address with the
 /// repository's path (`credential.useHttpPath`) are not that answer.
 fn github_asked(why: &str) -> bool {
-    let web = crate::gitapp::endpoint().web;
-    let web = web.trim_end_matches('/');
-    let asked = format!("fatal: could not read Username for '{web}': terminal prompts disabled");
-    let redirected = format!("warning: redirecting to {web}/");
-    let mut lines = why.lines().filter(|line| !line.trim().is_empty());
-    lines.next_back().is_some_and(|last| last == asked)
-        && lines.all(|line| line.starts_with(&redirected))
-}
-
-/// Whether git asks `url` as it is given, and not another the checkout's
-/// own config puts in its place (`url.*.insteadOf`): what `git ls-remote
-/// --get-url` answers, which reads the config and calls nobody. A host
-/// the url is sent to can send git on to GitHub, and GitHub's question for
-/// a credential is then git's own answer, whole (`github_asked`), although
-/// the command went elsewhere first.
-fn asks_as_given(root: &str, env: &[String], url: &str) -> bool {
-    let asked = crate::util::git_timeout_env(
-        root,
-        Duration::from_secs(10),
-        env,
-        &["ls-remote", "--get-url", url],
-    );
-    asked.ok() && asked.stdout.trim() == url
+    hive_gitenv::forge::credential_asked(&crate::gitapp::endpoint().web, why)
 }
 
 /// Runs one git command against the upstream `url`, which is one of
@@ -1217,7 +1181,7 @@ fn asks_as_given(root: &str, env: &[String], url: &str) -> bool {
 /// the key is: nine deliveries of one project were held that way over
 /// three days. When all git says is that GitHub asked for a credential it
 /// has not got (`github_asked`), the url is GitHub's and git asks it as it
-/// is given (`asks_as_given`), the command is made once more against the
+/// is given (`hive_gitenv::forge::asks_as_given`), the command is made once more against the
 /// url's ssh form (`ssh_url`), where the key counts. A command that
 /// succeeds over https is not touched, and nothing is written to the
 /// checkout's config.
@@ -1245,7 +1209,8 @@ pub(crate) fn git_upstream_said(
     if done.ok() || !has_push_key(env) || !github_asked(&done.stderr) {
         return (done, None);
     }
-    let Some(ssh) = ssh_url(url).filter(|_| asks_as_given(root, env, url)) else {
+    let Some(ssh) = ssh_url(url).filter(|_| hive_gitenv::forge::asks_as_given(root, env, url))
+    else {
         return (done, None);
     };
     let args: Vec<&str> = args

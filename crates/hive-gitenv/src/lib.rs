@@ -1,4 +1,7 @@
-//! Git environment scrubbing for child git commands.
+//! Git environment scrubbing for child git commands, and the rule a push
+//! with an ssh key follows on an https url ([`forge`]).
+
+pub mod forge;
 
 /// The operating-system name for this build, in the fixed spelling Hive
 /// stores and compares everywhere ("darwin", not "macos"): service units,
