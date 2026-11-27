@@ -229,10 +229,19 @@ Measured before this rule: two machines approved for 4 hours ran 5.2 and
 
 **The limits are for agents, not for you.** `compute.max_vms` and
 `compute.max_hours_per_day` bound what agents and the daemon rent by
-themselves. They never refuse a machine you ask for: **Extra machine** in the
-console, `hive compute request` typed by you, or a request you approve
-(`hive compute approve`, Approve on the Machines page). An agent's or the
-daemon's request stays capped. `0` is a limit of nothing - Hive rents nothing
+themselves. Your approval lifts them: **Extra machine** in the console
+approves your request once you answered its dialog, and a request you approve
+(`hive compute approve`, Approve or **Rent it anyway** on the Machines page)
+is rented whatever the limits say. Who filed a request does not lift them:
+over a limit every request waits for your approval, yours too, and
+`compute.auto_approve` approves only a request under them. So
+`hive compute request` typed by you over a limit prints `CR-012 pending: ...`
+and one `hive compute approve CR-012` rents it. A request or approval from a
+run of Hive's - a console conversation's agent, a job's worker, a schedule's
+script, a harness session (`HIVE_CONVERSATION`, `HIVE_JOB`, `HIVE_SCHEDULE`
+or `HIVE_HARNESS` set), even one typed `--agent human` - is filed under that
+run's name, never as yours, and its `hive compute approve` is not your
+approval. An agent's or the daemon's request stays capped. `0` is a limit of nothing - Hive rents nothing
 by itself, your own requests still go through - and `none` (also `off` or
 `unlimited`; **No limit** beside the field in Settings) lifts the limit
 altogether; `hive compute list` prints `none` for it. Each field says what
@@ -260,7 +269,12 @@ this asks 1 more)`) under **Waiting for you**, with the same three answers;
 and hours (`POST /api/v1/compute/CR-012/rent`, `{"raise": true}` to raise
 the limit as well), **Do not rent** ends the question (`.../keep-off`).
 After a limit change, Settings offers to rent the requests a limit refused
-today (`POST /api/v1/compute/refile-today`).
+today (`POST /api/v1/compute/refile-today`). A raised limit is written only
+once the request was filed; a request refused before that leaves the limit
+as it was. Through the hosted front these writes - `rent`, `approve`,
+`refile-today`, and the rent dialog's `{"raise": true}` - take the team
+owner's passkey; a member who is not the owner gets 403, and a member's own
+**Extra machine** over a limit waits for the owner's approval.
 
 A rented machine released unused says why in its row and on the Machines
 page: `Released after 30 idle minutes: no waiting job could run there

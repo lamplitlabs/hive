@@ -1443,9 +1443,12 @@ hive-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOCK
     }
 
     /// TASK-165 item 1: a request the owner approved is rented past compute.max_hours_per_day
-    /// and compute.max_vms (0 here: Hive rents nothing by itself); an agent's request approved
+    /// and compute.max_vms (0 here: Hive rents nothing by itself) - here the owner's own, typed
+    /// at a terminal and approved with `hive compute approve`; an agent's request approved
     /// by the daemon under the same limits is not rented, says why on its row, and is no
-    /// failure. Before, both were failed with "cap: ...".
+    /// failure. Before, both were failed with "cap: ...". PR 314 review: a request filed as
+    /// "human" but approved by an agent is not the owner's call either - before, the name it was
+    /// filed under rented it past both limits.
     #[test]
     fn the_owners_rental_passes_a_limit_the_daemons_does_not() {
         let _serial = crate::test_helpers::serial();
@@ -1457,7 +1460,10 @@ hive-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOCK
             let az = az.clone();
             Box::new(move |ctx, args, timeout| az.run(ctx, args, timeout))
         });
-        let owners = approved_request(&s);
+        let owners =
+            hive_tasks::request_compute(&s, "proj", crate::util::HUMAN_AGENT, "", 2, "mine")
+                .unwrap_or_else(|err| panic!("{err}"));
+        assert_eq!(owners.status, "pending", "{owners:?}");
         let daemons = hive_tasks::request_compute(&s, "proj", "aurora", "", 2, "agent's own")
             .unwrap_or_else(|err| panic!("{err}"));
         exec1(
@@ -1465,11 +1471,25 @@ hive-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOCK
             "UPDATE compute_requests SET status = 'approved', decided_by = 'hive' WHERE id = ?",
             &[&daemons.id],
         );
+        // Filed as "human" from a conversation's shell before the review, approved by an agent.
+        let named = hive_tasks::request_compute(&s, "proj", crate::util::HUMAN_AGENT, "", 2, "x")
+            .unwrap_or_else(|err| panic!("{err}"));
+        hive_tasks::approve(&s, &named.id, "fine by me", "aurora")
+            .unwrap_or_else(|err| panic!("{err}"));
         set_setting(&s, "compute.max_vms", "0");
         set_setting(&s, "compute.max_hours_per_day", "0");
+        // Over both limits now: the owner's `hive compute approve` is what rents it.
+        hive_tasks::approve(&s, &owners.id, "go ahead", crate::util::HUMAN_AGENT)
+            .unwrap_or_else(|err| panic!("{err}"));
         let log = once(&s, &h);
         let got = hive_tasks::get_compute(&s, &owners.id).unwrap_or_default();
         assert_eq!(got.status, "ready", "the owner's: {got:?}\n{log}");
+        let got = hive_tasks::get_compute(&s, &named.id).unwrap_or_default();
+        assert_ne!(got.status, "ready", "an agent's approval: {got:?}\n{log}");
+        assert!(
+            hive_tasks::open_limit_hit(&s, &named.id).unwrap().is_some(),
+            "{got:?}\n{log}"
+        );
         let got = hive_tasks::get_compute(&s, &daemons.id).unwrap_or_default();
         assert_eq!(
             got.note,

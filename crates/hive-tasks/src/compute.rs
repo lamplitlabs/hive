@@ -159,12 +159,14 @@ pub fn limit_words(limit: i32) -> String {
     }
 }
 
-/// Whether a request is the owner's own call (TASK-165): the owner asked for it (the console's
-/// Extra machine, `hive compute request` typed by the owner) or approved it by hand
-/// (`hive compute approve`, Approve on the Machines page). The rental limits bound what agents
-/// and the daemon do by themselves; they never refuse the owner's own request.
+/// Whether a request is the owner's own call (TASK-165): the owner approved it - the console's
+/// Extra machine approves the owner's request once the owner answered, `hive compute approve`
+/// typed by the owner, Approve or Rent it anyway on the Machines page. The rental limits bound
+/// what agents and the daemon do by themselves; the owner's approval lifts them. The name a
+/// request was filed under does not (PR 314 review): a conversation's agent, a schedule's
+/// script or a worker may be filed as "human", so only `decided_by` counts.
 pub fn owners_call(req: &ComputeRequest) -> bool {
-    hive_store::human_actor(&req.requested_by) || hive_store::human_actor(&req.decided_by)
+    hive_store::human_actor(&req.decided_by)
 }
 
 /// A rental limit a request would pass: which setting, its value, what is counted against it
@@ -325,7 +327,7 @@ pub fn refused_today(s: &hive_store::Store) -> Result<Vec<(ComputeRequest, Limit
 /// The owner's Rent it anyway on a request a limit refused (or one of today's, offered again
 /// after a limit change): a new request with the same project, size, hours and reason, filed
 /// by the owner and approved on the spot, so no limit refuses it. With `raise`, the limit it
-/// hit is set to what lets it through first. The old request keeps its row and gets
+/// hit is set to what lets it through once the new request is filed. The old request keeps its row and gets
 /// [`REFILED_EVENT`] naming the new one.
 pub fn refile(s: &hive_store::Store, id: &str, raise: bool, actor: &str) -> Result<ComputeRequest> {
     let actor = if actor.is_empty() {
@@ -342,15 +344,16 @@ pub fn refile(s: &hive_store::Store, id: &str, raise: bool, actor: &str) -> Resu
             "hive compute list",
         ));
     };
-    if raise {
-        raise_limit(s, &hit, actor)?;
-    }
     let reason = if cur.reason.starts_with("again: ") {
         cur.reason.clone()
     } else {
         format!("again: {} ({})", cur.reason, cur.id)
     };
     let new = request_compute(s, &cur.project, actor, &cur.size, cur.hours, &reason)?;
+    // The limit is raised only once the request was filed: a refused one leaves it as it was.
+    if raise {
+        raise_limit(s, &hit, actor)?;
+    }
     let new = if new.status == "pending" {
         approve(
             s,
@@ -603,9 +606,10 @@ pub fn request_compute(
     }
     check_project(s, project)?;
     let caps = get_caps(s)?;
-    // compute.auto_approve lets the owner's own request through whatever the limits say; an
-    // agent's only under them.
-    let auto = caps.auto_approve && (owner || caps.limit_hit(hours).is_none()) && caps.login_source;
+    // compute.auto_approve approves a request under the limits, whoever asks; one over them is
+    // filed pending whoever asks (PR 314 review), so the owner's own approval - never the name a
+    // request was filed under - is what lets a machine past a limit.
+    let auto = caps.auto_approve && caps.limit_hit(hours).is_none() && caps.login_source;
     let landing = machine_landing_line(s)?;
     let now = s.now();
     let tx = s.begin()?;

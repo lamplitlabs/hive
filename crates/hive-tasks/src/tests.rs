@@ -1850,6 +1850,17 @@ fn run_cmd(c: &mut Context, name: &str, args: &[&str]) -> anyhow::Result<()> {
 #[test]
 fn commands_end_to_end() {
     let _serial = crate::test_helpers::serial();
+    // `hive compute approve` below is the owner's at a terminal: no run of Hive's around it.
+    let _runs: Vec<_> = [
+        "HIVE_CONVERSATION",
+        "HIVE_JOB",
+        "HIVE_SCHEDULE",
+        "HIVE_HARNESS",
+        "HIVE_AGENT",
+    ]
+    .into_iter()
+    .map(hive_testutil::unsetenv)
+    .collect();
     let s = new_store();
     let brief_dir = tempfile::tempdir().unwrap();
     let brief_file = brief_dir.path().join("brief.md");
@@ -7048,12 +7059,13 @@ fn project_lifecycles_on_a_store_copy() {
     }
 }
 
-/// TASK-165 item 1: the owner's own request is never refused by a rental limit - with
-/// auto_approve on it is approved past compute.max_vms and compute.max_hours_per_day, where an
-/// agent's identical request waits for the owner. Before, the owner's request went pending
-/// (and the worker failed it) like an agent's.
+/// TASK-165 item 1, as the PR 314 review set it: a rental limit is lifted by the owner's
+/// approval, never by the name a request was filed under. With auto_approve on, a request over
+/// compute.max_vms and compute.max_hours_per_day waits whoever files it - the agent's and the
+/// "human" one alike - and the owner's approval makes it the owner's call. Before, a request
+/// filed as "human" was approved past both limits and counted as the owner's call.
 #[test]
-fn the_owners_request_passes_the_limits_an_agents_does_not() {
+fn the_owners_approval_passes_the_limits_a_name_does_not() {
     let _serial = crate::test_helpers::serial();
     let s = new_store();
     for (k, v) in [
@@ -7065,15 +7077,17 @@ fn the_owners_request_passes_the_limits_an_agents_does_not() {
     }
     let agent = request_compute(&s, "demo", "demo-lead", "Standard_B2ms", 4, "agent").unwrap();
     assert_eq!(agent.status, "pending", "an agent stays capped");
-    let owner = request_compute(&s, "demo", "human", "Standard_B2ms", 12, "mine").unwrap();
+    let human = request_compute(&s, "demo", "human", "Standard_B2ms", 12, "mine").unwrap();
     assert_eq!(
-        (owner.status.as_str(), owner.decided_by.as_str()),
-        ("approved", "hive"),
-        "the owner's request is filed whatever the limits say"
+        (human.status.as_str(), human.decided_by.as_str()),
+        ("pending", ""),
+        "over a limit a request filed as the owner waits for the owner's approval too"
     );
-    assert!(owners_call(&owner));
-    // The owner approving the agent's request makes it the owner's call too.
-    let approved = approve(&s, &agent.id, "yes", "human").unwrap();
+    assert!(!owners_call(&human), "the requester's name lifts no limit");
+    // An agent approving does not make it the owner's call; the owner approving does.
+    let by_agent = approve(&s, &agent.id, "yes", "demo-lead").unwrap();
+    assert!(!owners_call(&by_agent));
+    let approved = approve(&s, &human.id, "yes", "human").unwrap();
     assert!(owners_call(&approved));
     // The caps an agent's request would pass, in the words its row shows.
     let caps = get_caps(&s).unwrap();
@@ -7083,6 +7097,225 @@ fn the_owners_request_passes_the_limits_an_agents_does_not() {
         hit.words(),
         "Not rented: the limit of extra machines at once is 0 - Hive rents nothing by itself"
     );
+    // Under the limits nothing changed: auto_approve approves whoever asks.
+    for (k, v) in [
+        ("compute.max_vms", "none"),
+        ("compute.max_hours_per_day", "none"),
+    ] {
+        s.set_setting("human", k, v).unwrap();
+    }
+    let under = request_compute(&s, "demo", "demo-lead", "Standard_B2ms", 2, "room").unwrap();
+    assert_eq!(
+        (under.status.as_str(), under.decided_by.as_str()),
+        ("approved", "hive")
+    );
+}
+
+/// PR 314 review item 1c: `hive compute request` from a run of Hive's - a console
+/// conversation's agent (HIVE_CONVERSATION, no HIVE_AGENT), a job's worker (HIVE_JOB), and a
+/// worker typing `--agent human` - is an agent's request, named after the run: with both limits
+/// at 0 and auto_approve on it waits and nothing is approved for the worker to provision. Before,
+/// each was filed as "human" and approved past both limits.
+#[test]
+fn a_compute_request_from_a_run_is_never_the_owners() {
+    let _serial = crate::test_helpers::serial();
+    let s = new_store();
+    for (k, v) in [
+        ("compute.auto_approve", "1"),
+        ("compute.max_vms", "0"),
+        ("compute.max_hours_per_day", "0"),
+    ] {
+        s.set_setting("human", k, v).unwrap();
+    }
+    let old = crate::hands::set_hands_binary_probe(None);
+    let mut clean = Vec::new();
+    for key in [
+        "HIVE_CONVERSATION",
+        "HIVE_JOB",
+        "HIVE_SCHEDULE",
+        "HIVE_HARNESS",
+        "HIVE_AGENT",
+    ] {
+        clean.push(hive_testutil::unsetenv(key));
+    }
+    let ask = |agent: &str| {
+        let (mut c, out) = ctx_for(&s, agent, "demo", true);
+        run_cmd(
+            &mut c,
+            "compute",
+            &[
+                "request",
+                "--size",
+                "Standard_B2ms",
+                "--hours",
+                "2",
+                "--reason",
+                "more",
+            ],
+        )
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out.string()).unwrap();
+        let id = v["request"]["id"].as_str().unwrap().to_string();
+        get_compute(&s, &id).unwrap()
+    };
+    type Case<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a str);
+    let cases: [Case; 3] = [
+        (
+            "",
+            &[
+                ("HIVE_CONVERSATION", "chat-20261127T120000-abc123"),
+                ("HIVE_HARNESS", "1"),
+            ],
+            "chat-20261127T120000-abc123",
+        ),
+        (
+            "",
+            &[("HIVE_JOB", "job-20261127T120000Z-def456")],
+            "job-20261127T120000Z-def456",
+        ),
+        (
+            "human",
+            &[
+                ("HIVE_JOB", "job-20261127T120000Z-fed654"),
+                ("HIVE_HARNESS", "1"),
+            ],
+            "job-20261127T120000Z-fed654",
+        ),
+    ];
+    for (agent, env, named) in cases {
+        let guards: Vec<_> = env
+            .iter()
+            .map(|(k, v)| hive_testutil::setenv(k, v))
+            .collect();
+        let r = ask(agent);
+        drop(guards);
+        assert_eq!(
+            (
+                r.status.as_str(),
+                r.requested_by.as_str(),
+                r.decided_by.as_str()
+            ),
+            ("pending", named, ""),
+            "{env:?}"
+        );
+        assert!(!owners_call(&r), "{env:?}");
+    }
+    // A schedule's script is named after its schedule.
+    {
+        let _sched = hive_testutil::setenv("HIVE_SCHEDULE", "SCHED-007");
+        let r = ask("");
+        assert_eq!(
+            (r.status.as_str(), r.requested_by.as_str()),
+            ("pending", "schedule-SCHED-007")
+        );
+    }
+    // Nothing approved, so nothing for the worker to provision.
+    let approved: i64 = s
+        .conn()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM compute_requests WHERE status != 'pending'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(approved, 0);
+    let _ = crate::hands::set_hands_binary_probe(old);
+}
+
+/// PR 314 review items 1c and 1d: `hive compute approve` from a run of Hive's is not the
+/// owner's approval - it lifts no limit - while the owner at a terminal over a limit gets
+/// `pending` (never "auto, under the caps") and one `hive compute approve` makes it the owner's
+/// call, which the worker rents past the limits.
+#[test]
+fn only_the_owners_terminal_approval_lifts_a_limit() {
+    let _serial = crate::test_helpers::serial();
+    let s = new_store();
+    for (k, v) in [
+        ("compute.auto_approve", "1"),
+        ("compute.max_vms", "0"),
+        ("compute.max_hours_per_day", "0"),
+    ] {
+        s.set_setting("human", k, v).unwrap();
+    }
+    let old = crate::hands::set_hands_binary_probe(None);
+    let mut clean = Vec::new();
+    for key in [
+        "HIVE_CONVERSATION",
+        "HIVE_JOB",
+        "HIVE_SCHEDULE",
+        "HIVE_HARNESS",
+        "HIVE_AGENT",
+    ] {
+        clean.push(hive_testutil::unsetenv(key));
+    }
+    // The owner at a terminal, over both limits.
+    let (mut c, out) = ctx_for(&s, "", "demo", false);
+    run_cmd(
+        &mut c,
+        "compute",
+        &[
+            "request",
+            "--size",
+            "Standard_B2ms",
+            "--hours",
+            "3",
+            "--reason",
+            "mine",
+        ],
+    )
+    .unwrap();
+    let said = out.string();
+    assert!(said.contains("CR-001 pending"), "{said}");
+    assert!(!said.contains("auto, under the caps"), "{said}");
+    assert!(said.contains("hive compute approve CR-001"), "{said}");
+    let r = get_compute(&s, "CR-001").unwrap();
+    assert_eq!(
+        (r.status.as_str(), r.requested_by.as_str()),
+        ("pending", "human")
+    );
+    // A conversation's agent approving it, even as --agent human, is not the owner.
+    {
+        let _chat = hive_testutil::setenv("HIVE_CONVERSATION", "chat-20261127T120000-abc123");
+        let (mut c, out) = ctx_for(&s, "human", "", false);
+        run_cmd(&mut c, "compute", &["approve", "CR-001", "--words", "go"]).unwrap();
+        assert!(
+            out.string()
+                .contains("CR-001 approved by chat-20261127T120000-abc123"),
+            "{}",
+            out.string()
+        );
+    }
+    let r = get_compute(&s, "CR-001").unwrap();
+    assert!(
+        !owners_call(&r),
+        "an agent's approval lifts no limit: {r:?}"
+    );
+    // The owner's own approval does.
+    let (mut c, _) = ctx_for(&s, "", "demo", false);
+    run_cmd(
+        &mut c,
+        "compute",
+        &[
+            "request",
+            "--size",
+            "Standard_B2ms",
+            "--hours",
+            "3",
+            "--reason",
+            "mine again",
+        ],
+    )
+    .unwrap();
+    let (mut c, out) = ctx_for(&s, "", "", false);
+    run_cmd(&mut c, "compute", &["approve", "CR-002", "--words", "yes"]).unwrap();
+    assert!(
+        out.string().contains("CR-002 approved by human"),
+        "{}",
+        out.string()
+    );
+    assert!(owners_call(&get_compute(&s, "CR-002").unwrap()));
+    let _ = crate::hands::set_hands_binary_probe(old);
 }
 
 /// TASK-165 items 2 and 4: `none` is its own choice - no limit at all - while 0 rents nothing;

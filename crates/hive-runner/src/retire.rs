@@ -1394,9 +1394,19 @@ mod tests {
             crate::compute::caps_allow(caps.clone(), req.clone(), TEST_NOW),
             "Not rented: the limit of extra machines at once is 0 - Hive rents nothing by itself"
         );
-        // TASK-165: the owner's own request passes the limit; only the login source holds it.
-        let owner = hive_tasks::ComputeRequest {
+        // A request filed under the owner's name is held by the limit like any other (PR 314
+        // review): the name lifts nothing.
+        let named = hive_tasks::ComputeRequest {
             requested_by: hive_store::HUMAN_AGENT.into(),
+            ..req.clone()
+        };
+        assert_eq!(
+            crate::compute::caps_allow(caps.clone(), named, TEST_NOW),
+            "Not rented: the limit of extra machines at once is 0 - Hive rents nothing by itself"
+        );
+        // TASK-165: a request the owner approved passes the limit; only the login source holds it.
+        let owner = hive_tasks::ComputeRequest {
+            decided_by: hive_store::HUMAN_AGENT.into(),
             ..req
         };
         assert_eq!(
