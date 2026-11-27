@@ -300,6 +300,7 @@ mod tests {
     }
 
     fn queue(s: &hive_store::Store, kind: &str, source: &str) -> String {
+        crate::test_helpers::task_for_source(s, "proj", source);
         let (job, _) = crate::jobs::add_job(
             s,
             "proj".into(),

@@ -91,7 +91,7 @@ pub(crate) static BULK_AWAY: Kind = Kind {
 pub(crate) static RESTART_DRAIN: Kind = Kind {
     ask_kind: "idle-restart-drain",
     label: "the restart drain",
-    cure: "A restart is pending and the daemon drains the runs in flight before it exits for the service to restart it (`daemon.restart_drain_minutes`); the next daemon starts your work first. To restart sooner, ask for the restart now from the console's daemon controls (the runs in flight hold and carry on later).",
+    cure: "A restart is pending and the daemon drains the runs in flight before it exits for the service to restart it (`daemon.restart_drain_minutes`), and once `daemon.restart_max_minutes` is up it starts nothing new, your work included; the next daemon starts your work first. To restart sooner, ask for the restart now from the console's daemon controls (the runs in flight hold and carry on later).",
     lifted: "the restart drain is over",
     owner_wait_minutes: 0,
 };
@@ -1074,6 +1074,7 @@ mod tests {
             })
             .unwrap();
             let add = |kind: &str, source: &str| {
+                crate::test_helpers::task_for_source(&early, "proj", source);
                 crate::jobs::add_job(
                     &early,
                     "proj".into(),
@@ -1437,6 +1438,7 @@ mod tests {
             ..Default::default()
         })
         .unwrap();
+        crate::test_helpers::task_for_source(&early, "proj", source);
         crate::jobs::add_job(
             &early,
             "proj".into(),

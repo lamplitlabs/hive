@@ -458,13 +458,33 @@ fn owner_answer_ends_review_and_choices_are_checked() {
 }
 
 #[test]
-fn cancel_cancels_queued_jobs_only() {
+fn cancel_ends_queued_blocked_and_leased_jobs() {
     let _serial = crate::test_helpers::serial();
     let s = new_store();
     let a = new(&s, "demo", "T", "", 0, "human").unwrap();
-    for (id, status) in [("J-q", "queued"), ("J-l", "leased"), ("J-d", "done")] {
+    for (id, status) in [
+        ("J-q", "queued"),
+        ("J-b", "blocked"),
+        ("J-l", "leased"),
+        ("J-d", "done"),
+    ] {
         s.conn().unwrap().execute("INSERT INTO jobs (id, project, kind, title, source, status, created_at) VALUES (?, 'demo', 'task', 'T', 'task:TASK-001', ?, ?)", params![id, status, s.now()]).unwrap();
     }
+    // The leased job is running: its run and the run's harness session.
+    s.conn()
+        .unwrap()
+        .execute(
+            "INSERT INTO runs (id, job_id, agent, project, started_at) VALUES ('run-l', 'J-l', 'aurora', 'demo', ?)",
+            [s.now()],
+        )
+        .unwrap();
+    s.begin_harness_session(hive_store::HarnessSession {
+        id: "run-l".into(),
+        run_id: "run-l".into(),
+        job_id: "J-l".into(),
+        ..Default::default()
+    })
+    .unwrap();
     set_lead(&s, &a.id, "demo-lead", "J-q", "runner").unwrap();
     let c = cancel(&s, &a.id, "changed my mind", "human").unwrap();
     assert_eq!(
@@ -472,25 +492,57 @@ fn cancel_cancels_queued_jobs_only() {
         ("cancelled", "demo-lead", "J-q")
     );
     let conn = s.conn().unwrap();
-    let q: String = conn
-        .query_row("SELECT status FROM jobs WHERE id = 'J-q'", [], |r| r.get(0))
-        .unwrap();
-    let l: String = conn
-        .query_row("SELECT status FROM jobs WHERE id = 'J-l'", [], |r| r.get(0))
-        .unwrap();
-    let d: String = conn
-        .query_row("SELECT status FROM jobs WHERE id = 'J-d'", [], |r| r.get(0))
-        .unwrap();
+    let status = |id: &str| -> String {
+        conn.query_row("SELECT status FROM jobs WHERE id = ?", [id], |r| r.get(0))
+            .unwrap()
+    };
+    // Queued and blocked jobs end; the leased one ends with its run, which
+    // is asked to stop; a finished job keeps its result.
     assert_eq!(
-        (q.as_str(), l.as_str(), d.as_str()),
-        ("cancelled", "leased", "done")
+        (status("J-q"), status("J-b"), status("J-l"), status("J-d")),
+        (
+            "cancelled".into(),
+            "cancelled".into(),
+            "leased".into(),
+            "done".into()
+        )
+    );
+    let blocked_result: String = conn
+        .query_row("SELECT result FROM jobs WHERE id = 'J-b'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(blocked_result, "task cancelled: changed my mind");
+    assert_ne!(
+        s.harness_session_head("run-l")
+            .unwrap()
+            .unwrap()
+            .cancel_requested_at,
+        "",
+        "the leased job's run is asked to stop"
     );
     let evs = events(&s, "task.cancelled");
     assert_eq!(evs.len(), 1);
-    assert!(evs[0].detail.contains(r#""cancelled_jobs": 1"#));
-    assert!(evs[0].detail.contains(r#""leased_jobs": 1"#));
+    assert!(
+        evs[0].detail.contains(r#""cancelled_jobs": 2"#),
+        "{}",
+        evs[0].detail
+    );
+    assert!(
+        evs[0].detail.contains(r#""blocked_jobs": 1"#),
+        "{}",
+        evs[0].detail
+    );
+    assert!(
+        evs[0].detail.contains(r#""leased_jobs": 1"#),
+        "{}",
+        evs[0].detail
+    );
+    assert!(
+        evs[0].detail.contains(r#""stopped_runs": 1"#),
+        "{}",
+        evs[0].detail
+    );
     assert!(evs[0].detail.contains(r#""lead": "demo-lead""#));
-    assert_eq!(jobs(&s, &a.id).unwrap().len(), 3);
+    assert_eq!(jobs(&s, &a.id).unwrap().len(), 4);
 }
 
 #[test]
@@ -1211,8 +1263,41 @@ fn compute_request_says_how_many_machine_runs_landed() {
     // without commits and one on this machine: neither of those counts.
     add("r1", "hands-cr-1", "failed", 2, "2026-11-20T10:00:00Z");
     add("r2", "hands-cr-1", "failed", 1, "2026-11-21T10:00:00Z");
+    // r1 failed before the fetch-failed event existed; r2 wrote one.
+    conn.execute(
+        "UPDATE runs SET summary = 'could not land the branch: fatal: Could not read from remote repository.' WHERE id = 'r1'",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO events (at, actor, action, subject, detail) VALUES ('2026-11-21T10:00:00Z', 'runner', 'executor.fetch-failed', 'hands-cr-1', '{\"job\":\"job-r2\",\"run\":\"r2\"}')",
+        [],
+    )
+    .unwrap();
     add("r3", "hands-cr-1", "done", 0, "2026-11-22T10:00:00Z");
     add("r4", "local", "done", 3, "2026-11-22T11:00:00Z");
+    // Ordinary failures on a machine would have ended the same here: a
+    // failed check, an identity refusal, a stale lease (TASK-138 item 5).
+    add("r6", "hands-cr-1", "failed", 1, "2026-11-22T12:00:00Z");
+    add("r7", "hands-cr-1", "failed", 1, "2026-11-22T13:00:00Z");
+    add("r8", "hands-cr-1", "stale", 1, "2026-11-22T14:00:00Z");
+    for (id, summary) in [
+        ("r6", "1 commit(s) but verify exit 1; nothing landed"),
+        (
+            "r7",
+            "1 commit(s) refused: commit abc is not signed by the run's key; nothing landed",
+        ),
+        (
+            "r8",
+            "lease lost: generation 2 is no longer current; 1 commit(s) discarded",
+        ),
+    ] {
+        conn.execute(
+            "UPDATE runs SET summary = ? WHERE id = ?",
+            params![summary, id],
+        )
+        .unwrap();
+    }
     let line = machine_landing_line(&s).unwrap();
     assert!(
         line.starts_with("Machines so far: 0 of the last 2 runs with commits"),

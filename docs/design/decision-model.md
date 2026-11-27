@@ -57,13 +57,26 @@ pass in a background thread when:
   the role no longer waits for an away owner; a hard stop is the owner's
   and never reaches the role;
 - the project's lead is an active agent;
-- at least one ask waits.
+- at least one ask waits;
+- the pass is not backing off after repeated panics (below).
+
+The daemon reads a project's asks (`lead::owner_addressed_asks`, which
+reads every marked post's thread) once per tick and hands the same list to
+the role (`decide::tend_decide_with`) and to the lead's pass
+(`lead::tend_lead_with`); the pass works from that list.
 
 The pass never holds the daemon's loop: it may wait up to
 `decide.timeout_seconds` per ask, so it runs beside the loop, and the lines
 it writes are said on the next pass. A panic inside the pass is caught: it
 is an outage (`decide.fallback`, said once), the pass is no longer marked
-in flight, and the next daemon pass tries again.
+in flight, and the next daemon pass tries again. When the outage itself
+cannot be recorded (a store that refuses every write), the line says the
+next pass tries again, not that the asks stay with the lead: no outage is
+on record, so the role still holds them. From the second panic in a row
+the next pass waits 1, then 5, then 15 minutes (a store that refuses
+writes would otherwise cost one provider call per tick for nothing); a
+pass that ends normally resets the wait. A pass thread that cannot start
+leaves no mark in flight, and the next tick starts it.
 
 While `decide.mode` is `on`, the lead is active and no outage is open,
 `lead::tend_lead` leaves out of the lead's brief the asks the role still
@@ -74,8 +87,10 @@ answer (a hard stop among them) comes back to the lead; in `shadow` and
 during an outage the lead sees them all.
 
 `decide.mode` is read again before each ask and once its answer is in. When
-the mode changes mid-pass, the pass stops and records nothing more. A
-refusal caused by that change is not recorded as `decide.refused`.
+the mode is switched off mid-pass, the pass stops and records nothing more;
+a refusal caused by that change is not recorded as `decide.refused`. A
+switch to `shadow` mid-pass does not stop it: the pass keeps calling and
+only records (`decide.shadow`) from then on.
 `owner.presence` plays no part (TASK-129): an owner who returns mid-pass
 changes nothing.
 
@@ -112,7 +127,9 @@ empty by default, which means the hub's own `provider` and a small model
 (section 3); no endpoint of its own is named. When every model setting is
 empty, the pass asks the provider for its model list once and uses its
 default chat model (else its first chat model), and records that name on
-the decision: the call never sends an empty model. The prompt
+the decision: the call never sends an empty model. The resolved name is
+kept for an hour per store and provider, so the list is not fetched on
+every pass that has asks. The prompt
 (`decide::decide_prompt`) holds:
 
 - what to answer and how: yes, no or pass, as the project's lead would;
@@ -130,13 +147,16 @@ The answer must be one JSON object, optionally inside a code fence:
 ```
 
 A yes or a no without a reason cannot be read. The reason is folded to one
-line and clipped at 300 characters: it becomes the decision's words, the
+line and clipped at 300 bytes, cut at a character boundary, plus "..."
+when cut: it becomes the decision's words, the
 result post and the job brief. The first build does not
 depend on token probabilities, which a provider's chat API does not always
 return. The deadline is `decide.timeout_seconds`: the provider gets a
 `CancelToken` with that deadline, and the call runs in a thread the pass
 stops waiting for when it passes, so a provider that does not read the
-deadline cannot hold the pass either.
+deadline cannot hold the pass either. The Copilot provider takes the
+deadline on the chat request itself as well as on the model-list and token
+requests, so a stalled call is cut, not only left behind.
 
 ### What follows the answer
 
@@ -144,7 +164,8 @@ deadline cannot hold the pass either.
 | --- | --- | --- |
 | yes or no | `hive_board::decide_with` under the lead's name (`<slug>-lead`), so every gate of a lead's decision applies; the reason is the decision's words | event `decide.shadow` with the answer; nothing decided |
 | pass | event `decide.pass`; the ask stays in the lead's brief | event `decide.shadow` |
-| error, late, unreadable | fallback (below); the ask stays in the lead's brief | the same |
+| error, late | fallback (below); the ask stays in the lead's brief | the same |
+| unreadable | one failed try of that ask; no outage | the same |
 
 A yes or no that `hive_board::decide` refuses (a gate the role's list does
 not know) writes `decide.refused` with the refusal, and the lead keeps the
@@ -153,17 +174,20 @@ ask.
 ### Falling back, said once
 
 A provider error, no answer within the timeout, or an answer that cannot be
-read leaves the ask to the lead, who decides it as before the role, and
-records one `decide.failed` try on it. After a provider error or a timeout
-the rest of that pass is left to the lead too: the provider is out, and
-each further call would only wait again. After an unreadable answer the
-pass goes on to the next ask. Since the role runs on the hub's own
+read records one `decide.failed` try on the ask (above). Only a provider
+error or a timeout opens the store-wide outage: the provider is out, each
+further call would only wait again, the rest of that pass is left to the
+lead, and every project's asks go to its lead until an answer comes back.
+An unreadable answer is that ask's alone: the pass goes on to the next ask
+and no outage opens. Since the role runs on the hub's own
 provider, an outage adds no new failure: no run works without the provider
 either.
 
 The first fallback of an outage writes one `decide.fallback` event (actor
 `daemon`, subject the ask, detail: the reason, the model, the provider).
-Later fallbacks are only counted (meta `decide.outage_fallbacks`). The next
+Later fallbacks are only counted (meta `decide.outage_fallbacks`). An
+outage opened while the events table refused the insert has its meta and
+no event; the next fallback writes the event then. The next
 answer the role can read writes one `decide.recovered` event with the count
 of fallbacks the outage had, and clears the outage (meta `decide.outage`).
 
@@ -186,7 +210,7 @@ them:
 | Writer | `decided_model` | `decided_provider` |
 | --- | --- | --- |
 | the decide role (`hive_board::decide_with` with `DecidedBy { role: true, .. }`) | `decide_model` as resolved | `decide_provider` as resolved |
-| a lead's `DECIDE:` line (`run::apply_result_decisions_ran`) | the model the lead's run was started with (an agent file's pin, else `run_model("lead")`; empty for the provider's default) | `provider` |
+| a lead's `DECIDE:` line (`run::apply_result_decisions_ran`) | the model the lead's run was started with (`run::started_model`: an agent file's pin, else `run_model("lead")`); with none set, the provider's default its session resolved and recorded (`run::resolved_run_model`) | `provider` |
 | compute (`crates/hive-tasks/src/compute.rs`), an agent's answer | the agent's recorded model, else `light_model` | `provider` |
 | the human, anywhere | empty | empty |
 
@@ -234,7 +258,19 @@ while the asks behind it are decided, and is the lead's after three tries;
 an empty model resolves to the provider's default and is recorded; the mode
 switched off during a pass stops it with nothing refused, and the owner
 back during a pass changes nothing; the reason is one clipped line; and a
-lead's own decision records the model its run used.
+lead's own decision records the model its run used. The second round
+(TASK-148) adds, each failing without its fix: an unreadable answer is that
+ask's try and opens no outage; the resolved default model is kept between
+passes; a switch to shadow mid-pass keeps calling and only records; a call
+error is one try of that ask; a refused ask goes to the lead; a passed,
+failed or outage ask reaches the lead with the owner present; repeated
+panics back off and a normal pass resets the wait; an outage opened
+without its event gets it later; every write refused and a thread that
+cannot start both say the next pass tries again; the role and the lead
+work from the asks the tick handed them. In `run.rs`, a run without a
+model records the default its session resolved, and a run as an agent
+file is started on the file's model; in `hive-provider-copilot`,
+`chat_stops_at_the_callers_deadline_when_the_api_stalls`.
 `decide_settings_fall_back_to_measure_light_and_the_hub_provider`
 (`hive-store`) covers the settings and their fallbacks.
 
