@@ -63,6 +63,23 @@ pub(crate) trait Executor {
     fn run_tmp_dir(&self) -> String {
         String::new()
     }
+    /// Puts `text` in a file the worker reads it from (`hive harness run
+    /// --task-file PATH`) and returns that path as the worker sees it, so
+    /// the brief never sits on the worker's command line: a `pkill -f` or
+    /// a `ps` pattern another agent runs must not match a worker by the
+    /// words of its brief (TASK-151). `name` tells the runs of one job
+    /// apart (the work run, its report turn). The default writes it into
+    /// the run's own TMPDIR, which goes with the clone at cleanup.
+    fn stage_brief(&self, name: &str, text: &str) -> Result<String> {
+        let dir = self.run_tmp_dir();
+        if dir.is_empty() {
+            return Err(anyhow!(
+                "executor {} has no run directory to hold the brief",
+                self.name()
+            ));
+        }
+        write_brief_file(&dir, name, text)
+    }
     fn verify(
         &self,
         cancel: &hive_bus::CancellationToken,
@@ -780,6 +797,25 @@ impl Executor for SshExec {
     }
     fn worker_dirs(&self) -> Vec<String> {
         vec![self.job_dir.clone(), "/tmp".into()]
+    }
+    /// The hand's `brief JOB` verb writes stdin to `<job dir>/brief.md`,
+    /// beside the clone the worker runs in; one brief at a time, as a
+    /// hand runs one worker of a job at a time.
+    fn stage_brief(&self, name: &str, text: &str) -> Result<String> {
+        let _ = name;
+        let (rc, _, err_text) = self.call(
+            &["brief".into(), self.local.job.str("id")],
+            text.as_bytes(),
+            Duration::from_secs(120),
+        )?;
+        if rc != 0 {
+            return Err(anyhow!(
+                "hands on {} could not hold the brief (exit {rc}): {}",
+                self.name(),
+                tail_str(err_text.trim(), 300)
+            ));
+        }
+        Ok(format!("{}/brief.md", self.job_dir.trim_end_matches('/')))
     }
     fn prepare(&mut self, cancel: &hive_bus::CancellationToken) -> Result<String> {
         let _ = cancel;
@@ -1528,6 +1564,57 @@ pub(crate) fn worker_model(
     }
     s.run_model_class(kind, model_class)
 }
+/// Writes a worker's brief as `<dir>/hive-brief-<name>.md` (owner-only on
+/// unix) and returns its path; see [`Executor::stage_brief`].
+pub(crate) fn write_brief_file(dir: &str, name: &str, text: &str) -> Result<String> {
+    std::fs::create_dir_all(dir)
+        .map_err(|e| anyhow!("cannot make {dir} to hold the brief: {e}"))?;
+    let safe: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let path = Path::new(dir).join(format!("hive-brief-{safe}.md"));
+    std::fs::write(&path, text)
+        .map_err(|e| anyhow!("cannot write the brief to {}: {e}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(path.display().to_string())
+}
+
+/// Swaps `-p TEXT` in a harness command for `--task-file PATH`: the brief
+/// leaves the command line for the file [`Executor::stage_brief`] wrote
+/// (TASK-151). A command without `-p` (a custom worker) is left as it is.
+pub(crate) fn with_task_file(mut cmd: Vec<String>, path: &str) -> Vec<String> {
+    if let Some(i) = cmd.iter().position(|a| a == "-p")
+        && i + 1 < cmd.len()
+    {
+        cmd.splice(i..i + 2, ["--task-file".to_string(), path.to_string()]);
+    }
+    cmd
+}
+
+/// The harness command `cmd` (from [`worker_command_as`] with `text` as its
+/// brief) with the brief taken off its command line: `text` is staged by
+/// `ex` under `name` and the worker reads it with `--task-file`.
+pub(crate) fn brief_off_argv(
+    ex: &dyn Executor,
+    name: &str,
+    text: &str,
+    cmd: Vec<String>,
+) -> Result<Vec<String>> {
+    let path = ex.stage_brief(name, text)?;
+    Ok(with_task_file(cmd, &path))
+}
+
 pub(crate) fn local_cli(home: &str) -> String {
     std::env::current_exe()
         .ok()
@@ -2692,6 +2779,142 @@ mod tests {
             "not logged in: sign in with GitHub"
         ));
         assert!(crate::executor::login_fault("not_logged_in"));
+    }
+
+    #[test]
+    fn spawned_worker_argv_holds_no_brief_text() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        let dir = tempfile::tempdir().unwrap();
+        let key = dir.path().join("run.key");
+        std::fs::write(&key, b"key").unwrap();
+        let clone = dir.path().join("clone");
+        std::fs::create_dir_all(&clone).unwrap();
+        let mut job = Row::new();
+        job.insert("id", serde_json::json!("job-argv"));
+        let mut e = LocalExec {
+            s: Some((*s).clone()),
+            job,
+            log: RunLog::default(),
+            clone_dir: clone.display().to_string(),
+            key: key.display().to_string(),
+            ..Default::default()
+        };
+        // Words another agent's `pkill -f` might hold as its pattern.
+        let brief = "Stop mock/server.mjs and fix the clerk login\nsecond line";
+        let (cmd, custom) = worker_command(&s, "task", brief, &e.clone_dir, "", false);
+        assert!(!custom);
+        let mut cmd = brief_off_argv(&e, "run-argv", brief, cmd).unwrap();
+        let at = cmd
+            .iter()
+            .position(|a| a == "--task-file")
+            .expect("--task-file");
+        let path = cmd[at + 1].clone();
+        assert!(path.starts_with(&e.run_tmp_dir()), "{path}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), brief);
+        assert!(!cmd.iter().any(|a| a == "-p"), "{cmd:?}");
+        // The worker as spawned: a stand-in for the harness prints the
+        // argv it was given, then the brief it reads from the file.
+        let worker = dir.path().join("worker.sh");
+        std::fs::write(
+            &worker,
+            "#!/bin/sh\nfor a in \"$@\"; do printf 'ARG:%s\\n' \"$a\"; done\nwhile [ $# -gt 0 ]; do [ \"$1\" = --task-file ] && cat \"$2\"; shift; done\n",
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&worker, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        cmd[0] = worker.display().to_string();
+        let out = e
+            .run_worker(
+                &hive_bus::CancellationToken::new(),
+                &cmd,
+                &BTreeMap::new(),
+                1,
+            )
+            .unwrap();
+        assert_eq!(out.exit_code, 0, "{out:?}");
+        let args: Vec<&str> = out
+            .stdout
+            .lines()
+            .filter_map(|l| l.strip_prefix("ARG:"))
+            .collect();
+        assert!(
+            args.contains(&"run") && args.contains(&"--task-file"),
+            "{args:?}"
+        );
+        for word in ["mock/server.mjs", "clerk", "second line"] {
+            assert!(!args.iter().any(|a| a.contains(word)), "{word} in {args:?}");
+        }
+        assert!(out.stdout.contains(brief), "{}", out.stdout);
+    }
+
+    static HAND_BRIEF: Mutex<Vec<(Vec<String>, Vec<u8>)>> = Mutex::new(Vec::new());
+
+    fn brief_hand_ssh(
+        _cancel: &hive_bus::CancellationToken,
+        argv: &[String],
+        stdin: &[u8],
+        _timeout: Duration,
+    ) -> Result<(i32, String, String)> {
+        let args = argv
+            .last()
+            .and_then(|s| s.strip_prefix("b64 "))
+            .and_then(|s| {
+                use base64::Engine;
+                base64::engine::general_purpose::STANDARD.decode(s).ok()
+            })
+            .map(|v| {
+                v.split(|b| *b == 0)
+                    .filter(|p| !p.is_empty())
+                    .map(|p| String::from_utf8_lossy(p).to_string())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        HAND_BRIEF.lock().unwrap().push((args, stdin.to_vec()));
+        Ok((0, String::new(), String::new()))
+    }
+
+    #[test]
+    fn a_hand_gets_the_brief_on_stdin_and_the_worker_reads_its_file() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        let mut row = Row::new();
+        row.insert("name", serde_json::json!("hands"));
+        row.insert("address", serde_json::json!("runner@example.invalid"));
+        let mut job = Row::new();
+        job.insert("id", serde_json::json!("job-remote"));
+        let e = SshExec {
+            local: LocalExec {
+                s: Some((*s).clone()),
+                row,
+                job,
+                clone_dir: "/srv/hive/job-remote/clone".into(),
+                ..Default::default()
+            },
+            job_dir: "/srv/hive/job-remote".into(),
+            bundle: String::new(),
+            base: String::new(),
+        };
+        HAND_BRIEF.lock().unwrap().clear();
+        let old = crate::executor::run_ssh_hook();
+        crate::executor::set_run_ssh(brief_hand_ssh);
+        let (cmd, _) = worker_command(&s, "task", "the secret brief", &e.local.clone_dir, "", true);
+        let cmd = brief_off_argv(&e, "run-x", "the secret brief", cmd);
+        crate::executor::restore_run_ssh(old);
+        let cmd = cmd.unwrap();
+        let calls = HAND_BRIEF.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(calls[0].0, vec!["brief", "job-remote"]);
+        assert_eq!(calls[0].1, b"the secret brief");
+        assert!(
+            cmd.windows(2)
+                .any(|w| w[0] == "--task-file" && w[1] == "/srv/hive/job-remote/brief.md"),
+            "{cmd:?}"
+        );
+        assert!(!cmd.iter().any(|a| a.contains("secret brief")), "{cmd:?}");
+        assert!(hive_hand_core::hands::hands_allowed_worker(&cmd), "{cmd:?}");
     }
 
     #[test]

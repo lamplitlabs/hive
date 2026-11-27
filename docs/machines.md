@@ -509,7 +509,8 @@ arrow points the way the data travels:
 │ the brain │ ── prepare: the branch, a git bundle ───→ │ a hand       │
 │           │ ── key: the run's signing key ──────────→ │              │
 │           │ ── hook: the pre-commit hook ───────────→ │              │
-│           │ ── run: the worker and its brief ───────→ │ hive harness │
+│           │ ── brief: the brief, on stdin ──────────→ │              │
+│           │ ── run: the worker, --task-file ────────→ │ hive harness │
 │           │ ←── heartbeat, steps: while it runs ───── │ run, in the  │
 │           │ ←── the agent's report ────────────────── │ job's clone  │
 │           │ ── verify: the project's check ─────────→ │              │
