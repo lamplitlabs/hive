@@ -825,8 +825,10 @@ pub(crate) struct EarlierAttempt {
     pub agents: Vec<String>,
 }
 
-/// Looks up the latest `job.requeue` event of `job_id` and the agents whose
-/// runs made the earlier attempts; `None` when the job was never requeued.
+/// Looks up the latest `job.requeue` event of `job_id` - or the
+/// [`crate::signal_stop::SIGNALLED_EVENT`] of a run ended from outside - and
+/// the agents whose runs made the earlier attempts; `None` when the job was
+/// never requeued.
 pub(crate) fn earlier_attempt(
     s: &hive_store::Store,
     job_id: &str,
@@ -835,7 +837,7 @@ pub(crate) fn earlier_attempt(
     let conn = s.conn().ok()?;
     let ev = crate::util::query_one(
         &conn,
-        "SELECT detail FROM events WHERE action = 'job.requeue' AND subject = ? ORDER BY at DESC, rowid DESC LIMIT 1",
+        "SELECT detail FROM events WHERE action IN ('job.requeue', 'job.signalled') AND subject = ? ORDER BY at DESC, seq DESC LIMIT 1",
         &[&job_id],
     )
     .ok()??;
