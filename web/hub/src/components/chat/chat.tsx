@@ -1702,12 +1702,14 @@ function PrRow({ pr, project }: { pr: PrState; project: string }) {
                   </span>
                 ) : null}
                 <span className="mt-2 block">
-                  The daemon merges it on GitHub as you.
+                  {pr.sha
+                    ? "The daemon merges commit " + pr.sha.slice(0, 12) + " on GitHub as you - only that commit: if a newer one reaches the pull request first, nothing is merged and you are asked again."
+                    : "The daemon merges it on GitHub as you."}
                 </span>
               </>
             }
             action="Merge"
-            onConfirm={() => writes.mergeProjectPr(project, pr.number)}
+            onConfirm={() => writes.mergeProjectPr(project, pr.number, pr.sha)}
             success={"Merging " + name + "\u2026"}
             invalidates={(p) =>
               p.startsWith("chat") || p.startsWith("tasks") || p.startsWith("events") || p.startsWith("projects")

@@ -112,8 +112,12 @@ Where no reason holds, the verdict is one of three:
   all merges; when the checkout has workflows under `.github/workflows`
   and `pipeline.watch` is on, `review.merged` says so (`no_checks`). The
   same gate stands in front of the hub's Merge button. Then it merges on
-  the forge (`gh pr merge --merge --delete-branch`, as the `gh` account
-  that works for this repository; without `--delete-branch` while another
+  the forge (`gh pr merge --merge --delete-branch --match-head-commit
+  <sha>`, as the `gh` account that works for this repository - pinned to
+  the head the gate just read, so a push that lands between that read and
+  the merge makes GitHub refuse it instead of merging a commit nobody
+  read; the refusal records the new head and it is reviewed on its own;
+  without `--delete-branch` while another
   pull request still open on the forge is based on its head - whatever its
   own review said, a "changes" verdict or a hand-off to you included -
   since GitHub would close that one, and delivery deletes the branch once
@@ -224,7 +228,7 @@ number (`7` or `#7`); `--json` gives the same as data.
 | `hive review show <n>` | one pull request from the forge: title and url, `<head> -> <base>  by <author>  <state>  +<added> -<deleted>`, `Kind: Hive task T` (or job, experiment, proposed; `not a Hive pull request` for one Hive did not open), either `May be merged by the reviewer when correct, safe, in scope and green.` (followed by `Read with extra care: …` for a large or mostly-deleting change) or `For the owner (do not merge):` with the reasons, the files with their counts, and the body |
 | `hive review diff <n>` | the diff against the base, from the forge |
 | `hive review checkout <n>` | inside a job clone: fetches the pull request's head onto `review/pr-<n>` from the project's local repository, or from the upstream's `refs/pull/<n>/head` when the local branch is not at the head GitHub has, checks it out and prints `review/pr-<n> at <sha> (<head>)`; refused in the project's own checkout |
-| `hive review merge <n> [--by owner]` | merges on the forge (`gh pr merge --merge --delete-branch`; the branch is kept while another open pull request is based on it) as the account that works for the repository and prints `Merged #<n> (<url>) as <by>`; refuses, whoever asks, a head that moved since the review was queued, a draft, a failing or pending check and a merge GitHub blocks (`mergeStateStatus` `DIRTY`, `BLOCKED`, `BEHIND`), with the reason and no `review.failed`; refuses when reasons exist unless `--by owner` (`--by` takes no other value), which is what the hub's **Merge** button comes to. `--by owner` is the answer to a hand-off, so it is accepted after `review.owner` and after `review.changes` as well as before any verdict; a merged pull request takes no second one. Records `review.merged`, or `review.failed` when `gh` could not merge; the reviewer's merge (not `--by owner`) that meets only running checks, or a 5xx, internal error, rate limit or dropped connection from GitHub (on the merge or on the read before it), keeps the verdict as `review.merge-wait` and the daemon merges it later ([When an approved merge waits](#when-an-approved-merge-waits)) |
+| `hive review merge <n> [--by owner]` | merges on the forge (`gh pr merge --merge --delete-branch --match-head-commit <sha>`, pinned to the head it read - for `--by owner` after a press, the commit the press was for; the branch is kept while another open pull request is based on it) as the account that works for the repository and prints `Merged #<n> (<url>) as <by>`; refuses, whoever asks, a head that moved since the review was queued, a draft, a failing or pending check and a merge GitHub blocks (`mergeStateStatus` `DIRTY`, `BLOCKED`, `BEHIND`), with the reason and no `review.failed`; refuses when reasons exist unless `--by owner` (`--by` takes no other value), which is what the hub's **Merge** button comes to. `--by owner` is the answer to a hand-off, so it is accepted after `review.owner` and after `review.changes` as well as before any verdict; a merged pull request takes no second one. Records `review.merged`, or `review.failed` when `gh` could not merge; the reviewer's merge (not `--by owner`) that meets only running checks, or a 5xx, internal error, rate limit or dropped connection from GitHub (on the merge or on the read before it), keeps the verdict as `review.merge-wait` and the daemon merges it later ([When an approved merge waits](#when-an-approved-merge-waits)) |
 | `hive review changes <n> --note "…"` | asks for the changes on GitHub, queues the follow-up job and records `review.changes`; `--note` is required, since it becomes the follow-up's brief |
 | `hive review owner <n> --note "…"` | comments the findings on the pull request and hands it to you: `review.owner`, a question on the project's board, a message on the task; `--note` is required |
 
@@ -275,8 +279,14 @@ it belongs to, with a link to the pull request and a **Merge** button. A pull
 request that belongs to neither (a job's own, or a branch proposed with
 `hive land --branch`) has no button in the hub: merge it with
 `hive review merge <n> --by owner` or on GitHub. The button asks once
-(*Merge PR #n into <base>? The daemon merges it on GitHub as you.*) and
-records `review.ask {action: merge}`; the hub merges nothing itself. The
+(*Merge PR #n into <base>? The daemon merges commit <sha> on GitHub as
+you - only that commit: if a newer one reaches the pull request first,
+nothing is merged and you are asked again.*) and records `review.ask
+{action: merge}`; the hub merges nothing itself. The button sends the
+commit its card showed (`{"sha": …}`); when Hive already holds another
+head for the pull request - a newer commit came back while the card was
+open - the hub answers 409 *The pull request moved*, records nothing, and
+the console says why; the refreshed card names the new commit. The
 next maintenance pass merges the pull request as the owner, whatever the
 rule says, and records `review.merged` with `by: owner`; the line reads
 *Merging PR #n…* until then and *Merged* after the delivery poll. The
@@ -293,12 +303,36 @@ lapses, even when the new head was recorded a moment before the press
 reached the daemon. So a pull request that needs a cure first (a conflict,
 a red check fixed by a new commit) is never merged by the press that came
 before the cure: the new head is reviewed on its own, and handed to you
-again if it is still yours; press Merge again to take it. You are told
-once, where you pressed - a message on the task's conversation, or a note
-in the chat's transcript for a chat's pull request: *Pull request #n was
-not merged: your Merge was for commit <sha>, and <why it moved> - it is at
-<sha> now.* The daemon log says *not merged for the owner: Merge was
-pressed at <sha>, the pull request is at <sha> now (<why>)* once. The same
+again if it is still yours. A lapse is permanent: it is recorded as
+`review.ask-lapsed` (the ask, both commits, the question), and the ask
+stays lapsed even when the head later comes back to the commit you
+pressed for (a force-push back, a stale read) - only a new press or an
+answer asks again. The whole merge is pinned to the commit too: the
+daemon passes it to `gh pr merge --match-head-commit`, so a push that
+reaches GitHub after the daemon's last read is refused by GitHub and
+never merged.
+
+You are told once, as a question for you on the project's board
+(`runner/review`, shown on the Sessions strip) - *Merge pull request #n:
+<title>? Your Merge lapsed* - with *Was: commit <sha>* and *Now: commit
+<sha> (<why it moved>)* and two answers to tap:
+
+- **Merge this commit** - merges the commit the question names now, as
+  you, without waiting for its review: a new `review.ask` pinned to that
+  commit, honoured on the next pass and lapsing in turn if the head moves
+  again.
+- **Wait for the review of the new commit** - asks nothing; the reviewer
+  reads the new commit and merges it, or hands it back to you.
+
+The second is recommended, unless the new commit is Hive's own refresh
+(the base merged in to cure a conflict), when the work you approved is
+unchanged and *Merge this commit* is. Only your own pick merges; an answer
+queues no job. The same text goes where you pressed - a message on the
+task's conversation, or a note in the chat's transcript for a chat's pull
+request: *Pull request #n was not merged: your Merge was for commit <sha>,
+and <why it moved> - it is at <sha> now.* The daemon log says *not merged
+for the owner: Merge was pressed at <sha>, the pull request is at <sha>
+now (<why>)* once. The same
 hand-over is a question on the project's board, marked for you, on the
 `review` thread - *Merge pull request #n: <title>?* with the reasons, the
 review and the ways to merge it - and a message on the task's conversation
@@ -421,7 +455,10 @@ the forge takes it, handed to you as above when it fails again. That try is
 the merge's: when reading the pull request fails for a passing reason on
 that pass, the failure is counted and the last try waits for the next step
 of the back-off (`review.merge-wait` with `last: true`) instead of ending
-the wait with no merge tried - unless that failure used up the tries. A pull
+the wait with no merge tried - unless that failure used up the tries. That
+grace is given once: a read that fails again on the deferred last try ends
+the wait on its hours, so a large `review.merge_wait_tries` never stretches
+the wait in 6-hour steps past `review.merge_wait_hours`. A pull
 request stacked on the one that waited still waits below it, and is
 reviewed when the one below merges.
 
@@ -452,7 +489,8 @@ lists them at `GET /api/v1/events?project=X&action=review.*`.
 | `review.changes` | the reviewer asked for changes | `project`, `number`, `url`, `note`, `follow_up` (the job queued) |
 | `review.owner` | the pull request was handed to you | `project`, `number`, `url`, `reasons`, `note` |
 | `review.failed` | a review job ended without a verdict, or a `gh` call of a verdict failed for a reason that does not pass | `project`, `number`, `url`, `error`, `job` when it was the job's ending |
-| `review.ask` | you pressed **Merge** in the hub | `project`, `number`, `action: merge`, `task` when pressed on a task |
+| `review.ask` | you pressed **Merge** in the hub, or picked *Merge this commit* | `project`, `number`, `action: merge`, `task` when pressed on a task, `sha` (the commit the press was for) |
+| `review.ask-lapsed` | your Merge lapsed because Hive holds another head; recorded once per ask, and the ask stays lapsed | `project`, `number`, `ask` (the `review.ask` it ends), `was` (the commit pressed for), `head` (the commit now), `why`, `refresh` (the new commit is Hive's base refresh), `post` (the question with the two answers) |
 | `review.merge-wait` | the reviewer said merge and the merge waits ([When an approved merge waits](#when-an-approved-merge-waits)); recorded again at each failed retry | `project`, `number`, `url`, `by`, `reviewer`, `head_sha`, `waiting` (`checks` or `forge`), `error` (the forge's last answer), `attempt` (failures of the forge so far), `due` (the next try; empty while checks run), `since` (when the wait began), `note` (the one line shown) |
 | `review.again` | a waiting merge found the head moved on the forge: nothing merged, the pull request is open for review again | `project`, `number`, `url`, `head_sha` (the new head), `was` (the head approved), `note` |
 

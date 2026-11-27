@@ -1440,6 +1440,7 @@ fn pick_job_conn(
     if project_exists.is_none()
         || decision_marker_re().is_match(&target.body)
         || is_stop_question(target)
+        || crate::owner_asks::is_lapsed_merge_question(conn, &target.id)
     {
         return Ok(None);
     }
