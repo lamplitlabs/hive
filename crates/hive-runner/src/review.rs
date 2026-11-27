@@ -611,6 +611,10 @@ pub(crate) fn reasons_for(s: &hive_store::Store, pr: &PrView) -> Vec<String> {
             }
         ));
     }
+    // A task that builds a Tier 2 decision record the owner has not
+    // accepted is the owner's to merge: PR 280 built ADR-073 while it was
+    // Proposed and the reviewer merged it by itself (TASK-147).
+    reasons.extend(crate::record_gate::reasons(s, pr));
     reasons
 }
 

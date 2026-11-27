@@ -3498,6 +3498,9 @@ export interface RecordDetail {
   body: string; // Markdown after the frontmatter
   revisions: RecordRevisionRef[];
   draft?: RecordDraft | null; // ADR-046: the waiting draft with its body, or null
+  // TASK-147: the merged pull requests of the tasks that build this record;
+  // declining it queues one job that takes them out. Absent on an older hub.
+  merged_work?: { task: string; number: number; url: string; head: string; at: string }[];
 }
 
 export interface RecordsPayload {
