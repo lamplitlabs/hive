@@ -120,8 +120,8 @@ list.
   on its project's **For you** tab. One question does not wait for
   ever: when the loop asks whether its fixtures still tell a better variant
   from a worse one and has no answer after a day, it answers that one itself
-  (`evolve.flat_wait_hours`). While you are away the lead answers the routine
-  ones and says so. [What Sessions shows first](docs/console.md#what-sessions-shows-first),
+  (`evolve.flat_wait_hours`). Each project's lead decides the routine asks
+  for you, here or away, and says so. [What Sessions shows first](docs/console.md#what-sessions-shows-first),
   [When the owner is away](docs/recovery.md#when-the-owner-is-away).
 - **Its own harness.** Agents run on Hive's built-in harness - a tool loop
   with limits, deny rules, hooks, MCP servers, skills, helpers and
@@ -212,7 +212,7 @@ merges pull requests through `gh`. Agents run on the harness built into
    new machine **Sessions**, where the console opens, shows the card **Set up Hive** with three steps. The next
    three steps here are those, in the card's order.
 
-   <p align="center"><img src="docs/how-to/images/console-home.webp" alt="Sessions: the decisions only the owner can make, with their buttons, above the session list" width="900"></p>
+   <p align="center"><img src="docs/how-to/images/console-sessions.webp" alt="Sessions: the decisions only the owner can make, with their buttons, above the session list" width="900"></p>
 
 3. **Connect a model provider.** The card's first step opens the provider
    wizard; later the same wizard is under **Settings**, **Harness**,

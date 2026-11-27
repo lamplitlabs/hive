@@ -981,17 +981,60 @@ pub const CHAT_TOOL: &str = "chat";
 /// The status an interactive session ends with.
 pub const EXIT_ENDED: &str = "ended";
 
+/// The fewest and the most answers a `question` call offers: the user
+/// answers with one pick (TASK-129, TASK-149 item 13).
+pub const MIN_QUESTION_CHOICES: usize = 2;
+pub const MAX_QUESTION_CHOICES: usize = 6;
+
+/// The `question` tool's choices, the recommended one first, or why the call
+/// is refused: fewer than two choices or more than six, or a `recommended`
+/// that names none of them. A choice matches `recommended` written whole or
+/// by its label (the text before ` - `), in any case.
+pub fn question_choices(
+    choices: &[String],
+    recommended: &str,
+) -> std::result::Result<Vec<String>, String> {
+    if choices.len() < MIN_QUESTION_CHOICES || choices.len() > MAX_QUESTION_CHOICES {
+        return Err(format!(
+            "question: give {MIN_QUESTION_CHOICES} to {MAX_QUESTION_CHOICES} choices (`<label> - <what picking it does>`) and name the one you recommend in `recommended`; the user answers with one pick, never by typing"
+        ));
+    }
+    let want = recommended.trim().to_lowercase();
+    let label = |c: &str| c.split(" - ").next().unwrap_or(c).trim().to_lowercase();
+    let Some(i) = (!want.is_empty())
+        .then(|| {
+            choices
+                .iter()
+                .position(|c| c.trim().to_lowercase() == want)
+                .or_else(|| choices.iter().position(|c| label(c) == label(&want)))
+        })
+        .flatten()
+    else {
+        return Err(format!(
+            "question: `recommended` must name one of the choices; you gave {:?} for {:?}",
+            recommended, choices
+        ));
+    };
+    let mut out = choices.to_vec();
+    let rec = out.remove(i);
+    out.insert(0, rec);
+    Ok(out)
+}
+
 pub fn question_tool() -> Tool {
     Tool {
         name: QUESTION_TOOL.into(),
-        description: "Ask the user one question and wait for the answer. Use it when a decision is theirs: which of several approaches, whether to go further, a detail the request leaves out. Give short choices when they exist; the user may also answer freely.".into(),
+        description: format!(
+            "Ask the user one question and wait for the answer. Use it when a decision is theirs: which of several approaches, whether to go further, a detail the request leaves out. The user answers with one pick, never by typing: give {MIN_QUESTION_CHOICES} to {MAX_QUESTION_CHOICES} short choices, each `<label> - <what picking it does>`, and name the one you recommend in `recommended`."
+        ),
         parameters: json!({
             "type": "object",
             "properties": {
                 "question": {"type": "string", "description": "the question, one or two sentences"},
-                "choices": {"type": "array", "items": {"type": "string"}, "description": "short answers to pick from, if any"}
+                "choices": {"type": "array", "items": {"type": "string"}, "minItems": MIN_QUESTION_CHOICES, "maxItems": MAX_QUESTION_CHOICES, "description": "the answers to pick from, each `<label> - <what picking it does>`"},
+                "recommended": {"type": "string", "description": "the choice you recommend, written as in `choices` (or its label)"}
             },
-            "required": ["question"]
+            "required": ["question", "choices", "recommended"]
         }),
     }
 }
@@ -3199,12 +3242,16 @@ impl Agent {
                     .collect()
             })
             .unwrap_or_default();
-        self.result.steps += 1;
-        let spec = if choices.is_empty() {
-            question.clone()
-        } else {
-            format!("{question}\n{}", choices.join(" | "))
+        let recommended = args
+            .get("recommended")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let choices = match question_choices(&choices, recommended) {
+            Ok(c) => c,
+            Err(e) => return self.tool_error(e),
         };
+        self.result.steps += 1;
+        let spec = format!("{question}\n{}", choices.join(" | "));
         self.emit(Step {
             kind: StepKind::Note,
             content: format!("question: {spec}"),
@@ -14922,6 +14969,37 @@ mod tests {
         assert_eq!(h.permissions().len(), 1);
     }
 
+    /// TASK-149 item 13: a session question is answered with one pick -
+    /// two to six choices, one of them recommended, which comes first.
+    #[test]
+    fn question_choices_need_a_pick_and_a_recommended_one() {
+        let v = |xs: &[&str]| xs.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            question_choices(&v(&["a - one", "b - two", "c"]), "B").unwrap(),
+            v(&["b - two", "a - one", "c"]),
+            "matched by its label, in any case, and put first"
+        );
+        assert_eq!(
+            question_choices(&v(&["a", "b - two"]), "b - two").unwrap(),
+            v(&["b - two", "a"])
+        );
+        for (choices, rec) in [
+            (v(&[]), "a"),
+            (v(&["only"]), "only"),
+            (v(&["1", "2", "3", "4", "5", "6", "7"]), "1"),
+        ] {
+            let e = question_choices(&choices, rec).unwrap_err();
+            assert!(e.contains("give 2 to 6 choices"), "{choices:?}: {e}");
+        }
+        for rec in ["", "  ", "c"] {
+            let e = question_choices(&v(&["a", "b"]), rec).unwrap_err();
+            assert!(
+                e.contains("`recommended` must name one of the choices"),
+                "{rec:?}: {e}"
+            );
+        }
+    }
+
     #[test]
     fn chat_question_tool_asks_the_user_and_relays_the_answer() {
         let _serial = crate::test_helpers::serial();
@@ -14930,10 +15008,22 @@ mod tests {
             resp(calls(&[(
                 "q1",
                 "question",
-                json!({"question":"tabs or spaces?","choices":["tabs","spaces"]}),
+                json!({"question":"tabs or spaces?","choices":["tabs - indent with tabs","spaces - indent with four spaces"],"recommended":"Spaces"}),
             )])),
-            resp(calls(&[("q2", "question", json!({"question":"sure?"}))])),
+            resp(calls(&[(
+                "q2",
+                "question",
+                json!({"question":"sure?","choices":["yes","no"],"recommended":"yes"}),
+            )])),
             resp(calls(&[("q3", "question", json!({"question":""}))])),
+            // TASK-149 item 13: no free-text question - choices and a
+            // recommended one are required (every other refusal is in
+            // question_choices_need_a_pick_and_a_recommended_one).
+            resp(calls(&[(
+                "q4",
+                "question",
+                json!({"question":"which name?"}),
+            )])),
             resp(msg("spaces then")),
         ]));
         let ui = Arc::new(Mutex::new(ScriptUi {
@@ -14965,17 +15055,29 @@ mod tests {
             "{}",
             replies["q3"]
         );
+        assert!(
+            replies["q4"].contains("give 2 to 6 choices") && replies["q4"].contains("recommended"),
+            "{}",
+            replies["q4"]
+        );
         let asked = ui.lock().unwrap().asked.clone();
-        assert_eq!(asked.len(), 2);
+        assert_eq!(asked.len(), 2, "a refused call never reaches the user");
         assert_eq!(asked[0].0, "tabs or spaces?");
-        assert_eq!(asked[0].1, vec!["tabs".to_string(), "spaces".to_string()]);
+        assert_eq!(
+            asked[0].1,
+            vec![
+                "spaces - indent with four spaces".to_string(),
+                "tabs - indent with tabs".to_string()
+            ],
+            "the recommended choice comes first, matched by its label"
+        );
         assert!(
             steps
                 .lock()
                 .unwrap()
                 .iter()
                 .any(|s| s.kind == StepKind::Note
-                    && s.content == "question: tabs or spaces?\ntabs | spaces"),
+                    && s.content == "question: tabs or spaces?\nspaces - indent with four spaces | tabs - indent with tabs"),
         );
         assert!(
             p.requests()[0]

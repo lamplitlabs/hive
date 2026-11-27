@@ -233,7 +233,7 @@ const HARNESS_WORDS = "harness sign in sign-in signin sign out login log in gith
 // screen still lists it at its effective (default) value and the owner can
 // set it from here.
 const EXTRA_DEFAULTS: Omit<Setting, "updated_at" | "updated_by">[] = [
-  { name: "owner.presence", value: "present", default: "present", kind: "choice", min: null, choices: ["present", "away"], description: "present: proposals, compute requests and owner questions wait for you; away: each project's lead decides the board's proposals on your behalf with its best judgement, recorded as the lead's decision and never as yours - hard stops, money (compute), Tier 2 decisions (ADRs), the constitution's protected sections and the kill switch still wait for you" },
+  { name: "owner.presence", value: "present", default: "present", kind: "choice", min: null, choices: ["present", "away"], description: "either way each project's lead decides the routine asks addressed to you (proposals, questions, findings, handoffs, suggestions) on your behalf with its best judgement, recorded as the lead's decision and never as yours - only hard stops wait for you: money (compute), destructive or irreversible acts, credentials, publication, Tier 2 decisions (ADRs), the constitution's protected sections and the kill switch; present: hive asks before it adds a tool, a skill or a lead seat; away: hive adds the toolkit a project's shape asks for on its own (a drafted skill, a tool that needs no secret) and says so on the board, and lead seats are not asked about (the hub's Leads gallery shows them)" },
   { name: "light_model", value: "", default: "", kind: "text", min: null, choices: null, description: "the model of the light runs - lead, answer, ballot, reflect, onboard and clean jobs, the sealed held-out call and the login check; empty means worker_model" },
   { name: "measure_model", value: "", default: "", kind: "text", min: null, choices: null, description: "the model the self-improvement loop measures fixtures with - every baseline, experiment and landing re-measure; empty means worker_model. It is part of the evaluator: a change re-measures every baseline, and a pinned value keeps the baselines when worker_model changes" },
   { name: "ask.model", value: "", default: "", kind: "text", min: null, choices: null, description: "the model Ask answers the owner's questions with (console Ask, hive ask); empty means light_model, then worker_model, then the provider's default chat model" },
@@ -293,7 +293,7 @@ function withExtraDefaults(rows: Setting[]): Setting[] {
 const ON_OFF = { on: "On", off: "Off" };
 const SETTING_LABELS: Record<string, { on?: string; off?: string; choices?: Record<string, string> }> = {
   stop: { on: "Paused: nothing new starts", off: "Running" },
-  "owner.presence": { choices: { present: "I'm here", away: "I'm away: lead agents decide for me" } },
+  "owner.presence": { choices: { present: "I'm here", away: "I'm away: Hive adds tools and skills on its own" } },
   landing: { choices: { agents: "Agents merge it themselves", human: "I merge it myself" } },
   "landing.push": { choices: { off: "Don't push, I push myself", main: "Push the main branch", pr: "Open a pull request" } },
   "landing.ui_report": { choices: { require: "Wait for the report", warn: "Merge, and say it has none", off: "Don't ask for one" } },

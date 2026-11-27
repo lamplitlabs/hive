@@ -1,5 +1,6 @@
 import AppKit
 import WebKit
+import HiveKit
 
 /// The little the app needs to know from, and do to, the console page. The
 /// script runs in its own content world: the page's scripts can neither see
@@ -113,16 +114,9 @@ enum PageBridge {
     }
 
     /// The hard-stop strip on Sessions (the console has no For you page since
-    /// TASK-129), without a reload when Sessions is open.
-    static let showForYou = """
-    (() => {
-      if (location.pathname !== '/chat/') return false;
-      const section = document.getElementById('hard-stops');
-      if (section) section.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      history.replaceState(history.state, '', '#hard-stops');
-      return true;
-    })()
-    """
+    /// TASK-129), without a reload when the strip is on screen; false when it
+    /// is not, so the caller loads it (HiveKit's HardStopsScript, tested there).
+    static let showForYou = HardStopsScript.source
 
     /// Presses one of the page's own buttons (`[data-palette-trigger]`, `[data-ask-trigger]`).
     static func press(_ selector: String) -> String {

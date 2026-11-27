@@ -841,8 +841,10 @@ impl BoardData {
                 let mut hard_stop = hive_board::hard_stop_ask(&kind, &summary, body);
                 // A question the daemon asked (a restart drain, a sign-in,
                 // a lead seat) is never the lead's: the daemon answers it
-                // itself once the owner acts.
-                if hard_stop.is_empty() && kind == "question" && str_key(post, "agent") == "daemon"
+                // itself once the owner acts. The planner's stuck-thread
+                // question is the lead's (TASK-149 item 5).
+                if hard_stop.is_empty()
+                    && hive_board::daemon_owner_question(&kind, &str_key(post, "agent"), &summary)
                 {
                     hard_stop = "was asked by the daemon".into();
                 }
@@ -851,8 +853,12 @@ impl BoardData {
                 // holds many) is settled by its own answer or decision, or
                 // by a result that closes the thread as a whole - never by
                 // the owner's decision on a sibling, whose result post
-                // names that sibling.
-                let resolved = if stop {
+                // names that sibling. The loop's stop and its flat-fixture
+                // pause share the loop-gate thread with every earlier gate
+                // question and its decision, so only a result after the
+                // question settles it (TASK-149): a Yes on last week's pause
+                // does not hide this week's.
+                let resolved = if stop || flat {
                     thread_posts[i + 1..]
                         .iter()
                         .any(|p| !str_key(p, "resolution").is_empty())
@@ -913,7 +919,14 @@ impl BoardData {
                         json!(hard_stop),
                         json!(options.options),
                         json!(options.why),
-                        json!(if options.ready() { String::new() } else { options.missing() }),
+                        // The stop always has its own two answers (the
+                        // console's carry on / keep paused): it never lacks
+                        // any, so no reader needs to exempt it.
+                        json!(if stop || options.ready() {
+                            String::new()
+                        } else {
+                            options.missing()
+                        }),
                     ],
                 ));
             }
@@ -2360,6 +2373,69 @@ mod tests {
         );
     }
 
+    /// TASK-149: the flat-fixture pause gets the stop's closure rule. The
+    /// owner's Yes on last week's pause closes that question, not the
+    /// loop-gate thread for this week's.
+    #[test]
+    fn a_later_flat_pause_waits_after_the_owner_decided_an_earlier_one() {
+        let _serial = crate::test_helpers::serial();
+        let s = http::additions_store(false);
+        let repo = repo();
+        hive_board::add_project(
+            &s,
+            repo.path().to_str().unwrap(),
+            "One",
+            "",
+            false,
+            "",
+            "human",
+            "one",
+        )
+        .unwrap();
+        join(&s, "alpha");
+        let pause = |date: &str| {
+            hive_board::create_post(
+                &s,
+                hive_board::PostInput {
+                    kind: "question".into(),
+                    project: "one".into(),
+                    area: "evolution".into(),
+                    thread: "loop-gate".into(),
+                    agent: "alpha".into(),
+                    for_owner: true,
+                    summary: hive_store::EVOLUTION_FLAT_SUMMARY.into(),
+                    body: format!("The loop pauses.\n\n{}", hive_board::FLAT_PAUSE_ANSWERS),
+                    date: date.into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        let old = pause("2026-09-06T08:00:00Z");
+        hive_board::decide(&s, &old.id, "yes", "run more cycles", "human").unwrap();
+        let after = (chrono::DateTime::parse_from_rfc3339(&s.now()).unwrap()
+            + chrono::Duration::seconds(60))
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let new = pause(&after);
+        let ids = || {
+            http::handler(&s)
+                .snapshot("one", "")
+                .unwrap()
+                .questions
+                .iter()
+                .map(|q| str_key(q, "id"))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            ids(),
+            vec![new.id.clone()],
+            "the earlier Yes hid the later pause"
+        );
+        // The owner's No on it is a decision: the row leaves the strip.
+        hive_board::decide(&s, &new.id, "no", "keep it paused", "human").unwrap();
+        assert!(ids().is_empty());
+    }
+
     #[test]
     fn owner_questions_wait_until_decided_answered_or_resolved() {
         let _serial = crate::test_helpers::serial();
@@ -2592,6 +2668,10 @@ mod tests {
         );
         assert_eq!(data.questions[0]["stop"], true);
         assert_eq!(data.questions[0]["thread_key"], "evolution/loop-gate");
+        // The stop names no answers of its own and still lacks none: the
+        // console gives it carry on / keep paused (TASK-149 item 8).
+        assert_eq!(data.questions[0]["needs_options"], "");
+        assert_eq!(data.questions[0]["decider"], "owner");
         assert_eq!(data.questions[1]["stop"], false);
         assert_eq!(data.questions[1]["kind"], "question");
         assert!(

@@ -17,7 +17,11 @@
     "thread_last": "2026-09-02T07:15:00Z",
     "slug": "demo-app",
     "base": "/p/demo-app",
-    "hard_stop": "the evolution loop stopped (ADR-043)"
+    "hard_stop": "the evolution loop stopped (ADR-043)",
+    "decider": "owner",
+    "options": [],
+    "recommended_why": "",
+    "needs_options": "no answers to pick (two or more `Option:` lines, or `Yes:` and `No:`)"
   },
   {
     "agent": "cinder",
@@ -37,6 +41,23 @@
     "thread_last": "2026-09-01T18:30:00Z",
     "slug": "demo-app",
     "base": "/p/demo-app",
-    "hard_stop": "is about money"
+    "hard_stop": "is about money",
+    "decider": "owner",
+    "options": [
+      {
+        "label": "Keep stripe-test-us",
+        "effect": "retire the EU account; the fixtures follow billing",
+        "answer": "",
+        "recommended": true
+      },
+      {
+        "label": "Keep both",
+        "effect": "the fixtures stay pinned to stripe-test-eu",
+        "answer": "",
+        "recommended": false
+      }
+    ],
+    "recommended_why": "billing already runs on it, so the fixtures test what ships",
+    "needs_options": ""
   }
 ]

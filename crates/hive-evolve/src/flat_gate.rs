@@ -8,7 +8,10 @@
 //! the owner's answer or yes on that question (never an agent's: the pause
 //! is the owner's like the stop), lets the loop run again; after a
 //! review, `evolve.flat_cycles` new tied cycles must accumulate before it asks
-//! again. The gate is a pure read: `plan` posts the question, the way it posts
+//! again. The owner's No ("keep it paused") is no review: the No-decided
+//! question stays the gate's open question, so the next plan pass neither
+//! asks again nor reviews it itself (TASK-149). The gate is a pure read:
+//! `plan` posts the question, the way it posts
 //! the failed-experiment gate's.
 //!
 //! Judge noise is not a signal either way. A cycle is read fixture by fixture
@@ -93,6 +96,28 @@ const REVIEWED_SINCE_SQL: &str = "(q.date >= ?3
 /// question with a `result` post.
 const CLOSED_SQL: &str =
     "EXISTS (SELECT 1 FROM posts r WHERE r.kind = 'result' AND r.on_post = q.id)";
+
+/// The pause's own closure rule (TASK-149): the owner's No writes a
+/// `declined` result on the question, but No means "keep it paused", so that
+/// result does not close it - the question stays the gate's open question
+/// and the next plan pass coalesces on it instead of asking again. Any other
+/// result on it (the retire sweep's) still closes it.
+const FLAT_CLOSED_SQL: &str =
+    "EXISTS (SELECT 1 FROM posts r WHERE r.kind = 'result' AND r.on_post = q.id
+	AND NOT (r.resolution = 'declined'
+		AND EXISTS (SELECT 1 FROM decisions d WHERE d.post_id = q.id AND d.answer = 'no')))";
+
+/// Whether the owner answered the gate's question No (keep it paused).
+pub fn kept_paused(s: &hive_store::Store, question: &str) -> Result<bool> {
+    if question.is_empty() {
+        return Ok(false);
+    }
+    Ok(s.conn()?.query_row(
+        "SELECT EXISTS (SELECT 1 FROM decisions WHERE post_id = ? AND answer = 'no')",
+        [question],
+        |r| r.get(0),
+    )?)
+}
 
 /// The window size the store asks for: 0 when the gate is off.
 pub fn flat_cycles(s: &hive_store::Store) -> usize {
@@ -287,12 +312,15 @@ pub fn flat_fixture_gate(s: &hive_store::Store, project: &str) -> Result<(String
 }
 
 /// The gate's newest question that nobody has reviewed or closed, or empty.
+/// A question the owner answered No is still open: the No keeps the pause
+/// (it is no review), so the gate waits on that question rather than asking
+/// the owner the same thing again.
 pub fn open_flat_question(s: &hive_store::Store, project: &str) -> Result<String> {
     let conn = s.conn()?;
     Ok(conn
         .query_row(
             &format!(
-                "SELECT q.id FROM posts q WHERE {QUESTION_SQL} AND NOT {REVIEWED_SQL} AND NOT {CLOSED_SQL}
+                "SELECT q.id FROM posts q WHERE {QUESTION_SQL} AND NOT {REVIEWED_SQL} AND NOT {FLAT_CLOSED_SQL}
 				ORDER BY q.date DESC, q.id DESC LIMIT 1"
             ),
             params![project, FLAT_SUMMARY],

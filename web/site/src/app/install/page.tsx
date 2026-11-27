@@ -193,7 +193,7 @@ export default function InstallPage() {
         <H2 id="decide">7. Say yes or no</H2>
         <p>
           What needs your yes or no waits on its project&apos;s <strong>For you</strong> tab: a question, a proposal, a request for more
-          machines, a hard stop. The hard stops (money, what cannot be undone, credentials, publication) also wait on <strong>Sessions</strong>. A yes-or-no question shows two buttons and an open one an answer box, with the agents&apos;
+          machines, a hard stop. The hard stops (money, what cannot be undone, credentials, publication) also wait on <strong>Sessions</strong>. Every question shows its answers as buttons, the recommended one first, with the agents&apos;
           reasoning beside them. Each waits for your answer, and everything else carries on. There is one exception: when the self-improvement loop pauses
           because its fixtures tell nothing apart and a day passes with no answer, it answers that one question itself (
           <Link href={`${PAGES.rsi.path}#stops`}>Hard stops and the kill switch</Link>).

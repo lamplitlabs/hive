@@ -353,7 +353,7 @@ test("only raster pictures of the docs are carried: a file that can hold script 
 
 test("the pictures of the docs are listed for the export, and each page that shows one keeps its place", () => {
   const pictures = docs.listDocPictures(docs.docsRoot());
-  assert.ok(pictures.includes("how-to/images/console-home.webp"));
+  assert.ok(pictures.includes("how-to/images/console-sessions.webp"));
   const built = docs.loadDocs();
   const shown = new Set(built.docs.flatMap((d) => d.links.filter((l) => l.kind === "repo" && l.repoPath?.startsWith("docs/") && /\.(png|webp|jpe?g|gif|avif)$/i.test(l.repoPath)).map((l) => l.repoPath.slice("docs/".length))));
   // No picture is kept that no page shows.

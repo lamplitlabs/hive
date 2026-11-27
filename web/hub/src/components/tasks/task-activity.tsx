@@ -20,7 +20,7 @@ import { Markdown } from "@/components/hive/markdown";
 import { Disclosure, EmptyState, ErrorNotice, SkeletonRows } from "@/components/hive/panel";
 import { Avatar, Mono, ToneBadge, When } from "@/components/hive/who";
 import { fmtDate, plural, sentence } from "@/lib/format";
-import { isDefaultChoice, orderChoices } from "@/lib/message-choices";
+import { choiceLook, orderChoices } from "@/lib/message-choices";
 import { hrefs } from "@/lib/nav";
 import { postKindWord } from "@/lib/words";
 import { cn } from "@/lib/utils";
@@ -285,7 +285,7 @@ function MessageLine({ item, task, chat, overlay }: { item: ActivityItem; task: 
         {live && m ? (
           <div className="mt-2 flex flex-wrap items-center gap-1.5 px-1" role="group" aria-label="Answers to pick">
             {orderChoices(choices).map((c, ci, all) => (
-              <AnswerButton key={c.label} label={c.label} recommended={isDefaultChoice(all, c)} effect={c.note} size="sm" className="h-8 rounded-full" disabled={chat.busy} onClick={() => void chat.pick(c)} />
+              <AnswerButton key={c.label} label={c.label} recommended={choiceLook(all, c) === "recommended"} filled={choiceLook(all, c) === "default"} effect={c.note} size="sm" className="h-8 rounded-full" disabled={chat.busy} onClick={() => void chat.pick(c)} />
             ))}
             <span className="text-xs text-muted-foreground">or write below</span>
           </div>

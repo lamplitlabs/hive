@@ -8,6 +8,8 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/hive/confirm";
 import { AnswerPicker } from "@/components/hive/decide-buttons";
+import { useAnswerDialog } from "@/components/hive/use-answer-dialog";
+import { computeAnswer, proposalAnswer, type ComputeAnswer, type YesNoAnswer } from "@/lib/answer-dialog";
 import { ErrorNotice, SkeletonRows } from "@/components/hive/panel";
 import { KindTile } from "@/components/hive/kind-tile";
 import { ListItem, ListRow, ListRows } from "@/components/hive/list-row";
@@ -73,14 +75,21 @@ export function HardStops() {
       <SectionHeading id="hard-stops-title" icon={ShieldAlertIcon} count={rows.length} countTone="you" note="Money, what can't be undone, credentials, publication and the project goal wait for you; the leads decide the rest." className="mb-3">
         {hardStopWords(rows.length)}
       </SectionHeading>
-      <ListRows ariaLabel="Decisions only you can make">
-        {rows.map((r) => (
-          <Row key={r.key} r={r} stop={HARD_STOP_LABEL[r.stopKind]} inbox={inbox} brain={brain} canDecide={canDecide} caps={compute.data?.caps} startOpen={r.key === answerKey} selected={openId === r.key} onOpen={r.section === "decisions" ? () => setOpenId(openId === r.key ? null : r.key) : undefined} projectName={r.projectWord || nameOf(o, r.project)} router={router} />
-        ))}
-      </ListRows>
-      <SidePanel open={!!openDecision} onClose={close} width="reading" title={openDecision ? sentence(openDecision.title) : "Decision"} subtitle={openDecision ? openDecision.id + " · " + nameOf(o, openDecision.project) : undefined} lead={<KindTile kind="decision" size={28} waiting />} actions={openDecision ? <Link href={hrefs.record(openDecision.id, openDecision.project)} className="text-xs font-medium text-link hover:underline">Open page</Link> : undefined} footer={openDecision ? <RecordDecide record={openDecision} onDone={close} /> : undefined}>
-        {openDecision ? <RecordReading key={openDecision.id} record={openDecision} /> : null}
-      </SidePanel>
+      {/* The list and the decision record's panel share a row (SidePanel's
+          layout): on a wide screen the panel docks to the right of the
+          list, not under it (TASK-149 item 19); below 1024 px it is a sheet. */}
+      <div className="flex min-w-0 items-start gap-0" data-hard-stops-layout>
+        <div className="min-w-0 flex-1">
+          <ListRows ariaLabel="Decisions only you can make">
+            {rows.map((r) => (
+              <Row key={r.key} r={r} stop={HARD_STOP_LABEL[r.stopKind]} inbox={inbox} brain={brain} canDecide={canDecide} caps={compute.data?.caps} startOpen={r.key === answerKey} selected={openId === r.key} onOpen={r.section === "decisions" ? () => setOpenId(openId === r.key ? null : r.key) : undefined} projectName={r.projectWord || nameOf(o, r.project)} router={router} />
+            ))}
+          </ListRows>
+        </div>
+        <SidePanel open={!!openDecision} onClose={close} width="reading" title={openDecision ? sentence(openDecision.title) : "Decision"} subtitle={openDecision ? openDecision.id + " · " + nameOf(o, openDecision.project) : undefined} lead={<KindTile kind="decision" size={28} waiting />} actions={openDecision ? <Link href={hrefs.record(openDecision.id, openDecision.project)} className="text-xs font-medium text-link hover:underline">Open page</Link> : undefined} footer={openDecision ? <RecordDecide record={openDecision} onDone={close} /> : undefined}>
+          {openDecision ? <RecordReading key={openDecision.id} record={openDecision} /> : null}
+        </SidePanel>
+      </div>
     </section>
   );
 }
@@ -113,7 +122,7 @@ function Row({ r, stop, inbox, brain, canDecide, caps, startOpen, selected, onOp
     const q = inbox.questions.find((x) => x.id === id);
     if (q) {
       const answers = questionShape(q);
-      actions = <AnswerPicker id={q.id} summary={q.summary} answers={answers} stop={isStopQuestion(q)} canDecide={canDecide} size="xs" />;
+      actions = <AnswerPicker id={q.id} summary={q.summary} answers={answers} stop={isStopQuestion(q)} canDecide={canDecide} size="xs" focusFirst={!!startOpen} />;
       if (expanded) details = <QuestionDetails q={q} slug={q.slug || brain} answers={answers} />;
     }
   } else if (kind === "proposal") {
@@ -259,19 +268,20 @@ function isStopQuestion(q: ReturnType<typeof useInbox>["questions"][number]): bo
 }
 
 function ProposalActions({ p, canDecide, register }: { p: ReturnType<typeof useInbox>["proposals"][number]; canDecide: boolean; register: (p: YesNo | null) => void }) {
-  const [open, setOpen] = useState<"yes" | "no" | null>(null);
-  const yes = useCallback(() => setOpen("yes"), []);
-  const no = useCallback(() => setOpen("no"), []);
+  const { answer, key, pick, dialog } = useAnswerDialog<YesNoAnswer>();
+  const yes = useCallback(() => pick("yes"), [pick]);
+  const no = useCallback(() => pick("no"), [pick]);
   const can = canDecide && p.can_decide !== false;
   useRegister(register, can ? { yes, no, yesLabel: "Accept", noLabel: "Decline" } : null);
   if (!can) return <span className="text-xs text-muted-foreground">Answer on the machine that runs Hive</span>;
-  const isYes = open === "yes";
+  const isYes = answer === "yes";
+  const spec = proposalAnswer(p.id, answer ?? "yes");
   return (
     <>
       <Pair yes={yes} no={no} yesLabel="Accept" noLabel="Decline" />
       <ConfirmDialog
-        open={open !== null}
-        onOpenChange={(v) => !v && setOpen(null)}
+        key={key}
+        {...dialog}
         title={isYes ? "Accept this proposal?" : "Decline this proposal?"}
         description={
           <>
@@ -279,11 +289,11 @@ function ProposalActions({ p, canDecide, register }: { p: ReturnType<typeof useI
             <span className="mt-2 block">{isYes ? "The agents go ahead as proposed. If it asks for work, a job is queued." : "The agents won't pursue it as written."}</span>
           </>
         }
-        action={isYes ? "Yes, accept" : "No, decline"}
-        destructive={!isYes}
-        words={{ label: "A note for the agents (optional)", placeholder: isYes ? "Accepted: keep the scope as written." : "Not now, because…" }}
-        success={isYes ? "Accepted. The agents will go ahead." : "Declined. The agents won't pursue it."}
-        onConfirm={(words) => writes.decide(p.id, isYes ? "yes" : "no", words)}
+        action={spec.action}
+        destructive={spec.destructive}
+        words={spec.words}
+        success={spec.success}
+        onConfirm={(words) => spec.send(writes, words)}
       />
     </>
   );
@@ -292,19 +302,19 @@ function ProposalActions({ p, canDecide, register }: { p: ReturnType<typeof useI
 const COMPUTE_CHANGES = (p: string) => p.startsWith("compute") || p === "org";
 
 function ComputeActions({ r, caps, register }: { r: ReturnType<typeof useInbox>["compute"][number]; caps?: { vms_now: number; max_vms: number; hours_today: number; max_hours_per_day: number }; register: (p: YesNo | null) => void }) {
-  const [which, setWhich] = useState<"approve" | "deny" | null>(null);
-  const yes = useCallback(() => setWhich("approve"), []);
-  const no = useCallback(() => setWhich("deny"), []);
+  const { answer, key, pick, dialog } = useAnswerDialog<ComputeAnswer>();
+  const yes = useCallback(() => pick("approve"), [pick]);
+  const no = useCallback(() => pick("deny"), [pick]);
   useRegister(register, { yes, no, yesLabel: "Approve", noLabel: "Deny" });
-  const approve = which === "approve";
+  const approve = answer === "approve";
+  const spec = computeAnswer(r.id, answer ?? "approve");
   return (
     <>
       <Pair yes={yes} no={no} yesLabel="Approve" noLabel="Deny" />
-      {/* One dialog for both answers: the key mounts it anew for each, so the words Deny opens with are never sent with an Approve. */}
+      {/* One dialog for both answers, keyed by each opening (lib/answer-dialog.ts): the words Deny opens with are never sent with an Approve, and closing keeps the key so the exit animation plays. */}
       <ConfirmDialog
-        key={which ?? "closed"}
-        open={which !== null}
-        onOpenChange={(v) => !v && setWhich(null)}
+        key={key}
+        {...dialog}
         title={approve ? "Approve the extra machine?" : "Deny the extra machine?"}
         description={
           <span>
@@ -313,11 +323,11 @@ function ComputeActions({ r, caps, register }: { r: ReturnType<typeof useInbox>[
             {approve ? "Hive starts it within the limits you set, and removes it when the time is up." : "The agent sees your answer the next time it checks."}
           </span>
         }
-        action={approve ? "Approve" : "Deny"}
-        destructive={!approve}
-        words={{ label: approve ? "A note for the agent (optional)" : "Tell the agent why", placeholder: approve ? "Approved: needed for the load test." : "Not now. Use the machines you have.", required: !approve, initial: approve ? "" : "Not now. Use the machines you have." }}
-        success={approve ? "Approved. Hive will start the machine." : "Denied. The agent will see your note."}
-        onConfirm={(w) => (approve ? writes.approveCompute(r.id, w) : writes.denyCompute(r.id, w))}
+        action={spec.action}
+        destructive={spec.destructive}
+        words={spec.words}
+        success={spec.success}
+        onConfirm={(w) => spec.send(writes, w)}
         invalidates={COMPUTE_CHANGES}
       />
     </>

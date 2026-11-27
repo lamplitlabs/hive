@@ -1888,6 +1888,131 @@ mod tests {
         );
     }
     #[test]
+    fn the_owners_no_on_the_flat_pause_holds_through_the_next_plan_pass() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = plan_test_lock();
+        let s = cycle_ready();
+        voted_suggestion_with_votes(&s, "next", "operating-layer", "README.md", &["up", "up"]);
+        s.set_setting("human", "evolve.flat_cycles", "3").unwrap();
+        s.set_setting("human", crate::heal::FLAT_WAIT_SETTING, "1")
+            .unwrap();
+        let now = chrono::DateTime::parse_from_rfc3339(&s.now()).unwrap();
+        let stamp = |offset: i64| {
+            (now + chrono::Duration::seconds(offset))
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        };
+        let conn = s.conn().unwrap();
+        conn.execute(
+            "UPDATE evolution_fixtures SET at = ? WHERE project = 'demo'",
+            [stamp(-100_000)],
+        )
+        .unwrap();
+        for id in ["B-002", "B-003", "B-004"] {
+            conn.execute(
+                "INSERT INTO evolution_archive (id, project, suggestion_post, hypothesis, branch,
+				baseline_score, variant_score, tolerance, kept, fixtures_json, at)
+				VALUES (?, 'demo', 'S-1', 'one constant', '', 0.5, 0.5, 0.02, 1, '{}', ?)",
+                rusqlite::params![id, stamp(0)],
+            )
+            .unwrap();
+        }
+        drop(conn);
+        let plan = || {
+            plan_experiment(
+                &s,
+                "demo",
+                PlanOptions {
+                    agent: "tester".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        // The pause was asked two hours ago, past evolve.flat_wait_hours (1).
+        let question = hive_board::create_post(
+            &s,
+            hive_board::PostInput {
+                kind: "question".into(),
+                project: "demo".into(),
+                area: "evolution".into(),
+                thread: "loop-gate".into(),
+                for_owner: true,
+                agent: "tester".into(),
+                summary: crate::flat_gate::FLAT_SUMMARY.into(),
+                body: crate::flat_gate::flat_fixture_question_body(&s, "demo").unwrap(),
+                date: stamp(-7200),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .id;
+        // The owner taps No: keep it paused.
+        let d = hive_board::decide(&s, &question, "no", "keep it paused", "human").unwrap();
+        assert_eq!(d.result.resolution, "declined");
+        assert!(d.job.is_none(), "the pause's decision queues no job: {d:?}");
+        // Past the wait, the loop must still not review it over the No.
+        assert_eq!(
+            crate::flat_gate::open_flat_question(&s, "demo").unwrap(),
+            question,
+            "the No-decided question is no longer the gate's open question"
+        );
+        for _ in 0..2 {
+            let next = plan();
+            assert!(
+                !next.created && next.job_id.is_empty() && next.healed.is_empty(),
+                "the owner's No did not keep the loop paused: {next:?}"
+            );
+            assert_eq!(
+                next.question, question,
+                "the next plan pass asked the owner again: {next:?}"
+            );
+        }
+        assert_eq!(count_rows(&s, "jobs WHERE kind = 'experiment'"), 0);
+        assert_eq!(
+            count_rows(
+                &s,
+                &format!(
+                    "posts WHERE kind = 'question' AND summary = '{}'",
+                    crate::flat_gate::FLAT_SUMMARY
+                )
+            ),
+            1,
+            "a second pause question was posted after the No"
+        );
+        assert_eq!(
+            count_rows(&s, "posts WHERE kind = 'answer' AND area = 'evolution'"),
+            0,
+            "the loop answered over the owner's No"
+        );
+        let status = crate::status::status(&s, "demo").unwrap();
+        assert_eq!(status.planning.state, "blocked", "{status:?}");
+        assert_eq!(status.planning.question, question);
+        assert!(
+            status.planning.reason.contains(&format!(
+                "the owner said keep it paused on question {question}"
+            )),
+            "{status:?}"
+        );
+        // A fixture whose score moves still lifts the pause, as the No says.
+        crate::fixtures::add_fixture(
+            &s,
+            crate::fixtures::FixtureInput {
+                project: "demo".into(),
+                name: "moves".into(),
+                metric: true,
+                scorer: "echo 1".into(),
+                weight: 1.0,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let moved = plan();
+        assert!(
+            moved.created && moved.question.is_empty(),
+            "a new fixture did not lift the kept pause: {moved:?}"
+        );
+    }
+    #[test]
     fn plan_experiment_skips_archived_suggestion() {
         let _serial = crate::test_helpers::serial();
         let _guard = plan_test_lock();

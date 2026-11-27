@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { HARD_STOP_LABEL, HARD_STOP_ORDER, SECTION_ORDER, SECTION_TITLE, filterRows, forYouProjects, forYouRows, groupRows, hardStopOf, hardStopRows, hardStopWords, latestRows, orderRows, waitingWords } from "./asks-state.ts";
+import { HARD_STOP_LABEL, OLDER_HUB_STOP, bellView, hardStopField, HARD_STOP_ORDER, SECTION_ORDER, SECTION_TITLE, filterRows, forYouProjects, forYouRows, groupRows, hardStopOf, hardStopRows, hardStopWords, latestRows, orderRows, waitingWords } from "./asks-state.ts";
 import { hrefs } from "../../lib/nav.ts";
 
 const empty = { decisions: [], proposals: [], questions: [], compute: [], work: [], drafts: [], steps: [], machine: false, provider: null, brain: "amistio" };
@@ -230,7 +230,9 @@ test("only the hard stops reach the strip, by the hub's one rule: its hard_stop,
   const strip = hardStopRows(rows);
   assert.deepEqual(strip.map((r) => r.key), ["proposal:P-3", "compute:C-1", "question:Q-1", "proposal:P-1", "question:Q-3", "work:SUG-1", "proposal:P-4", "proposal:P-5", "decision:ADR-081"]);
   for (const k of HARD_STOP_ORDER) assert.ok(HARD_STOP_LABEL[k], k + " has a label");
-  assert.deepEqual(hardStopRows(forYouRows({ ...empty, questions: [{ id: "Q", summary: "Delete the old branch?", date: "" }] })), [], "the console has no word list of its own: no hub mark, no strip");
+  // The console has no word list of its own: a row from an older hub, with no
+  // mark, is the owner's (TASK-149 item 15) - never "destructive" by its words.
+  assert.deepEqual(hardStopRows(forYouRows({ ...empty, questions: [{ id: "Q", summary: "Delete the old branch?", date: "" }] })).map((r) => r.stopKind), ["owner"]);
   assert.equal(hardStopWords(1), "1 decision only you can make");
   assert.equal(hardStopWords(3), "3 decisions only you can make");
 });
@@ -287,4 +289,38 @@ test("a proposed goal is a proposal row that names itself and opens as its card"
   const plain = rows.find((r) => r.key === "proposal:P-1");
   assert.equal(plain.card, undefined);
   assert.equal(plain.meta, undefined);
+});
+
+test("an ask from an older hub, with no hard_stop field, stays the owner's; an empty one is routine (TASK-149 item 15)", () => {
+  assert.equal(hardStopField({}), OLDER_HUB_STOP);
+  assert.equal(hardStopField({ hard_stop: null }), OLDER_HUB_STOP);
+  assert.equal(hardStopField({ hard_stop: "" }), undefined);
+  assert.equal(hardStopField({ hard_stop: "is about money" }), "is about money");
+  const rows = forYouRows({
+    ...empty,
+    questions: [
+      { id: "Q-old", slug: "web", summary: "Keep the old API?", date: "2026-11-01T00:00:00Z" },
+      { id: "Q-routine", slug: "web", summary: "Rename the helper?", date: "2026-11-02T00:00:00Z", hard_stop: "" },
+    ],
+    proposals: [{ id: "P-old", slug: "web", summary: "Drop the cache", date: "2026-11-03T00:00:00Z" }],
+  });
+  assert.deepEqual(hardStopRows(rows).map((r) => r.key).sort(), ["proposal:P-old", "question:Q-old"]);
+});
+
+test("the bell counts what the strip lists, not the routine asks (TASK-149 item 20)", () => {
+  const rows = forYouRows({
+    ...empty,
+    questions: [
+      { id: "Q-1", slug: "web", summary: "Rotate the deploy key?", date: "2026-11-03T00:00:00Z", hard_stop: "is about credentials" },
+      { id: "Q-2", slug: "web", summary: "Keep the old API?", date: "2026-11-02T00:00:00Z", hard_stop: "" },
+    ],
+    proposals: [{ id: "P-2", slug: "web", summary: "Delete the unused helper", date: "2026-11-05T00:00:00Z", hard_stop: "" }],
+    compute: [{ id: "C-7", project: "web", size: "Standard_D4s_v5", hours: 2, requested_by: "quartz", at: "2026-11-06T09:00:00Z" }],
+  });
+  const bell = bellView(rows);
+  assert.equal(bell.count, hardStopRows(rows).length);
+  assert.equal(bell.count, 2);
+  assert.deepEqual(bell.latest.map((r) => r.key), hardStopRows(rows).map((r) => r.key));
+  assert.equal(bellView(rows, 1).latest.length, 1);
+  assert.equal(bellView(rows, 1).count, 2, "the count is every row, the list the first few");
 });
