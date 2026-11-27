@@ -786,6 +786,121 @@ pub(crate) fn rented_caps(s: &hive_store::Store) -> std::collections::BTreeSet<S
     )
 }
 
+/// The class of the machine the daemon rents (`linux/amd64`): its OS and
+/// architecture words, as TASK-144 names a machine class for a check that
+/// is red on one kind of machine.
+pub(crate) fn rented_class(caps: &std::collections::BTreeSet<String>) -> String {
+    let os = ["linux", "macos", "windows"]
+        .into_iter()
+        .find(|w| caps.contains(*w))
+        .unwrap_or("");
+    let arch = ["amd64", "arm64"]
+        .into_iter()
+        .find(|w| caps.contains(*w))
+        .unwrap_or("");
+    format!("{os}/{arch}")
+}
+
+/// The queued work jobs that waited since `since` and that a machine offering
+/// `caps` would be given (TASK-156 item 3), oldest first: the job's needs
+/// are met by the machine, and it is not held on this machine - a job whose
+/// session is held here with its clone carries on here, and a hand's slot
+/// passes it (`jobs::lease`), so it is no reason to rent one. A machine
+/// rented for work it cannot take stood drained all night on 27 November
+/// (CR-11114).
+pub(crate) fn rentable_jobs(
+    conn: &(impl crate::util::Querier + ?Sized),
+    caps: &std::collections::BTreeSet<String>,
+    since: &str,
+) -> Vec<Row> {
+    let (fit, words) = hive_store::needs::sql_fit("j.needs", caps);
+    let mut vals: Vec<&dyn rusqlite::ToSql> = vec![&since];
+    for w in &words {
+        vals.push(w);
+    }
+    crate::util::must_rows(
+        conn,
+        &format!(
+            "SELECT j.id, j.kind, j.project FROM jobs j JOIN projects p ON p.slug = j.project WHERE j.status = 'queued' AND p.status = 'active' AND j.kind IN ({}) AND j.created_at <= ? AND {fit} AND NOT EXISTS (SELECT 1 FROM harness_sessions h JOIN runs r ON r.id = h.run_id WHERE h.job_id = j.id AND h.status = 'held' AND r.executor = '{}') ORDER BY j.created_at",
+            crate::jobs::work_kinds_sql(),
+            crate::executor::LOCAL_EXECUTOR
+        ),
+        &vals,
+    )
+}
+
+/// The reason a starved queue gives for renting: how many of the `queued`
+/// jobs a rented machine could take (`rentable_jobs`, waited at least
+/// [`HANDS_WANTED_MINUTES`]), not the whole queue (TASK-156 item 3). On 27
+/// November CR-11117 was asked for "21 job(s) waited 33 min" while all but
+/// a few of them needed macOS.
+pub(crate) fn starved_waiting(
+    s: &hive_store::Store,
+    queued: i32,
+    waited: i32,
+    now: &str,
+) -> String {
+    let rented = rented_caps(s);
+    let since = crate::util::plus_minutes(now, -HANDS_WANTED_MINUTES);
+    let fit = s
+        .conn()
+        .map(|c| rentable_jobs(&c, &rented, &since).len())
+        .unwrap_or(0);
+    let mut line = format!(
+        "{fit} job(s) a rented {} machine could run waited {waited} min with every slot on this machine busy or held",
+        rented_class(&rented).trim_end_matches('/')
+    );
+    if usize::try_from(queued).unwrap_or(0) != fit {
+        line.push_str(&format!(" ({queued} queued in all)"));
+    }
+    line
+}
+
+/// Why the daemon rents no other machine for `project` (TASK-156 item 4): a
+/// rented machine ran work of the project before and none of the work any
+/// rented machine ran for it has landed. On 26 and 27 November one machine
+/// after another was rented for the brain and none of their work landed
+/// (its check was red on Linux); each request said "0 of the last 20 runs
+/// ... landed" and rented all the same. The first rental for a project is
+/// free; after one ran its work, renting waits for a landing. A machine
+/// that ran nothing (it came up without a tool, `rental_repeats_lack`)
+/// says nothing about landing. A machine the owner asks for by hand is the
+/// owner's call and is not held here.
+pub(crate) fn rented_landed_nothing(
+    conn: &(impl crate::util::Querier + ?Sized),
+    project: &str,
+) -> Option<String> {
+    // The finished runs of the project on rented machines, and whether one
+    // landed: it ended `done` with commits (handed to the landing from that
+    // machine) and a landing names its job. A job lost there that landed
+    // after a run on another machine is not the rented machine's landing.
+    let runs = crate::util::must_rows(
+        conn,
+        "SELECT c.id AS request, r.job_id, r.status = 'done' AND r.commits > 0 AND (EXISTS (SELECT 1 FROM events e WHERE e.action IN ('land.landed', 'land.merged') AND json_valid(e.detail) AND json_extract(e.detail, '$.job') = r.job_id) OR EXISTS (SELECT 1 FROM events e, json_each(CASE WHEN json_valid(e.detail) THEN e.detail ELSE '{}' END, '$.jobs') jj WHERE e.action = 'land.merged' AND json_valid(e.detail) AND json_extract(e.detail, '$.project') = r.project AND jj.value = r.job_id)) AS landed FROM runs r JOIN compute_requests c ON c.executor = r.executor WHERE c.executor != '' AND r.project = ? AND r.status != 'running' ORDER BY c.rowid DESC, r.started_at DESC",
+        &[&project],
+    );
+    if runs.is_empty() || runs.iter().any(|r| r.int("landed") != 0) {
+        return None;
+    }
+    let mut ids: Vec<String> = Vec::new();
+    for r in &runs {
+        let id = r.str("request");
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    let shown = ids.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+    let more = if ids.len() > 3 {
+        format!(" and {} more", ids.len() - 3)
+    } else {
+        String::new()
+    };
+    Some(format!(
+        "no rented machine has landed work for {project} yet ({} run(s) on {shown}{more}, none landed), so the daemon rents no other for {project} until one has; a machine asked for by hand (`hive compute request --project {project}`) is the owner's call",
+        runs.len()
+    ))
+}
+
 /// Why renting again for `project` would only repeat the last rental: the
 /// rented machine the daemon last gave it was marked unfit for a tool the
 /// image lacks, and the project's recipe - the one thing that puts a tool on
@@ -1041,19 +1156,8 @@ pub(crate) fn auto_compute(
     // not one whose project the last rented machine already proved too
     // bare for (`rental_repeats_lack`): the next waiting project gets the
     // machine instead.
-    let (fit, words) = hive_store::needs::sql_fit("j.needs", &rented_caps(s));
-    let mut vals: Vec<&dyn rusqlite::ToSql> = vec![&since];
-    for w in &words {
-        vals.push(w);
-    }
-    let candidates = crate::util::must_rows(
-        &conn,
-        &format!(
-            "SELECT j.id, j.kind, j.project FROM jobs j JOIN projects p ON p.slug = j.project WHERE j.status = 'queued' AND p.status = 'active' AND j.kind IN ({}) AND j.created_at <= ? AND {fit} ORDER BY j.created_at LIMIT 50",
-            crate::jobs::work_kinds_sql()
-        ),
-        &vals,
-    );
+    let rented = rented_caps(s);
+    let candidates = rentable_jobs(&conn, &rented, &since);
     if candidates.is_empty() {
         return Err(why(format!(
             "no improve or task job that a rented Linux machine could run has waited {min_wait} min"
@@ -1062,15 +1166,17 @@ pub(crate) fn auto_compute(
     let mut repeats: Vec<String> = Vec::new();
     let mut seen_projects = std::collections::BTreeSet::new();
     let mut job = Row::default();
-    for c in candidates {
+    for c in &candidates {
         let project = c.str("project");
         if !seen_projects.insert(project.clone()) {
             continue;
         }
-        match rental_repeats_lack(s, &project, now) {
+        match rental_repeats_lack(s, &project, now)
+            .or_else(|| rented_landed_nothing(&conn, &project))
+        {
             Some(line) => repeats.push(line),
             None => {
-                job = c;
+                job = c.clone();
                 break;
             }
         }
@@ -3324,9 +3430,7 @@ pub(crate) fn daemon(
                 if waited >= HANDS_WANTED_MINUTES {
                     // A machine the owner pre-authorised first; the question
                     // to the owner only when none may be rented.
-                    let waiting = format!(
-                        "{queued} job(s) waited {waited} min with every slot on this machine busy or held"
-                    );
+                    let waiting = starved_waiting(s, queued, waited, &now);
                     match auto_compute(s, &waiting, HANDS_WANTED_MINUTES, &now, &actor) {
                         Ok(req) => say(
                             &o,
@@ -4581,6 +4685,179 @@ mod tests {
         .unwrap();
         let third = auto_compute(&s, WAITED, HANDS_WANTED_MINUTES, TEST_NOW, "daemon")
             .expect("rents once the recipe changed");
+        assert_eq!(third.project, "proj");
+    }
+
+    /// TASK-156 item 3: a starved queue asks for a machine for the jobs that
+    /// machine could take. A queue of Mac-only work said "21 job(s) waited"
+    /// and rented Linux (CR-11117); a job whose session is held here with its
+    /// clone carries on here, so it is no reason to rent either.
+    #[test]
+    fn a_starved_queue_counts_only_the_jobs_a_rented_machine_could_take() {
+        let _serial = crate::test_helpers::serial();
+        let s = store_with_projects(&["proj"]);
+        for (k, v) in [
+            ("compute.auto_approve", "1"),
+            ("compute.max_vms", "1"),
+            ("compute.max_hours_per_day", "24"),
+        ] {
+            s.set_setting(hive_store::HUMAN_AGENT, k, v).unwrap();
+        }
+        for id in ["j-mac-1", "j-mac-2", "j-mac-3", "j-held", "j-plain"] {
+            queued_job(&s, id, "proj", "task", "owner");
+        }
+        exec1(
+            &s,
+            "UPDATE jobs SET needs = 'macos' WHERE id LIKE 'j-mac-%'",
+            &[],
+        );
+        exec1(
+            &s,
+            "UPDATE jobs SET created_at = ?",
+            &[&crate::util::plus_minutes(TEST_NOW, -40)],
+        );
+        exec1(
+            &s,
+            "UPDATE jobs SET created_at = ? WHERE id = 'j-plain'",
+            &[&crate::util::plus_minutes(TEST_NOW, -31)],
+        );
+        // j-held ran here and its session is held with the clone.
+        exec1(
+            &s,
+            "INSERT INTO runs(id, job_id, agent, project, started_at, finished_at, status, executor) VALUES('run-held', 'j-held', 'aurora', 'proj', ?, ?, 'failed', 'local')",
+            &[
+                &crate::util::plus_minutes(TEST_NOW, -50),
+                &crate::util::plus_minutes(TEST_NOW, -45),
+            ],
+        );
+        exec1(
+            &s,
+            "INSERT INTO harness_sessions(id, run_id, job_id, agent, project, status, started_at, updated_at) VALUES('hs-held', 'run-held', 'j-held', 'aurora', 'proj', 'held', ?1, ?1)",
+            &[&crate::util::plus_minutes(TEST_NOW, -50)],
+        );
+        let waiting = starved_waiting(&s, 5, 33, TEST_NOW);
+        assert!(waiting.starts_with("1 job(s) a rented linux"), "{waiting}");
+        assert!(waiting.ends_with("(5 queued in all)"), "{waiting}");
+        let req = auto_compute(&s, &waiting, HANDS_WANTED_MINUTES, TEST_NOW, "daemon")
+            .expect("the plain job rents");
+        assert!(
+            req.reason.ends_with("j-plain (task) is first in line"),
+            "{}",
+            req.reason
+        );
+        // With only the Mac work and the held job left no machine is asked for.
+        exec1(
+            &s,
+            "UPDATE compute_requests SET status = 'released' WHERE id = ?",
+            &[&req.id],
+        );
+        exec1(&s, "DELETE FROM jobs WHERE id = 'j-plain'", &[]);
+        let waiting = starved_waiting(&s, 4, 33, TEST_NOW);
+        assert!(waiting.starts_with("0 job(s) a rented"), "{waiting}");
+        let err = auto_compute(&s, &waiting, HANDS_WANTED_MINUTES, TEST_NOW, "daemon")
+            .expect_err("nothing a rented machine could take");
+        let NoAutoCompute::Why(why) = &err else {
+            panic!("{err}");
+        };
+        assert!(why.starts_with("no improve or task job"), "{why}");
+    }
+
+    /// TASK-156 item 4: once a rented machine ran a project's work and none
+    /// of it landed, the daemon rents no other for that project until one
+    /// has; another project still gets a machine. Eight machines in a row
+    /// were rented for the brain on 26-27 November, each request saying "0
+    /// of the last 20 runs ... landed".
+    #[test]
+    fn no_second_rental_for_a_project_until_a_rented_machine_landed_its_work() {
+        let _serial = crate::test_helpers::serial();
+        let s = store_with_projects(&["proj", "other"]);
+        for (k, v) in [
+            ("compute.auto_approve", "1"),
+            ("compute.max_vms", "1"),
+            ("compute.max_hours_per_day", "24"),
+        ] {
+            s.set_setting(hive_store::HUMAN_AGENT, k, v).unwrap();
+        }
+        const WAITED: &str = "1 job(s) waited 31 min with every slot on this machine busy or held";
+        queued_job(&s, "j-proj", "proj", "task", "owner");
+        exec1(
+            &s,
+            "UPDATE jobs SET created_at = ?",
+            &[&crate::util::plus_minutes(TEST_NOW, -31)],
+        );
+        // The first machine is free to rent.
+        let first = auto_compute(&s, WAITED, HANDS_WANTED_MINUTES, TEST_NOW, "daemon")
+            .expect("the first rental");
+        assert_eq!(first.project, "proj");
+        // It ran two jobs of proj: one failed, one handed its commit to the
+        // landing; the machine went after its hours (long enough ago that
+        // no pause after a release holds).
+        exec1(
+            &s,
+            "UPDATE compute_requests SET status = 'released', executor = 'hands-cr-1' WHERE id = ?",
+            &[&first.id],
+        );
+        let ran = crate::util::plus_hours(TEST_NOW, -60.0);
+        for (run, job, status, commits) in
+            [("run-a", "j-a", "failed", 0), ("run-b", "j-b", "done", 1)]
+        {
+            exec1(
+                &s,
+                "INSERT INTO runs(id, job_id, agent, project, started_at, finished_at, status, commits, executor) VALUES(?, ?, 'hands-1', 'proj', ?, ?, ?, ?, 'hands-cr-1')",
+                &[&run, &job, &ran, &ran, &status, &commits],
+            );
+        }
+        let err = auto_compute(&s, WAITED, HANDS_WANTED_MINUTES, TEST_NOW, "daemon")
+            .expect_err("no second machine before a landing");
+        let NoAutoCompute::Why(why) = &err else {
+            panic!("{err}");
+        };
+        assert!(
+            why.starts_with("no rented machine has landed work for proj yet (2 run(s) on "),
+            "{why}"
+        );
+        // A job that landed after it failed there and ran on this machine
+        // is no landing of the rented machine.
+        exec1(
+            &s,
+            "INSERT INTO events(at, actor, action, subject, detail) VALUES(?, 'daemon', 'land.merged', 'proj', ?)",
+            &[
+                &ran,
+                &serde_json::json!({"project": "proj", "kind": "task", "jobs": ["j-a"]})
+                    .to_string(),
+            ],
+        );
+        assert!(
+            auto_compute(&s, WAITED, HANDS_WANTED_MINUTES, TEST_NOW, "daemon").is_err(),
+            "a landing of work the rented machine did not finish"
+        );
+        // Another project that never had a machine gets one.
+        queued_job(&s, "j-other", "other", "task", "owner");
+        exec1(
+            &s,
+            "UPDATE jobs SET created_at = ? WHERE id = 'j-other'",
+            &[&crate::util::plus_minutes(TEST_NOW, -31)],
+        );
+        let second = auto_compute(&s, WAITED, HANDS_WANTED_MINUTES, TEST_NOW, "daemon")
+            .expect("the other project rents");
+        assert_eq!(second.project, "other");
+        exec1(
+            &s,
+            "UPDATE compute_requests SET status = 'released' WHERE id = ?",
+            &[&second.id],
+        );
+        exec1(&s, "DELETE FROM jobs WHERE id = 'j-other'", &[]);
+        // Once the rented machine's own work lands, proj rents again.
+        exec1(
+            &s,
+            "INSERT INTO events(at, actor, action, subject, detail) VALUES(?, 'daemon', 'land.merged', 'proj', ?)",
+            &[
+                &ran,
+                &serde_json::json!({"project": "proj", "kind": "job", "job": "j-b", "jobs": ["j-b"]}).to_string(),
+            ],
+        );
+        let third = auto_compute(&s, WAITED, HANDS_WANTED_MINUTES, TEST_NOW, "daemon")
+            .expect("rents once a rented machine's work landed");
         assert_eq!(third.project, "proj");
     }
 

@@ -985,12 +985,15 @@ fn carried_elsewhere(
 /// Whether `rev` merges onto `start` alone without a conflict, read from
 /// objects only (`git merge-tree --write-tree`: exit 0 clean, 1 conflicts).
 /// False when git cannot say, so a branch is taken for one at odds with
-/// its base, as before.
+/// its base, as before. No `--quiet`: git learned it in 2.46, and the
+/// git of a rented Ubuntu 24.04 machine (2.43) refused it, so every branch
+/// read as at odds with its base there and two delivery tests were red on
+/// Linux only (TASK-156 item 1). The tree it prints is not read.
 fn merges_alone(dir: &str, start: &str, rev: &str) -> bool {
     let out = crate::util::git_timeout(
         dir,
         Duration::from_secs(120),
-        &["merge-tree", "--write-tree", "--quiet", start, rev],
+        &["merge-tree", "--write-tree", start, rev],
     );
     out.err.is_none() && out.code == 0
 }

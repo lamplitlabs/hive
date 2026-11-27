@@ -158,6 +158,24 @@ project instead. Measured before this rule: CR-064 lacked `cargo` for the
 brain, was released after 30 idle minutes, and CR-065 was rented for the
 same job within the minute.
 
+**Renting only for work that can come back.** A full queue rents a machine
+only for the jobs that machine could take: the waiting work jobs whose needs
+a rented Linux machine of the size's class (`linux/amd64`) meets and whose
+session is not held on this machine. The log and the request count those
+(`1 job(s) a rented linux/amd64 machine could run waited 33 min ... (21
+queued in all)`); a queue of `needs macos` work rents nothing. And once a
+rented machine has run a project's work, the daemon rents no other for that
+project until work a rented machine finished there has landed: `no rented
+machine has landed work for amistio-template yet (79 run(s) on CR-11116,
+CR-11115, CR-11113 and 8 more, none landed), so the daemon rents no other
+...`. The first rental for a project is free, another project still gets
+its machine, and one you ask for by hand is yours to make. Measured before
+these rules (26 and 27 November): eight machines in a row were rented for
+the brain while its queued code jobs needed macOS or its check was red on
+Linux, and none of their work landed. A project whose work does not build
+on Linux says so in its `.hive/hive.yaml` (`needs: macos`), as Hive's own
+does.
+
 **When a rented machine goes.** The daemon releases it when the hours it
 was asked for are up, counted from the moment the provider made it (the
 spin-up is paid for too), or after 30 minutes without a run since it was
