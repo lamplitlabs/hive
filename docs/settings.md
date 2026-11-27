@@ -98,8 +98,8 @@ Each section below is one family: the settings that share the part of their name
 | `compute.gcp.network` | empty | VPC network the instances join; empty means default. A firewall rule hive-hands-ssh (tcp 22 to the tag hive-hands) is created on it when missing |
 | `compute.gcp.project` | empty | Google Cloud project the instances are created in; empty means gcloud's current project (auth is gcloud auth login on this machine) |
 | `compute.gcp.zone` | empty | Compute Engine zone, e.g. europe-west4-a |
-| `compute.max_hours_per_day` | `0` | machine-hours agents may consume per UTC day across provisioned hands; 0 means none |
-| `compute.max_vms` | `0` | provisioned machines that may exist at once; 0 means agents cannot get compute |
+| `compute.max_hours_per_day` | `0` | machine-hours agents and the daemon may rent per UTC day across provisioned hands; 0 means Hive rents nothing by itself, none/off/unlimited means no limit; the owner's approval lifts it |
+| `compute.max_vms` | `0` | provisioned machines agents and the daemon may have at once; 0 means Hive rents nothing by itself, none/off/unlimited means no limit; the owner's approval lifts it (the console's Extra machine, hive compute approve), and over it every request, the owner's typed one too, waits for that approval |
 | `compute.multipass.image` | `24.04` | multipass image a local hand launches from, e.g. 24.04 |
 | `compute.multipass.size` | `cpus=2,mem=4G,disk=32G` | size of a local multipass hand as cpus=N,mem=SIZE,disk=SIZE, e.g. cpus=2,mem=4G,disk=32G |
 | `compute.provider` | `azure` | where agents get more machines from: azure (az login), aws (aws configure / aws sso login), gcp (gcloud auth login) or multipass (local VMs on the hub machine); each provider reads its own compute.\<provider\>.\* settings |

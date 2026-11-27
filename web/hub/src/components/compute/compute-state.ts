@@ -184,3 +184,88 @@ export function waitingNote(requests: number, cleanupQuestion: boolean): string 
   if (requests > 0) return "An agent asked for an extra machine. It starts only if you approve.";
   return cleanupQuestion ? "Hive asks before it cleans up after other agent programs on this machine." : "";
 }
+
+// ---- TASK-165: the owner's own rental is never refused by a limit ----
+
+// The limit a request passes, as the brain counts it (hive_tasks::LimitHit).
+export type LimitHit = { setting: string; limit: number; used: number; asks: number; raise_to: number };
+
+// What the brain says before the owner rents (GET compute/preview).
+export type RentalPreview = {
+  fit: { fits: number; waiting: number; blocked: { project: string; jobs: number; missing: string[] }[] };
+  fit_words: string;
+  limit: LimitHit | null;
+  limit_words: string;
+  os_needs: string[];
+  linux_risk: string;
+};
+
+export type RentChoice = { id: "rent" | "raise" | "keep-off" | "linux"; label: string; recommended: boolean; detail?: string };
+
+// The answers on a request over a limit, the same in the rent dialog and on a
+// refused request's row: Rent it anyway (Recommended), Rent it and raise the
+// limit to N, Do not rent. No free text.
+export function limitChoices(hit: LimitHit): RentChoice[] {
+  return [
+    { id: "rent", label: "Rent it anyway", recommended: true, detail: "Your own request; the limit stays as it is for agents and the daemon." },
+    { id: "raise", label: "Rent it and raise the limit to " + hit.raise_to, recommended: false, detail: limitName(hit.setting) + " becomes " + hit.raise_to + "." },
+    { id: "keep-off", label: "Do not rent", recommended: false },
+  ];
+}
+
+// The choices before an owner's rental (item 3) when no waiting job could run
+// on the machine: Do not rent (Recommended), Rent it anyway, and - when the
+// project's needs name an OS a rented Linux machine lacks - Let project jobs
+// run on Linux, with its risk. Null when a waiting job fits, or none waits.
+export function fitChoices(p: Pick<RentalPreview, "fit" | "os_needs" | "linux_risk">): RentChoice[] | null {
+  if (p.fit.fits > 0 || p.fit.blocked.length === 0) return null;
+  const out: RentChoice[] = [
+    { id: "keep-off", label: "Do not rent", recommended: true },
+    { id: "rent", label: "Rent it anyway", recommended: false, detail: "It sits idle and is released after 30 minutes unless a job it can run arrives." },
+  ];
+  if (p.os_needs.length) out.push({ id: "linux", label: "Let project jobs run on Linux", recommended: false, detail: "Risk: " + p.linux_risk + "." });
+  return out;
+}
+
+export function choiceLabel(c: RentChoice): string {
+  return c.label + (c.recommended ? " (Recommended)" : "");
+}
+
+export function limitName(setting: string): string {
+  return setting === "compute.max_vms" ? "Machines at once" : setting === "compute.max_hours_per_day" ? "Machine hours per day" : setting;
+}
+
+const NONE = /^(none|off|unlimited)$/i;
+
+// The line beside a rental limit's field (item 2): 0 is explained, none is its own choice.
+export function limitFieldHelp(value: string | null | undefined): string {
+  const v = (value ?? "").trim();
+  if (NONE.test(v)) return "No limit - agents and the daemon rent as they need.";
+  if (v === "0") return "0 - Hive rents nothing. Your own requests still go through.";
+  return "Agents and the daemon rent up to this; your own requests are never refused by it. 0 - Hive rents nothing.";
+}
+
+// Said after a change of a limit that leaves no rental possible for agents and
+// the daemon (item 2); "" otherwise.
+export function noRentalWarning(maxVms: string | null | undefined, maxHours: string | null | undefined): string {
+  const z = (v: string | null | undefined) => (v ?? "").trim() === "0";
+  if (z(maxVms) && z(maxHours)) return "Both limits are 0: Hive rents no machine by itself. Your own requests still go through.";
+  if (z(maxVms)) return "Machines at once is 0: Hive rents no machine by itself, whatever the hours say. Your own requests still go through.";
+  if (z(maxHours)) return "Machine hours per day is 0: Hive rents no machine by itself, whatever the machine count says. Your own requests still go through.";
+  return "";
+}
+
+// The offer after a limit change, when requests were refused today: "" when none.
+export function refileOffer(refused: number): string {
+  if (refused <= 0) return "";
+  return refused === 1 ? "1 request was not rented today because of a limit. Rent it now?" : refused + " requests were not rented today because of a limit. Rent them now?";
+}
+
+// How a settled request reads on the Machines page (item 4): one a limit refused is "Not
+// rented" - its note says which limit and how much was used - never "Failed".
+export function requestState(r: { status: string; note?: string | null; limit_hit?: LimitHit | null }): { badge: string; label?: string; lead: string; bad: boolean } {
+  const note = (r.note ?? "").trim();
+  if (r.limit_hit || /^Not rented: /.test(note)) return { badge: "waits", label: "Not rented", lead: "", bad: false };
+  if (r.status === "failed") return { badge: "failed", lead: "Why it failed: ", bad: true };
+  return { badge: r.status, lead: "", bad: false };
+}

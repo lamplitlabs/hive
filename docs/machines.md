@@ -123,7 +123,7 @@ the queue instead, the attempt not counted.
 in the queue. After ten minutes, when the needs are what a rented Linux
 machine offers (`linux` and the size's architecture) and
 `compute.auto_approve` is on within `compute.max_vms` and
-`compute.max_hours_per_day`, the daemon rents one on the spot, whether or
+`compute.max_hours_per_day` (`none` for either is no limit), the daemon rents one on the spot, whether or
 not this machine has free slots (a Mac with idle slots and a `linux` job
 used to tell you "machine wanted" and leave the job queued; the rental only
 came for a queue with every slot busy). For the needs it cannot rent (never
@@ -226,6 +226,61 @@ is filed, with the most it may ask in the error. A sum past what the count
 holds is past every cap.
 Measured before this rule: two machines approved for 4 hours ran 5.2 and
 8.0, and the day counted 4 for each.
+
+**The limits are for agents, not for you.** `compute.max_vms` and
+`compute.max_hours_per_day` bound what agents and the daemon rent by
+themselves. Your approval lifts them: **Extra machine** in the console
+approves your request once you answered its dialog, and a request you approve
+(`hive compute approve`, Approve or **Rent it anyway** on the Machines page)
+is rented whatever the limits say. Who filed a request does not lift them:
+over a limit every request waits for your approval, yours too, and
+`compute.auto_approve` approves only a request under them. So
+`hive compute request` typed by you over a limit prints `CR-012 pending: ...`
+and one `hive compute approve CR-012` rents it. A request or approval from a
+run of Hive's - a console conversation's agent, a job's worker, a schedule's
+script, a harness session (`HIVE_CONVERSATION`, `HIVE_JOB`, `HIVE_SCHEDULE`
+or `HIVE_HARNESS` set), even one typed `--agent human` - is filed under that
+run's name, never as yours, and its `hive compute approve` is not your
+approval. An agent's or the daemon's request stays capped. `0` is a limit of nothing - Hive rents nothing
+by itself, your own requests still go through - and `none` (also `off` or
+`unlimited`; **No limit** beside the field in Settings) lifts the limit
+altogether; `hive compute list` prints `none` for it. Each field says what
+its value means beside it (`0 - Hive rents nothing`), and a change that
+leaves no rental possible for agents says so before it is saved.
+
+Over a limit the rent dialog asks before it files anything, with three
+answers and no free text: **Rent it anyway** (recommended: your request, the
+limit unchanged for agents), **Rent it and raise the limit to N** (the
+number that lets this request through), or **Do not rent**. Before that it
+reads the waiting jobs (`GET /api/v1/compute/preview?project=P&hours=N`):
+`2 waiting job(s) can run on it`, or `No waiting job can run on this
+machine: brain needs macos`, and then asks **Do not rent** (recommended),
+**Rent it anyway**, or **Let project jobs run on Linux** - which drops the
+OS word from the project's needs and its queued jobs, with the risk named:
+work that only builds or passes its check on macOS fails on Linux and lands
+nothing, and a `needs:` line in the project's `.hive/hive.yaml` sets it
+back when it changes.
+
+An agent's or the daemon's request a limit refuses is not a failure. Its row
+reads `Not rented: today's limit of 24 hours is used (12 used, this asks
+12)` (or `Not rented: the limit of 2 machines at once is reached (2 in use,
+this asks 1 more)`) under **Waiting for you**, with the same three answers;
+**Rent it anyway** files a new request of yours for the same project, size
+and hours (`POST /api/v1/compute/CR-012/rent`, `{"raise": true}` to raise
+the limit as well), **Do not rent** ends the question (`.../keep-off`).
+After a limit change, Settings offers to rent the requests a limit refused
+today (`POST /api/v1/compute/refile-today`). A raised limit is written only
+once the request was filed; a request refused before that leaves the limit
+as it was. Through the hosted front these writes - `rent`, `approve`,
+`refile-today`, and the rent dialog's `{"raise": true}` - take the team
+owner's passkey; a member who is not the owner gets 403, and a member's own
+**Extra machine** over a limit waits for the owner's approval.
+
+A rented machine released unused says why in its row and on the Machines
+page: `Released after 30 idle minutes: no waiting job could run there
+(brain needs macos)`, or `... no job was waiting`. Before, every idle
+release read `the executor sat idle for 30 minutes`, and a request over a
+limit read `Failed: cap: ...` even when you had asked for it yourself.
 
 Once a machine that ran past its hours is released, the daemon's next
 request waits as after a failed one: 5 minutes, then 15, 45 and 135, then
@@ -427,9 +482,10 @@ commands behind one route, `POST /api/v1/compute/executors`, told apart by
 - `request` (`{"mode": "request", "project": "ml", "size": "small",
   "hours": 4, "reason": "a GPU for the evaluation", "approve": true}`) is
   `hive compute request` in your name: 201 with the request row, approved
-  at once unless `approve` is false, provisioned by `compute.provider` inside
-  the caps like any agent's request (the dialog says so when no provider is
-  set and points at the setting). `size` falls back to the provider's
+  at once unless `approve` is false, provisioned by `compute.provider`; no
+  rental limit refuses it, and `"raise": true` also raises the limit it
+  passes (the dialog says so when no provider is set and points at the
+  setting). `size` falls back to the provider's
   configured size. `project` says whose work the machine takes: a project's
   slug keeps it for that project, and `commons` - **Any project** at the top
   of the dialog's project list, `--project commons` on the command line -
