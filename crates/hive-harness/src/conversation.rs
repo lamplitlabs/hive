@@ -686,6 +686,11 @@ impl WebUi {
     }
     fn park(&self, pending: Pending, note: String) -> Option<Answer> {
         let id = pending.id();
+        // The stored row says `waiting` before the question shows in the
+        // live state: whoever sees the question (the console, a test that
+        // waits for it) then reads the same status from the store, however
+        // slowly this thread gets back from the lock on a loaded machine.
+        let _ = self.store.chat_set_status(&self.id, "waiting", &note);
         {
             let mut st = self.shared.lock();
             st.pending = Some(pending);
@@ -693,7 +698,6 @@ impl WebUi {
             st.note = note.clone();
             self.shared.bump(&mut st);
         }
-        let _ = self.store.chat_set_status(&self.id, "waiting", &note);
         let answer = self.shared.wait_answer(id);
         {
             let mut st = self.shared.lock();
