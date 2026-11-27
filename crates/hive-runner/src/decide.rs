@@ -222,8 +222,11 @@ pub(crate) fn tend_decide_with(
                 let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     fallback(&s, &now, &slug, "", &by, &reason)
                 }));
-                // Only an outage on record gives the asks back to the lead
-                // (`held_by_role`); without one the next pass tries again.
+                // An outage on record gives the asks back to the lead
+                // (`held_by_role`), and so does the back-off that follows
+                // repeated panics (`role_paused`, said by `PassEnd`); this
+                // line names the outage only: without one the next pass
+                // tries again.
                 if outage_open(&s) {
                     end.lines = vec![format!(
                         "decide {slug}: {reason}; the asks stay with the lead"
@@ -500,6 +503,14 @@ fn decide_pass_over(
         let prompt = decide_prompt(s, &ask);
         let called = call_role(&provider, &by, prompt, timeout);
         let out = called.is_err();
+        // Only the provider refusing the call for good (a provider error
+        // that is not retryable, such as a model it no longer serves) says
+        // the model may be wrong; the pass's own timeout, a rate limit or a
+        // network fault says nothing about it.
+        let refused = called
+            .as_ref()
+            .err()
+            .is_some_and(|e| hive_provider::provider_error(e).is_some_and(|p| !p.retryable));
         let answer = called.and_then(|text| {
             read_answer(&text)
                 .ok_or_else(|| anyhow::anyhow!("unreadable answer: {}", clip(text.trim(), 200)))
@@ -518,8 +529,10 @@ fn decide_pass_over(
                 if out {
                     // A default the provider withdrew would fail every
                     // pass for the rest of the hour and keep the outage
-                    // open: the next pass asks for the list again.
-                    if default_model {
+                    // open: the next pass asks for the list again. Any
+                    // other error keeps the name: the list would only
+                    // name it again.
+                    if default_model && refused {
                         forget_default_model(s, &by.provider);
                     }
                     fallback(s, now, slug, &ask.id, &by, &reason);
@@ -670,8 +683,10 @@ fn event(
 /// names it, so the call never sends an empty model and the decision
 /// records the model that answered. The resolved name is kept for
 /// `MODEL_CACHE` (an hour): the list is not fetched on every pass. A call
-/// on it that errors drops it (`forget_default_model`), so a default the
-/// provider withdrew is not tried again for the rest of the hour.
+/// on it that the provider refuses for good (a provider error that is not
+/// retryable) drops it (`forget_default_model`), so a default the provider
+/// withdrew is not tried again for the rest of the hour; a timeout, a rate
+/// limit or a network fault keeps it.
 fn open_role(
     s: &hive_store::Store,
     by: &mut hive_board::DecidedBy,
@@ -977,8 +992,11 @@ mod tests {
         panic: bool,
         /// How often the model list was asked for.
         list_calls: usize,
-        /// Models the provider no longer serves: a call on one fails.
+        /// Models the provider no longer serves: a call on one fails with
+        /// a provider error that is not retryable, as a vendor's 400 does.
         withdrawn: Vec<String>,
+        /// Every call is refused with a rate limit (HTTP 429, retryable).
+        limited: bool,
     }
 
     /// Store homes whose pass thread cannot be started (`spawn_pass`).
@@ -1042,8 +1060,25 @@ mod tests {
             if !f.err.is_empty() {
                 anyhow::bail!("{}", f.err);
             }
+            if f.limited {
+                return Err(hive_provider::ProviderError::new(
+                    "decidefake",
+                    429,
+                    "rate_limited",
+                    "too many requests",
+                    true,
+                )
+                .into());
+            }
             if f.withdrawn.contains(&req.model) {
-                anyhow::bail!("400 model {} is not supported", req.model);
+                return Err(hive_provider::ProviderError::new(
+                    "decidefake",
+                    400,
+                    "model_not_supported",
+                    format!("model {} is not supported", req.model),
+                    false,
+                )
+                .into());
             }
             let prompt = f.prompts.last().cloned().unwrap_or_default();
             let reply = f
@@ -2018,7 +2053,8 @@ mod tests {
         assert_eq!(f.list_calls, 1, "the model list was fetched again");
     }
 
-    /// TASK-154 item 1: a call on the cached default model that errors
+    /// TASK-154 item 1: a call on the cached default model that the
+    /// provider refuses for good (a provider error that is not retryable)
     /// drops it. A default the provider withdrew would otherwise fail every
     /// pass of the hour and keep the store-wide outage open; the next pass
     /// fetches the list again and answers on the new default.
@@ -2050,6 +2086,51 @@ mod tests {
         assert_eq!(d.str("answer"), "no", "{d:?}");
         assert_eq!(d.str("decided_model"), "new-default");
         assert!(!outage_open(&s), "the answer on the new default ends it");
+    }
+
+    /// TASK-162 item 1: only the provider refusing the call for good drops
+    /// the cached default. The pass's own timeout and a rate limit say
+    /// nothing about the model: the next pass answers on the same name
+    /// without fetching the list again.
+    #[test]
+    fn a_timeout_or_a_rate_limit_keeps_the_cached_default_model() {
+        let _serial = serial();
+        let s = decide_store(r#"{"answer":"no","reason":"stale"}"#);
+        set(&s, "decide_model", "");
+        set(&s, "decide.timeout_seconds", "1");
+        fake(&s, |f| f.list = vec!["first".into(), "kept-default".into()]);
+        let first = ask(&s, "kept-1");
+        decide_pass(&s, "proj", TEST_NOW);
+        assert_eq!(decision(&s, &first).str("decided_model"), "kept-default");
+        assert_eq!(calls(&s).list_calls, 1);
+        // The call outlasts the pass's timeout.
+        fake(&s, |f| f.stall_ms = 1500);
+        let late = ask(&s, "kept-late");
+        let lines = decide_pass(&s, "proj", TEST_NOW);
+        assert_left_to_lead(&s, &late);
+        assert!(
+            lines.iter().any(|l| l.contains("no answer within 1s")),
+            "{lines:?}"
+        );
+        assert!(outage_open(&s), "the timeout opens the outage");
+        // The provider limits the rate.
+        fake(&s, |f| {
+            f.stall_ms = 0;
+            f.limited = true;
+        });
+        let limited = ask(&s, "kept-limited");
+        decide_pass(&s, "proj", TEST_NOW);
+        assert_left_to_lead(&s, &limited);
+        fake(&s, |f| f.limited = false);
+        let last = ask(&s, "kept-2");
+        decide_pass(&s, "proj", TEST_NOW);
+        let f = calls(&s);
+        assert_eq!(f.list_calls, 1, "the list is not fetched again");
+        assert_eq!(f.models, vec!["kept-default".to_string(); 4]);
+        let d = decision(&s, &last);
+        assert_eq!(d.str("answer"), "no", "{d:?}");
+        assert_eq!(d.str("decided_model"), "kept-default");
+        assert!(!outage_open(&s), "the answer ends the outage");
     }
 
     /// TASK-148 item 7: while every pass panics (a store that refuses
@@ -2251,11 +2332,100 @@ mod tests {
         );
         crate::lead::tend_lead(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
         assert_eq!(lead_jobs_naming(&s, &post), 1, "the lead sits for the ask");
-        // A pass that starts holds again what it has not answered.
-        fake(&s, |f| f.stall_ms = 300);
+        // A pass that starts holds again what it has not answered: read
+        // while its call is in flight, not after a stall the pass could
+        // outrun.
+        let held_mid_pass = std::sync::Arc::new(Mutex::new(None::<bool>));
+        let (store, id, seen) = ((*s).clone(), post.clone(), held_mid_pass.clone());
+        during(&s, move || {
+            let asks = crate::lead::owner_addressed_asks(&store, "proj".into());
+            *seen.lock().unwrap() =
+                Some(held_by_role(&store, "proj", &asks, TEST_NOW).contains(&id));
+        });
         tend_decide(&s, "proj", TEST_NOW);
-        assert!(held_by_role(&s, "proj", &asks(), TEST_NOW).contains(&post));
         wait_idle(&s);
+        assert_eq!(
+            *held_mid_pass.lock().unwrap(),
+            Some(true),
+            "the pass in flight holds the ask"
+        );
+    }
+
+    /// TASK-162: the lead answers an ask while the role is paused (the
+    /// back-off after repeated panics); the next pass writes nothing for it
+    /// and does not put it to the model.
+    #[test]
+    fn an_ask_the_lead_answers_during_the_pause_gets_nothing_from_the_next_pass() {
+        let _serial = serial();
+        let s = decide_store(r#"{"answer":"pass","reason":""}"#);
+        let post = ask(&s, "paused-answered");
+        let asks = || crate::lead::owner_addressed_asks(&s, "proj".into());
+        let tick = |at: &str| {
+            tend_decide(&s, "proj", at);
+            wait_idle(&s);
+        };
+        let triggers = s.conn().unwrap();
+        refuse_events(&s);
+        triggers
+            .execute_batch(
+                "CREATE TRIGGER no_meta BEFORE INSERT ON meta \
+                 BEGIN SELECT RAISE(ABORT, 'the store refuses the write'); END; \
+                 CREATE TRIGGER no_meta_update BEFORE UPDATE ON meta \
+                 BEGIN SELECT RAISE(ABORT, 'the store refuses the write'); END;",
+            )
+            .unwrap();
+        tick(TEST_NOW);
+        tick(TEST_NOW);
+        triggers
+            .execute_batch(
+                "DROP TRIGGER no_events; DROP TRIGGER no_meta; DROP TRIGGER no_meta_update;",
+            )
+            .unwrap();
+        let inside = crate::util::plus_minutes(TEST_NOW, 0.5);
+        assert!(held_by_role(&s, "proj", &asks(), &inside).is_empty());
+        // Were the ask put to the model again, its answer would be written.
+        fake(&s, |f| {
+            f.reply = r#"{"answer":"no","reason":"stale"}"#.into()
+        });
+        let calls_before = calls(&s).calls;
+        // The lead's own run answers the ask during the pause.
+        let mut job = crate::util::Row::new();
+        job.insert("kind", json!(crate::lead::LEAD_KIND));
+        job.insert("project", json!("proj"));
+        job.insert("source", json!("lead:proj:paused"));
+        let rep = crate::brief::Report {
+            decisions: vec![crate::brief::Decision {
+                post_id: post.clone(),
+                answer: "yes".into(),
+                reason: "the lead read it".into(),
+            }],
+            ..Default::default()
+        };
+        let mut log = crate::run::RunLog::default();
+        let got = crate::run::apply_result_decisions_ran(&s, job, rep, &mut log, "lead-model");
+        assert_eq!(got, 1, "{}", log.text());
+        // The wait is over: the next pass runs and finds nothing to do.
+        let after = crate::util::plus_minutes(TEST_NOW, 1.5);
+        tick(&after);
+        assert_eq!(
+            calls(&s).calls,
+            calls_before,
+            "the ask is not put to the model"
+        );
+        for action in [
+            "decide.pass",
+            "decide.shadow",
+            "decide.refused",
+            FAILED_ACTION,
+        ] {
+            assert!(
+                events(&s, action).iter().all(|e| e.str("subject") != post),
+                "{action} written for {post}"
+            );
+        }
+        let d = decision(&s, &post);
+        assert_eq!(d.str("answer"), "yes", "{d:?}");
+        assert_eq!(d.str("decided_model"), "lead-model", "{d:?}");
     }
 
     /// TASK-148 item 10: the daemon reads a project's asks once per tick

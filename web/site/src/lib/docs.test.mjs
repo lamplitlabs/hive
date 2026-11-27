@@ -207,6 +207,59 @@ test("every diagram in the docs is well drawn", () => {
   assert.deepEqual(drawing, [], `badly drawn in the source Markdown:\n${drawing.join("\n")}`);
 });
 
+test("every diagram in the docs is drawn whole: no box, arrowhead or word of the text is lost", async () => {
+  // The page draws a diagram from its characters (doc-diagram.ts). Whatever somebody writes next has to come out
+  // whole too: as many boxes as the text closes, an arrowhead for every arrow, and every word, letter for letter.
+  const { drawDiagram, wordsWidth } = await import("./doc-diagram.ts");
+  const { findDiagrams } = await import("./diagram.ts");
+  const { docs: pages } = docs.loadDocs();
+  let seen = 0;
+  for (const page of pages) {
+    if (!page.diagrams.length) continue;
+    const source = fs.readFileSync(path.join(docs.docsRoot(), page.file), "utf8");
+    const lines = source.split(/\r?\n/);
+    assert.equal((page.html.match(/<figure class="diagram"/g) ?? []).length, page.diagrams.length, `${page.file}: one drawing a diagram`);
+    for (const found of findDiagrams(source)) {
+      const fence = /^(\s*)(`{3,}|~{3,})/.exec(lines[found.line - 1]);
+      const body = lines.slice(found.line, found.line + found.rows).map((row) => (row.startsWith(fence[1]) ? row.slice(fence[1].length) : row.trimStart()));
+      const text = body.join("\n");
+      const d = drawDiagram(text);
+      const at = `docs/${page.file}:${found.line}`;
+      const letters = (value) => [...value].filter((ch) => !/[\s\u2500-\u257F\u2190-\u2193]/.test(ch)).sort().join("");
+      assert.equal(letters(d.words.map((w) => w.text).join("")), letters(text), `${at}: the words of the drawing are the words of the text`);
+      assert.equal(d.tips.length, [...text].filter((ch) => "→←↑↓".includes(ch)).length, `${at}: an arrowhead for every arrow`);
+      // A box is a rectangle of the text: a corner or a branch at each of its four corners, and no box cuts across another.
+      // The drawing starts at the first used column of the block, so the boxes are counted from there.
+      const indent = Math.min(...body.filter((row) => row.trim()).map((row) => row.length - row.trimStart().length));
+      const grid = body.map((row) => [...row.slice(indent)]);
+      for (const b of d.boxes) {
+        const corners = [grid[b.top][b.left], grid[b.top][b.right], grid[b.bottom][b.left], grid[b.bottom][b.right]];
+        assert.ok(corners.every((ch) => "┌┐└┘├┤┬┴┼".includes(ch)), `${at}: a box stands on four corners: ${corners.join("")}`);
+        for (const o of d.boxes) {
+          // Two boxes may share a side: a box with a rule across it is two boxes, one on the other.
+          const apart = o.right <= b.left || o.left >= b.right || o.bottom <= b.top || o.top >= b.bottom;
+          const inside = (x, y) => x.left >= y.left && x.right <= y.right && x.top >= y.top && x.bottom <= y.bottom;
+          assert.ok(apart || inside(o, b) || inside(b, o), `${at}: two boxes cut across each other`);
+        }
+      }
+      // A box is closed at its lower right by a character that reaches up and left; there are no more boxes than those.
+      assert.ok(d.boxes.length <= [...text].filter((ch) => "┘┤┴┼".includes(ch)).length, `${at}: no more boxes than corners that close one`);
+      if (text.includes("┘") && text.includes("┌")) assert.ok(d.boxes.length > 0, `${at}: the boxes of the text are found`);
+      assert.ok(d.width <= 72 * 8, `${at}: no wider than 72 characters`);
+      // The words are set in the site's text font, which is narrower than the cells: no run may be wider than the cells
+      // it was typed into, or it would run into the line after it. A quarter of a cell is let go: a space always follows.
+      for (const w of d.words) {
+        const wide = wordsWidth(w.text);
+        assert.ok(wide <= w.cells * 8 + 2, `${at}: "${w.text}" is ${wide.toFixed(1)} wide in cells ${w.cells * 8} wide`);
+        // A run set from its middle stays within half a cell of its cells, or in its box when it is centred there.
+        if (w.middle !== undefined && !w.boxed) assert.ok(w.middle - wide / 2 >= w.column * 8 - 4.01 && w.middle + wide / 2 <= (w.column + w.cells) * 8 + 4.01, `${at}: "${w.text}" is centred out of its cells`);
+      }
+      seen += 1;
+    }
+  }
+  assert.ok(seen >= 30, `the docs hold their diagrams: ${seen}`);
+});
+
 test("a badly drawn diagram is reported by file and line", () => {
   const built = docs.buildDocs([{ file: "concepts.md", source: "# Concepts\n\nWhat Hive is.\n\n```text\n┌──┐\n│  │\n└──\n```\n" }]);
   assert.deepEqual(built.drawing, ["docs/concepts.md:5: the diagram: line 2, column 4: │ reaches down, and the row below has no line or arrowhead in that column"]);

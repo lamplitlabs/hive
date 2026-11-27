@@ -18,8 +18,10 @@ import { SKIP, visit } from "unist-util-visit";
 import type { Element, ElementContent, Root as HastRoot, RootContent as HastRootContent } from "hast";
 import type { Root as MdastRoot } from "mdast";
 import type { ImageSize } from "./image-size.ts";
-import { diagramWords, findDiagrams, isDiagram } from "./diagram.ts";
+import { findDiagrams, isDiagram } from "./diagram.ts";
 import type { FoundDiagram } from "./diagram.ts";
+import { diagramElement } from "./doc-diagram.ts";
+import { loneShot, shotElement, shotFigure } from "./doc-shot.ts";
 import { SITE } from "./site.ts";
 
 /** What a link in a doc turned out to be. */
@@ -345,13 +347,21 @@ export function renderMarkdown(source: string, ctx: LinkContext): Rendered {
         node.properties.alt = typeof node.properties.alt === "string" ? node.properties.alt : "";
         node.properties.loading = "lazy";
         node.properties.decoding = "async";
-        // A picture of the docs is shown at the width of the text; a click opens it at its own size.
+        // A picture of the docs is framed, and a click opens it at its own size (doc-shot.ts).
         const inLink = parent?.type === "element" && parent.tagName === "a";
         if (media && parent && index !== undefined && !inLink) {
-          const name = node.properties.alt ? `Open the picture at full size: ${node.properties.alt}` : "Open the picture at full size";
-          parent.children[index] = el("a", { className: ["shot"], href: media, ariaLabel: name }, [node]);
+          parent.children[index] = shotElement(node, media);
           return SKIP;
         }
+      }
+    });
+    // A picture that stands alone in its paragraph is a figure, with its words under it: a <figure> may not stand inside a <p>, so it takes the paragraph's place.
+    visit(tree, "element", (node, index, parent) => {
+      if (node.tagName !== "p" || !parent || index === undefined) return;
+      const shot = loneShot(node);
+      if (shot) {
+        parent.children[index] = shotFigure(shot);
+        return SKIP;
       }
     });
 
@@ -394,10 +404,12 @@ export function renderMarkdown(source: string, ctx: LinkContext): Rendered {
         const lang = classes.find((c) => c.startsWith("language-"))?.slice("language-".length) ?? "";
         const text = code ? hastToString(code) : "";
         if (code && isDiagram(text, lang)) {
-          // A diagram drawn in text: the stylesheet closes the lines up, and a screen reader gets its words, not sixty line characters.
-          node.properties.className = ["diagram"];
-          node.properties.role = "img";
-          node.properties.ariaLabel = `Diagram: ${diagramWords(text).join(", ")}`;
+          // A diagram drawn in text has markup of its own (doc-diagram.ts); when that is another element, it takes the block's place.
+          const drawn = diagramElement(node, text);
+          if (drawn !== node && parent && index !== undefined) {
+            parent.children[index] = drawn;
+            return SKIP;
+          }
         }
       } else if (node.tagName === "table" && parent && index !== undefined) {
         nameRows(node);

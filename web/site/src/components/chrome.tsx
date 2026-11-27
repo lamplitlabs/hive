@@ -18,6 +18,11 @@ function navItems(): NavItem[] {
   return [PAGES.install, ...(guides ? [{ path: guides.path, nav: "Guides" }] : []), PAGES.harness, PAGES.rsi, PAGES.machines, PAGES.docs];
 }
 
+/** The same links without the install page: on a wide screen that one is the header's button, the one thing the site asks a visitor to do. */
+function barItems(): NavItem[] {
+  return navItems().filter((p) => p.path !== PAGES.install.path);
+}
+
 /** The docs the footer names, in this order; one that is not there (yet) is left out. */
 const FOOTER_DOCS = ["concepts", "faq", "console", "commands", "settings", "board", "landing", "runner", "security", "review"];
 
@@ -68,16 +73,17 @@ function SweepDefs() {
 
 function Header({ current }: { current?: string }) {
   const NAV = navItems();
+  const BAR = barItems();
   const link = "rounded-full px-3 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground aria-[current=page]:bg-muted aria-[current=page]:text-foreground";
   return (
     <header className="night sticky top-0 z-30 border-b border-border bg-[var(--night-1)]">
       <div className="mx-auto flex h-14 max-w-6xl items-center gap-2 px-5 sm:px-8">
-        <Link href="/" className="mr-3 flex items-center gap-2.5 rounded-md font-semibold tracking-tight" aria-current={current === "/" ? "page" : undefined}>
+        <Link href="/" className="mr-3 flex min-h-9 items-center gap-2.5 rounded-md font-semibold tracking-tight" aria-current={current === "/" ? "page" : undefined}>
           <HiveTile className="size-7" />
           <span className="text-[17px]">Hive</span>
         </Link>
         <nav aria-label="Main" className="hidden items-center gap-0.5 md:flex">
-          {NAV.map((p) => (
+          {BAR.map((p) => (
             <Link key={p.path} href={p.path} className={link} aria-current={current === p.path ? "page" : undefined}>
               {p.nav}
             </Link>
@@ -87,7 +93,7 @@ function Header({ current }: { current?: string }) {
           <a href={SITE.repo} className={`${link} hidden items-center gap-1 sm:inline-flex`} rel="noopener noreferrer">
             GitHub <ArrowUpRightIcon className="size-3.5" aria-hidden="true" />
           </a>
-          <Link href={PAGES.install.path} className="btn btn-primary btn-sm md:hidden">
+          <Link href={PAGES.install.path} className="btn btn-primary btn-sm" aria-current={current === PAGES.install.path ? "page" : undefined}>
             Install
           </Link>
           {/* Small screens: the same links behind one button. Plain anchors, so a tap loads the page and the menu is closed again. */}
@@ -121,16 +127,16 @@ function Footer() {
   const allGuides = optionalDoc(GUIDES_DIR);
   const pages = [PAGES.install, PAGES.harness, PAGES.rsi, PAGES.machines, PAGES.docs];
   const item = "text-muted-foreground transition-colors hover:text-foreground";
-  const head = "text-xs font-semibold tracking-[0.14em] text-foreground uppercase";
+  const head = "text-[13px] font-semibold tracking-[0.12em] text-foreground uppercase";
   return (
     <footer className="night night-field border-t border-border">
-      <div className={`mx-auto grid max-w-6xl gap-10 px-5 py-14 text-sm sm:grid-cols-2 sm:px-8 ${guides.length > 0 ? "lg:grid-cols-[1.25fr_0.8fr_1.25fr_0.9fr_1fr]" : "lg:grid-cols-[1.4fr_1fr_1fr_1fr]"}`}>
+      <div className={`mx-auto grid max-w-6xl gap-10 px-5 py-14 text-sm sm:grid-cols-2 sm:px-8 ${guides.length > 0 ? "lg:grid-cols-[minmax(0,1fr)_repeat(4,max-content)]" : "lg:grid-cols-[minmax(0,1fr)_repeat(3,max-content)]"}`}>
         <div>
           <div className="flex items-center gap-2.5">
             <HiveTile className="size-8" />
             <span className="text-lg font-semibold tracking-tight">Hive</span>
           </div>
-          <p className="mt-4 max-w-xs leading-relaxed text-muted-foreground">
+          <p className="mt-4 max-w-xs leading-relaxed text-muted-foreground text-pretty">
             {SITE.tagline}. Open source, one binary, your own machines.
           </p>
           <p className="mt-4 text-muted-foreground">
@@ -138,7 +144,7 @@ function Footer() {
               MIT licence
             </a>
             . Copyright {SITE.year}{" "}
-            <a href={SITE.holderUrl} className="link" rel="noopener noreferrer">
+            <a href={SITE.holderUrl} className="link whitespace-nowrap" rel="noopener noreferrer">
               {SITE.holder}
             </a>
             .
@@ -155,7 +161,7 @@ function Footer() {
             {pages.map((p) => (
               <li key={p.path}>
                 <Link href={p.path} className={item}>
-                  {p === PAGES.docs ? "Documentation" : p === PAGES.harness ? "The harness" : p === PAGES.machines ? "Pairing machines" : p.nav}
+                  {p.nav}
                 </Link>
               </li>
             ))}

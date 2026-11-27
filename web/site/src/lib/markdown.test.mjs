@@ -33,9 +33,14 @@ const ctx = (file) => ({ file, pages, repoHas: (p) => inRepo.get(p) ?? null, ima
 const render = (source, file = "harness.md") => md.renderMarkdown(source, ctx(file));
 const parse = (html) => unified().use(rehypeParse, { fragment: true }).parse(html);
 function elements(html, tag) {
+  return elements_in(parse(html), tag);
+}
+
+/** The elements named `tag` under a node, the node itself left out. */
+function elements_in(root, tag) {
   const found = [];
-  visit(parse(html), "element", (node) => {
-    if (node.tagName === tag) found.push(node);
+  visit(root, "element", (node) => {
+    if (node.tagName === tag && node !== root) found.push(node);
   });
   return found;
 }
@@ -194,21 +199,34 @@ test("a picture kept in the repository is served by GitHub, with its alt text", 
   assert.match(r.links[0].problem, /docs\/img\/home\.png, which is not in the repository/);
 });
 
-test("a picture kept under docs/ is the site's own file: sized, and a link to itself at full size", () => {
-  const r = render("# T\n\n![The Home page](images/home.webp)\n\n![](images/tasks.png)\n\n[![The Home page](images/home.webp)](../harness.md)\n", "how-to/tour.md");
+test("a picture kept under docs/ is the site's own file: sized, a link to itself at full size, and a figure when it stands alone", () => {
+  const r = render("# T\n\n![The Home page](images/home.webp)\n\n![](images/tasks.png)\n\n[![The Home page](images/home.webp)](../harness.md)\n\nSee ![The Home page](images/home.webp) here.\n", "how-to/tour.md");
   const imgs = elements(r.html, "img").map((i) => [i.properties.src, i.properties.width, i.properties.height, i.properties.alt, i.properties.loading]);
   assert.deepEqual(imgs, [
     ["/docs-media/how-to/images/home.webp", 1440, 900, "The Home page", "lazy"],
     // A size that could not be read is left out; the picture is shown all the same.
     ["/docs-media/how-to/images/tasks.png", undefined, undefined, "", "lazy"],
     ["/docs-media/how-to/images/home.webp", 1440, 900, "The Home page", "lazy"],
+    ["/docs-media/how-to/images/home.webp", 1440, 900, "The Home page", "lazy"],
   ]);
+  // A picture alone in its paragraph is a figure in the paragraph's place, with its words under it; one among words stays in its line.
+  const figures = elements(r.html, "figure");
+  assert.deepEqual(figures.map((f) => [f.properties.className.join(" "), toString(f).trim()]), [
+    ["shot-figure", "Full size\nThe Home page".replace("\n", "")],
+    // No words to put under a picture that has none.
+    ["shot-figure", "Full size"],
+  ]);
+  assert.deepEqual(elements(r.html, "figcaption").map((c) => [toString(c), c.properties.ariaHidden]), [["The Home page", "true"]], "the caption is the alt a screen reader has read already");
+  assert.equal(elements(r.html, "p").filter((p) => elements_in(p, "figure").length).length, 0, "no figure stands inside a paragraph");
+  assert.equal(elements(r.html, "p").filter((p) => elements_in(p, "img").length).map((p) => toString(p).replace(/\s+/g, " ").trim()).join("|"), "|See Full size here.");
   const links = elements(r.html, "a").map((a) => [a.properties.href, (a.properties.className ?? []).join(" "), a.properties.ariaLabel]);
   assert.deepEqual(links, [
-    ["/docs-media/how-to/images/home.webp", "shot", "Open the picture at full size: The Home page"],
+    // A picture wider than the column is marked: it is shown smaller than it is, so its "Full size" mark is always there.
+    ["/docs-media/how-to/images/home.webp", "shot shot-large", "Open the picture at full size: The Home page"],
     ["/docs-media/how-to/images/tasks.png", "shot", "Open the picture at full size"],
     // A picture that is already a link keeps that link.
     ["/docs/harness/", "", undefined],
+    ["/docs-media/how-to/images/home.webp", "shot shot-large", "Open the picture at full size: The Home page"],
   ]);
   assert.deepEqual(r.links.filter((l) => l.problem), []);
   assert.equal(md.docMediaPath("docs/how-to/images/a b.webp"), "/docs-media/how-to/images/a%20b.webp");
@@ -285,15 +303,21 @@ test("the body is cut at its h2 and h3 headings into the text and the code the s
   assert.deepEqual(r.toc.map((t) => t.id), ["1-look-at-the-gates", "a-gate-that-stays-closed", "read-more"]);
 });
 
-test("a diagram drawn in text is marked, named for a screen reader and checked", () => {
+test("a diagram drawn in text is drawn, named for a screen reader, kept as text and checked", () => {
   const good = "┌───────┐  task   ┌──────┐\n│ owner │ ──────→ │ lead │\n└───────┘         └──────┘";
   const bad = "┌───────┐\n│ owner │\n└──────";
   const r = render(`---\nid: ADR-900\nstatus: Proposed\n---\n\n# T\n\n\`\`\`text\n${good}\n\`\`\`\n\nText.\n\n\`\`\`\n${bad}\n\`\`\`\n\n\`\`\`text\nhive status\n  → 3 running\n\`\`\`\n\n\`\`\`bash\necho "│"\n\`\`\`\n`);
   const pres = elements(r.html, "pre");
-  assert.deepEqual(pres.map((p) => p.properties.className ?? null), [["diagram"], ["diagram"], null, null], "sample output and code are not diagrams");
-  assert.equal(pres[0].properties.role, "img");
-  assert.equal(pres[0].properties.ariaLabel, "Diagram: task, owner, lead");
-  assert.equal(toString(pres[0]), `${good}\n`, "the drawing is kept character for character");
+  assert.deepEqual(pres.map((p) => p.properties.className ?? null), [["diagram-source"], ["diagram-source"], null, null], "sample output and code are not diagrams");
+  // Each diagram is a figure: the drawing, and under it the block as it was written.
+  const figures = elements(r.html, "figure");
+  assert.deepEqual(figures.map((f) => f.properties.className), [["diagram"], ["diagram"]]);
+  const drawings = elements(r.html, "svg");
+  assert.equal(drawings.length, 2);
+  assert.equal(drawings[0].properties.role, "img");
+  assert.equal(drawings[0].properties.ariaLabel, "Diagram: task, owner, lead");
+  assert.deepEqual(elements(r.html, "text").slice(0, 3).map((t) => toString(t)), ["task", "owner", "lead"], "the words of the drawing are text a reader can select and search");
+  assert.equal(toString(pres[0]), `${good}\n`, "the block is kept character for character, for whoever copies it");
   // Named by the line of the file, front matter included, so the writer finds it.
   assert.deepEqual(r.diagrams.map((d) => [d.line, d.rows, d.columns, d.problems.length]), [[8, 3, 26, 0], [16, 3, 9, 1]]);
   assert.match(r.diagrams[1].problems[0], /^line 2, column 9: │ reaches down/);

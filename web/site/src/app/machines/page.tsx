@@ -81,7 +81,7 @@ export default function MachinesPage() {
         </p>
         <CodeBlock
           code={[
-            "hive settings set machine.reserve on   # this machine takes only the jobs that need something it offers",
+            "hive settings set machine.reserve on   # this machine takes only jobs that need what it offers",
             "hive executor reserve gpu-box          # the same for a paired machine; --off releases it",
           ].join("\n")}
         />
@@ -127,7 +127,7 @@ export default function MachinesPage() {
         <CodeBlock
           code={[
             "hive pair ADMIN@HOST --name NAME --inspect    # read the machine and print the scripts; apply nothing",
-            "hive executor login NAME --admin ADMIN@HOST   # give the machine a model login; --with-token reads a token on stdin",
+            "hive executor login NAME --admin ADMIN@HOST   # a model login for the machine; --with-token reads stdin",
             "hive executor probe NAME                      # check a machine again",
             "hive remove executor NAME                     # the undo",
           ].join("\n")}
@@ -176,7 +176,7 @@ export default function MachinesPage() {
         <CodeBlock
           code={[
             "ssh -N -L 8765:127.0.0.1:8765 YOU@HOST &                # HOST is the machine Hive runs on",
-            "hive-hand join --brain http://127.0.0.1:8765 CODE       # this machine's port 8765 now reaches the console",
+            "hive-hand join --brain http://127.0.0.1:8765 CODE       # port 8765 here now reaches the console",
           ].join("\n")}
         />
 
