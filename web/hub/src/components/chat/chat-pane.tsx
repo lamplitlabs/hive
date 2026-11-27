@@ -17,7 +17,7 @@ import { AmendTaskDialog } from "@/components/tasks/task-dialogs";
 import { JobEvidence, JobReportLink } from "@/components/chat/job-evidence";
 import { cn } from "@/lib/utils";
 import { fmtDate, type Tone } from "@/lib/format";
-import { isDefaultChoice, orderChoices } from "@/lib/message-choices";
+import { choiceLook, orderChoices } from "@/lib/message-choices";
 import { hrefs } from "@/lib/nav";
 import { writes, type LeadWork, type Message, type MessageChoice, type Task, type TaskJob } from "@/lib/api";
 import { invalidate, useNow } from "@/lib/use-api";
@@ -376,7 +376,7 @@ export function ChatPane({ project, taskId, task, messages, tasks, jobs, lead, l
                               {orderChoices(m.choices).map((c, ci, all) => {
                                 const t = byId.get(m.task_id!);
                                 if (c.action === "amend" && !t) return null;
-                                return <AnswerButton key={c.label} label={c.label} recommended={isDefaultChoice(all, c)} effect={c.note} size="sm" className="h-8 rounded-full" disabled={busy} onClick={() => void pick(m, c)} />;
+                                return <AnswerButton key={c.label} label={c.label} recommended={choiceLook(all, c) === "recommended"} filled={choiceLook(all, c) === "default"} effect={c.note} size="sm" className="h-8 rounded-full" disabled={busy} onClick={() => void pick(m, c)} />;
                               })}
                               <span className="self-center text-xs text-muted-foreground">or write below</span>
                             </div>

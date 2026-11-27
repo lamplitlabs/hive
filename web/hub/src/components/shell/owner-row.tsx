@@ -37,7 +37,7 @@ export function PresenceSwitch({ className, size = "sm" }: { className?: string;
     const id = toast.loading(present ? "Marking you as here…" : "Marking you as away…");
     try {
       await writes.setSetting("owner.presence", present ? "present" : "away");
-      toast.success(present ? "Welcome back. Proposals and requests wait for your answer again." : "You're away. Each project's lead answers routine proposals for you; hard stops still wait.", { id });
+      toast.success(present ? "Welcome back. Hive asks again before it adds a tool, a skill or a lead." : "You're away. Hive adds the tools and skills a project needs on its own and tells you on the board; hard stops still wait.", { id });
       invalidatePresence();
     } catch (e) {
       toast.dismiss(id);
@@ -55,7 +55,7 @@ export function PresenceSwitch({ className, size = "sm" }: { className?: string;
         </label>
       </TooltipTrigger>
       <TooltipContent side="top" className="max-w-64">
-        {here ? "Here: proposals, questions and requests wait for your answer." : "Away: each project's lead agent answers routine proposals for you and says so on the board. Hard stops, money and the choices only you can make still wait."}
+        {here ? "Here: Hive asks before it adds a tool, a skill or a lead. Each project's lead decides routine asks either way; hard stops wait for you." : "Away: Hive adds the tools and skills a project needs on its own and tells you on the board. Each project's lead decides routine asks either way; hard stops still wait for you."}
       </TooltipContent>
     </Tooltip>
   );

@@ -248,7 +248,7 @@ repository keeps. After the check's first run, its `STATE` is `green` and
   file with a problem is held: its schedule stays as it was, and the other
   files still apply. `hive manifest show --project my-app` lists the
   problems. A runner that applies the commit itself also posts them as a
-  finding on the **For you** page.
+  finding on the project's **For you** tab.
 
 ## Read more
 

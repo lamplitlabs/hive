@@ -4811,7 +4811,7 @@ done
         let p = CommandFakeProvider::scripted(vec![
             call(
                 QUESTION_TOOL,
-                json!({"question": "Which one?", "choices": ["left", "right"]}),
+                json!({"question": "Which one?", "choices": ["left", "right"], "recommended": "left"}),
             ),
             say("I picked left."),
         ]);

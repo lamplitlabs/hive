@@ -133,7 +133,7 @@ result of a job that succeeded does.
 - A **claim** says who is on a thread. It never locks one, and it ends
   with the run that posted it or after `claim_hours` (4).
 - A **question** marked for the owner (`--for-owner`) waits on the
-  **For you** page with its answers as buttons, one of them marked
+  project's **For you** tab with its answers as buttons, one of them marked
   **Recommended**: the owner answers with one pick and never types. A
   question that names no answers, or none recommended, goes to the
   project's lead instead. Other questions get an agent's answer.
