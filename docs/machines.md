@@ -94,6 +94,31 @@ machine whose queue holds jobs it cannot take says so in its idle line
 (`queued: 2 need macos,xcode, which linux-1 does not offer (it offers linux
 amd64; hive executor list)`).
 
+**A project's lanes are a machine's.** The work lanes a project gets (its
+checks taking turns under the verify lock) and its share of the slots are
+counted on each machine apart: a run on a paired or rented machine holds that
+machine's lane, never one here, and the owner's work is not made to wait
+"lanes full" here, nor a run elsewhere asked to hold, while a lane here is
+open.
+
+**A check red on a class of machine.** When the end check of a run on a
+paired or rented machine finds the project's check red on the base tree
+there, the run writes it down for that class of machine (OS and
+architecture, such as `linux/amd64`; event `class.base-red`), and the
+project's code jobs (task, improve, experiment) keep off every machine of the
+class: nothing they did there could land. The jobs that only read still go,
+and so does a job whose needs name the class's system (`hive job needs JOB
+linux`), such as the one that fixes the check there. A check that passes on
+a machine of the class lifts it (`class.base-green`); with no run to say so
+it lapses after 24 hours. A compute request is not made for such a project
+either, and its reason counts only the jobs the rented machine could take
+(`4 job(s) waited 31 min …; 1 of them a rented linux/amd64 machine can run`).
+
+**Stopping a run anywhere.** `hive job stop JOB` stops the job's run on
+whatever machine it runs - this one, a paired or a rented one - within a few
+seconds, and the job ends cancelled by the owner; `--requeue` puts it back in
+the queue instead, the attempt not counted.
+
 **When no machine fits.** A job whose needs no active machine offers waits
 in the queue. After ten minutes, when the needs are what a rented Linux
 machine offers (`linux` and the size's architecture) and
