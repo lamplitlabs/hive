@@ -1101,6 +1101,13 @@ pub(crate) fn owner_addressed_questions(
         .collect()
 }
 
+/// Tests: how often `owner_addressed_asks` read a project's asks, by store
+/// home and project, so a test can hold the daemon's tick to one reading.
+#[cfg(test)]
+pub(crate) static ASK_READS: LazyLock<
+    parking_lot::Mutex<std::collections::BTreeMap<(String, String), usize>>,
+> = LazyLock::new(|| parking_lot::Mutex::new(std::collections::BTreeMap::new()));
+
 /// The meta key that marks the one pass handing the open asks without
 /// answers to their leads (PR #278 review, point 5).
 pub(crate) const BARE_ASKS_HANDED_META: &str = "migration.bare-owner-asks-handed";
@@ -1203,6 +1210,13 @@ pub(crate) fn owner_ask_is_open(conn: &rusqlite::Connection, post_id: &str) -> b
 /// read 9,084 times over, 25 seconds of every planning pass of an away
 /// owner.
 pub(crate) fn owner_addressed_asks(s: &hive_store::Store, slug: String) -> Vec<OwnerQuestion> {
+    #[cfg(test)]
+    {
+        *ASK_READS
+            .lock()
+            .entry((s.home.clone(), slug.clone()))
+            .or_default() += 1;
+    }
     let Ok(conn) = s.conn() else {
         return Vec::new();
     };

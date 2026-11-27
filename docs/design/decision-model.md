@@ -46,9 +46,9 @@ each with a `DECIDE: <post> yes|no <reason>` line. The decide role answers
 the same asks first, with one short call and no tools, before the lead's
 pass reads what is left.
 
-On each daemon pass, for each project, `crate::decide::tend_decide`
+On each daemon pass, for each project, `crate::decide::tend_decide_with`
 (`crates/hive-runner/src/decide.rs`, called from the per-project loop in
-`daemon.rs` just before `lead::tend_lead`, stage `decide`) starts one decide
+`daemon.rs` just before `lead::tend_lead_with`, stage `decide`) starts one decide
 pass in a background thread when:
 
 - `decide.mode` is `on` or `shadow`;
@@ -63,7 +63,11 @@ pass in a background thread when:
 The daemon reads a project's asks (`lead::owner_addressed_asks`, which
 reads every marked post's thread) once per tick and hands the same list to
 the role (`decide::tend_decide_with`) and to the lead's pass
-(`lead::tend_lead_with`); the pass works from that list.
+(`lead::tend_lead_with`); the pass works from that list. Measured on a
+copy of the live store (9 active projects, 1713 posts marked for the
+owner, none open): reading every project's asks twice, as the tick did
+before, took 45-53 ms warm (about 1.8 s cold); reading them once takes
+22-26 ms warm (about 0.9 s cold).
 
 The pass never holds the daemon's loop: it may wait up to
 `decide.timeout_seconds` per ask, so it runs beside the loop, and the lines
@@ -78,8 +82,13 @@ writes would otherwise cost one provider call per tick for nothing); a
 pass that ends normally resets the wait. A pass thread that cannot start
 leaves no mark in flight, and the next tick starts it.
 
+While the pass backs off (the next try is still ahead) or its thread could
+not start, no pass runs, so the role holds nothing (`decide::role_paused`):
+the lead sees every ask until a pass starts again, rather than waiting up
+to 15 minutes on a role that is not answering.
+
 While `decide.mode` is `on`, the lead is active and no outage is open,
-`lead::tend_lead` leaves out of the lead's brief the asks the role still
+`lead::tend_lead_with` leaves out of the lead's brief the asks the role still
 lists (`decide::held_by_role`), even in the tick before the role has
 answered and whatever `owner.presence` says: an ask costs one small call,
 not also a lead run. What the role passes, fails on for good or may not
@@ -96,7 +105,8 @@ changes nothing.
 
 ### Which asks
 
-`decide::decide_asks` starts from `lead::owner_addressed_asks`, the list the
+`decide::role_asks` (behind `decide::held_by_role` and the pass) starts
+from `lead::owner_addressed_asks`, the list the
 lead's brief shows: posts of `OWNER_ASK_DECIDE_KINDS` (finding, handoff,
 suggestion) marked for the owner, still open (`owner_ask_is_open`: no
 decision, no answer, thread not resolved), and not a major dependency
@@ -129,7 +139,10 @@ empty, the pass asks the provider for its model list once and uses its
 default chat model (else its first chat model), and records that name on
 the decision: the call never sends an empty model. The resolved name is
 kept for an hour per store and provider, so the list is not fetched on
-every pass that has asks. The prompt
+every pass that has asks. A call that errors while that cached default is
+in use drops it, so a default the provider withdraws is looked up again on
+the next pass instead of failing every pass, and keeping the outage open,
+for up to an hour. The prompt
 (`decide::decide_prompt`) holds:
 
 - what to answer and how: yes, no or pass, as the project's lead would;
@@ -267,7 +280,19 @@ failed or outage ask reaches the lead with the owner present; repeated
 panics back off and a normal pass resets the wait; an outage opened
 without its event gets it later; every write refused and a thread that
 cannot start both say the next pass tries again; the role and the lead
-work from the asks the tick handed them. In `run.rs`, a run without a
+work from the asks the tick handed them. The third round (TASK-154) adds,
+each failing without its fix: a call error drops the cached default model
+(`a_call_error_drops_the_cached_default_model`); the back-off and a thread
+that cannot start hold no asks from the lead
+(`the_back_off_holds_no_asks_from_the_lead`,
+`a_thread_that_cannot_start_holds_no_asks_from_the_lead`); one daemon tick
+reads the asks once for the role and the lead
+(`one_daemon_tick_reads_the_asks_once_for_the_role_and_the_lead`, through
+`once_daemon`); and `run_job` itself records on a lead's decisions the
+default model its session resolved and an agent file's model
+(`run_job_records_the_sessions_default_model_on_the_leads_decisions`,
+`run_job_records_the_agent_files_model_on_the_leads_decisions` in
+`run.rs`, driving a fake harness). In `run.rs`, a run without a
 model records the default its session resolved, and a run as an agent
 file is started on the file's model; in `hive-provider-copilot`,
 `chat_stops_at_the_callers_deadline_when_the_api_stalls`.

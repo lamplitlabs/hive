@@ -7515,6 +7515,167 @@ mod tests {
         );
     }
 
+    /// Runs a lead job of `proj`, leased by its lead and pinned to agent file
+    /// `pin` (empty for none), down the native harness's path: the harness
+    /// is a script that says the `--model` it was given and decides `post`
+    /// yes. `before` gets the job's id ahead of the run.
+    fn run_fake_lead(
+        s: &hive_store::Store,
+        post: &str,
+        pin: &str,
+        before: impl FnOnce(&str),
+    ) -> Row {
+        crate::lead::ensure_lead(s, "proj".into()).unwrap();
+        let (job, _) = crate::jobs::add_job(
+            s,
+            "proj".into(),
+            crate::lead::LEAD_KIND.into(),
+            "decide the asks".into(),
+            format!("Decide {post}"),
+            0,
+            crate::lead::LEAD_JOB_PRIORITY,
+            format!("lead:proj:{post}"),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        crate::util::exec1(
+            &s.conn().unwrap(),
+            "UPDATE jobs SET agent = ? WHERE id = ?",
+            &[&pin, &job.str("id")],
+        );
+        let job = crate::jobs::lease_job(
+            s,
+            "proj-lead".into(),
+            TEST_NOW.into(),
+            crate::jobs::LeaseOpts {
+                job_id: job.str("id"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(job.str("kind"), crate::lead::LEAD_KIND, "{job:?}");
+        before(&job.str("id"));
+        let harness = std::path::Path::new(&s.home).join(format!("fake-harness-{post}.sh"));
+        std::fs::write(
+            &harness,
+            format!(
+                "#!/bin/sh\nmodel=''; prev=''\n\
+                 for a in \"$@\"; do [ \"$prev\" = --model ] && model=\"$a\"; prev=\"$a\"; done\n\
+                 echo \"SUMMARY: done - ran on [$model]\"\n\
+                 echo 'DECIDE: {post} yes small and reversible'\n"
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&harness, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        crate::exec::TEST_HARNESS_BIN
+            .lock()
+            .insert(s.home.clone(), harness.display().to_string());
+        let r = run_job(s, job, "proj-lead", TEST_NOW, RunOpts::default());
+        crate::exec::TEST_HARNESS_BIN.lock().remove(&s.home);
+        r.unwrap()
+    }
+
+    fn owner_ask(s: &hive_store::Store, thread: &str) -> String {
+        crate::board::create_post(
+            s,
+            TEST_NOW.into(),
+            crate::board::PostOpts {
+                kind: "suggestion".into(),
+                project: "proj".into(),
+                area: "build".into(),
+                thread: thread.into(),
+                summary: format!("Cache the {thread} step between runs"),
+                body: "The step runs twice per job.\n\nYes: Queue the cache work\nNo: Close it\n"
+                    .into(),
+                agent: crate::board::actor_agent(s, "daemon".into()),
+                for_owner: true,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .str("id")
+    }
+
+    fn decision_of(s: &hive_store::Store, post: &str) -> Row {
+        crate::util::must_one(
+            &s.conn().unwrap(),
+            "SELECT answer, decided_by, decided_model FROM decisions WHERE post_id = ?",
+            &[&post],
+        )
+    }
+
+    /// TASK-154 item 3 (TASK-148 item 3 through `run_job`): a lead run
+    /// started without `--model` records on its `DECIDE:` lines the model
+    /// its harness session resolved, not an empty one.
+    #[test]
+    fn run_job_records_the_sessions_default_model_on_the_leads_decisions() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = hive_testutil::env_lock();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let s = new_store();
+        new_repo(&s);
+        assert_eq!(s.run_model(crate::lead::LEAD_KIND), "", "no model is set");
+        let post = owner_ask(&s, "run-default");
+        // The harness resolved the provider's default: its session of the
+        // job, started during the run, names it.
+        let r = run_fake_lead(&s, &post, "", |job_id| {
+            s.begin_harness_session(hive_store::HarnessSession {
+                id: "h-run-default".into(),
+                job_id: job_id.into(),
+                provider: "copilot".into(),
+                model: "provider-default".into(),
+                started_at: TEST_NOW.into(),
+                ..Default::default()
+            })
+            .unwrap();
+        });
+        assert!(r.str("summary").contains("ran on []"), "run: {r:?}");
+        let d = decision_of(&s, &post);
+        assert_eq!(d.str("answer"), "yes", "run: {r:?}");
+        assert_eq!(d.str("decided_by"), "proj-lead");
+        assert_eq!(d.str("decided_model"), "provider-default", "{d:?}");
+    }
+
+    /// TASK-154 item 3 (TASK-148 item 5 through `run_job`): a lead run
+    /// pinned to an agent file is started on that file's model, and its
+    /// `DECIDE:` lines record it, not the kind's setting.
+    #[test]
+    fn run_job_records_the_agent_files_model_on_the_leads_decisions() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = hive_testutil::env_lock();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let s = new_store();
+        let (_, root) = new_repo(&s);
+        set_setting(&s, "light_model", "light-setting");
+        let agents = std::path::Path::new(&root).join(".hive/agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(
+            agents.join("decider.md"),
+            "---\ndescription: Decides.\nmodel: agent-pinned\nhive:\n  kinds: [lead]\n---\nDecide.\n",
+        )
+        .unwrap();
+        run(&root, &["git", "add", ".hive/agents/decider.md"]);
+        run(&root, &["git", "commit", "-q", "-m", "decider agent"]);
+        let post = owner_ask(&s, "run-pinned");
+        let r = run_fake_lead(&s, &post, "decider", |_| {});
+        assert!(
+            r.str("summary").contains("ran on [agent-pinned]"),
+            "run: {r:?}"
+        );
+        let d = decision_of(&s, &post);
+        assert_eq!(d.str("answer"), "yes", "run: {r:?}");
+        assert_eq!(d.str("decided_model"), "agent-pinned", "{d:?}");
+    }
+
     /// TASK-148 item 5: `run_job` starts a run pinned to an agent file on
     /// that file's model (what its decisions then record), and a custom
     /// worker command on none.
