@@ -13,13 +13,19 @@
 //! merge ([`merge_gate`]); the owner's `--by owner` keeps its meaning and
 //! skips the gate.
 //!
-//! A red check whose failing tests all pass when re-run alone
-//! (`review.rerun_cmd`) is a flaky test, and is still not merged: one flaky
-//! test must not teach the reviewer that red is fine. The check records the
-//! names (`flaky`) and the CLI queues the fix on the pull request's head
-//! itself, as the review's verdict. A red check followed by a green one of
-//! the same head is the same thing seen from the other side, and the gate
-//! refuses that too.
+//! A check that fails in one or two tests is not called red at once: on a
+//! loaded machine a timing test fails now and then whatever the pull
+//! request changed (pull request 304's check, red in
+//! `daemon_wakes_on_post_question` alone), and a red review is queued
+//! again, which adds a whole check to the same load. So those tests are
+//! re-run alone, once each, with `review.rerun_cmd` ([`rerun_plan`],
+//! [`rerun_alone`]): the check is red only when one of them fails again.
+//! When every one passes alone the check is recorded green, with the tests
+//! named as `flaky` so they are fixed one by one. More failures, a failure
+//! that is not a named test, a check stopped at its time bound or a test
+//! run that did not cover every test are red without a re-run. A red check
+//! followed by a green one of the same head (the reviewer ran it again by
+//! hand) is still refused by the gate.
 
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -33,7 +39,7 @@ pub(crate) const ACTION: &str = "review.check";
 pub(crate) const RERUN_SETTING: &str = "review.rerun_cmd";
 /// At most this many failing tests are re-run alone; a check with more
 /// failures is plainly red.
-const RERUN_CAP: usize = 5;
+pub(crate) const RERUN_CAP: usize = 2;
 
 /// One recorded check of a pull request's head.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -48,8 +54,14 @@ pub(crate) struct Recorded {
     /// The failing tests (or failure lines) of a red check.
     pub failures: Vec<String>,
     /// The failing tests that passed when re-run alone; non-empty only when
-    /// every failing test did.
+    /// every failing test did, and the check is then green.
     pub flaky: Vec<String>,
+    /// The failing tests that failed again when re-run alone: the check is
+    /// red.
+    pub again: Vec<String>,
+    /// Why a red check's failures were not re-run alone; empty when they
+    /// were, or when the check was green or did not run.
+    pub no_rerun: String,
     /// Why the check said nothing about the tree (a full disk, a verify lock
     /// that stayed held); empty when it ran.
     pub did_not_run: String,
@@ -74,6 +86,8 @@ impl Recorded {
             cmd: v["cmd"].as_str().unwrap_or_default().to_string(),
             failures: list("failures"),
             flaky: list("flaky"),
+            again: list("again"),
+            no_rerun: v["no_rerun"].as_str().unwrap_or_default().to_string(),
             did_not_run: v["did_not_run"].as_str().unwrap_or_default().to_string(),
         }
     }
@@ -100,6 +114,14 @@ impl Recorded {
         } else {
             format!("; log {}", self.log)
         };
+        if self.green && !self.flaky.is_empty() {
+            return format!(
+                "check of #{number} green at {at} (`{}`) after a re-run: {} failed in the full run ({}) and passed re-run alone (flaky){log}",
+                self.cmd,
+                list_words(&self.flaky),
+                self.exit_words()
+            );
+        }
         if self.green {
             return format!("check of #{number} green at {at} (`{}`){log}", self.cmd);
         }
@@ -114,16 +136,15 @@ impl Recorded {
         } else {
             format!("; failed: {}", list_words(&self.failures))
         };
-        let flaky = if self.flaky.is_empty() {
-            String::new()
+        let rerun = if !self.again.is_empty() {
+            format!("; failed again re-run alone: {}", list_words(&self.again))
+        } else if !self.no_rerun.is_empty() {
+            format!("; not re-run: {}", self.no_rerun)
         } else {
-            format!(
-                "; {} passed when re-run alone (flaky)",
-                list_words(&self.flaky)
-            )
+            String::new()
         };
         format!(
-            "check of #{number} red at {at} ({}){failed}{flaky}{log}",
+            "check of #{number} red at {at} ({}){failed}{rerun}{log}",
             self.exit_words()
         )
     }
@@ -228,36 +249,130 @@ fn budget(s: &hive_store::Store) -> Duration {
     Duration::from_secs((minutes as u64) * 60).max(Duration::from_secs(60))
 }
 
-/// Re-runs each failing test alone in `dir`; true when every one passed
-/// (its run exits 0 and says `test NAME ... ok`).
-fn all_pass_alone(
-    s: &hive_store::Store,
-    slug: &str,
-    dir: &str,
-    vc: &str,
+/// Why a red check's output shows that some tests never gave a verdict:
+/// `scripts/verify-check.sh` heads each bad chunk `=== VERDICT: NAME chunk
+/// C (exit R, P passed, F failed, I ignored of E)`, and a chunk stopped at
+/// its time bound, run by a binary another build rewrote, or ended before
+/// all its tests ran did not test the tree. Re-running the named failures
+/// says nothing about those, so such a check stays red. `None` when every
+/// chunk the output names ran all its tests.
+fn untested(text: &str) -> Option<String> {
+    for line in text.lines() {
+        if line.contains("chunks reported a result") && line.contains(" of ") {
+            return Some("not every chunk of the check reported a result".into());
+        }
+        let Some(rest) = line.trim().strip_prefix("=== ") else {
+            continue;
+        };
+        let Some((verdict, rest)) = rest.split_once(": ") else {
+            continue;
+        };
+        let Some((name, counts)) = rest.split_once(" (exit ") else {
+            continue;
+        };
+        if verdict != "FAILED" {
+            return Some(format!(
+                "{name} ended {verdict}, so some of its tests never ran"
+            ));
+        }
+        // "1, 18 passed, 1 failed, 0 ignored of 20)"
+        let num = |label: &str| -> Option<u64> {
+            counts
+                .split(", ")
+                .find_map(|p| p.strip_suffix(label))
+                .and_then(|n| n.trim().parse().ok())
+        };
+        let (Some(passed), Some(failed)) = (num(" passed"), num(" failed")) else {
+            continue;
+        };
+        let Some((ignored, expected)) = counts
+            .split(", ")
+            .find_map(|p| p.split_once(" ignored of "))
+            .and_then(|(i, e)| {
+                let e = e.trim_end_matches(')');
+                Some((i.trim().parse::<u64>().ok()?, e.trim().parse::<u64>().ok()?))
+            })
+        else {
+            continue;
+        };
+        if expected > 0 && passed + failed + ignored < expected {
+            return Some(format!(
+                "{name} gave {} of its {expected} tests a verdict before it ended",
+                passed + failed + ignored
+            ));
+        }
+    }
+    None
+}
+
+/// The tests a red check's failures may be re-run alone as, or why the
+/// check is red without a re-run. Only a check that ran to its end, whose
+/// every chunk ran all its tests, and that failed in at most
+/// [`RERUN_CAP`] named tests is re-run - and only when `review.rerun_cmd`
+/// (`template`) names `{test}`. Pure: the decision's whole input is here.
+pub(crate) fn rerun_plan(
+    exit: Option<i32>,
+    output: &str,
+    template: &str,
+) -> Result<Vec<String>, String> {
+    if exit.is_none() {
+        return Err("the check was stopped at its time bound".into());
+    }
+    let (tests, odd) = failed_tests(output);
+    if odd {
+        return Err("a failing test has a name that cannot be re-run alone".into());
+    }
+    if tests.is_empty() {
+        return Err("no failing test is named (a build, lint or other step failed)".into());
+    }
+    if tests.len() > RERUN_CAP {
+        return Err(format!(
+            "{} tests failed; only up to {RERUN_CAP} are re-run alone",
+            tests.len()
+        ));
+    }
+    if let Some(why) = untested(output) {
+        return Err(why);
+    }
+    if !template.contains("{test}") {
+        return Err(format!("{RERUN_SETTING} names no {{test}}"));
+    }
+    Ok(tests)
+}
+
+/// Re-runs each of `tests` alone, once, with `run` (true when that run
+/// passed); returns the tests that passed and those that failed again. The
+/// check is green only when the second list is empty.
+pub(crate) fn rerun_alone(
     tests: &[String],
-) -> bool {
-    if tests.is_empty() || tests.len() > RERUN_CAP {
+    mut run: impl FnMut(&str) -> bool,
+) -> (Vec<String>, Vec<String>) {
+    let mut passed = Vec::new();
+    let mut again = Vec::new();
+    for t in tests {
+        if run(t) {
+            passed.push(t.clone());
+        } else {
+            again.push(t.clone());
+        }
+    }
+    (passed, again)
+}
+
+/// One test re-run alone in `dir`: it passed when its run exits 0 and says
+/// `test NAME ... ok`.
+fn passes_alone(s: &hive_store::Store, slug: &str, dir: &str, vc: &str, test: &str) -> bool {
+    let cmd = rerun_cmd(s, vc, test);
+    if cmd.is_empty() {
         return false;
     }
-    for t in tests {
-        let cmd = rerun_cmd(s, vc, t);
-        if cmd.is_empty() {
-            return false;
-        }
-        let (rc, so, se) = crate::land::sh_with_timeout(
-            dir.to_string(),
-            crate::verify_lock::wrap(s, slug, &cmd),
-            budget(s),
-        );
-        let ok_line = format!("test {t} ... ok");
-        let passed = matches!(rc.as_deref(), Some(0))
-            && format!("{so}\n{se}").lines().any(|l| l.trim() == ok_line);
-        if !passed {
-            return false;
-        }
-    }
-    true
+    let (rc, so, se) = crate::land::sh_with_timeout(
+        dir.to_string(),
+        crate::verify_lock::wrap(s, slug, &cmd),
+        budget(s),
+    );
+    let ok_line = format!("test {test} ... ok");
+    matches!(rc.as_deref(), Some(0)) && format!("{so}\n{se}").lines().any(|l| l.trim() == ok_line)
 }
 
 fn git_line(dir: &str, args: &[&str]) -> Result<String, String> {
@@ -350,21 +465,34 @@ pub(crate) fn run(
         rec.did_not_run = crate::verify_lock::did_not_run_reason(c).to_string();
     } else if !rec.green {
         let full = format!("{so}\n{se}");
-        let (tests, odd) = failed_tests(&full);
+        let (tests, _) = failed_tests(&full);
         rec.failures = if tests.is_empty() {
             crate::land::verify_failures(&crate::land::verify_tail(&so, &se))
         } else {
-            tests.clone()
+            tests
         };
-        if exit.is_some() && !odd && all_pass_alone(s, &slug, dir, &vc, &tests) {
-            rec.flaky = tests;
+        match rerun_plan(exit, &full, &s.setting(RERUN_SETTING, "")) {
+            Ok(tests) => {
+                let (passed, again) = rerun_alone(&tests, |t| passes_alone(s, &slug, dir, &vc, t));
+                if again.is_empty() {
+                    rec.green = true;
+                    rec.flaky = passed;
+                } else {
+                    rec.again = again;
+                }
+            }
+            Err(why) => rec.no_rerun = why,
         }
     }
     let mut detail = json!({
         "project": slug, "number": number, "url": view.url, "head_sha": rec.head_sha,
         "exit": rec.exit, "green": rec.green, "log": rec.log, "cmd": rec.cmd,
-        "failures": rec.failures, "flaky": rec.flaky, "note": rec.line(number),
+        "failures": rec.failures, "flaky": rec.flaky, "again": rec.again,
+        "note": rec.line(number),
     });
+    if !rec.no_rerun.is_empty() {
+        detail["no_rerun"] = json!(rec.no_rerun);
+    }
     if !rec.did_not_run.is_empty() {
         detail["did_not_run"] = json!(rec.did_not_run);
     }
@@ -449,33 +577,6 @@ pub(crate) fn merge_gate(
     Ok(newest.clone())
 }
 
-/// The brief of the fix a flaky red check queues on the pull request's head.
-pub(crate) fn flaky_note(rec: &Recorded, number: i64) -> String {
-    format!(
-        "The check of #{number} (`{}`) was red at {} ({}): {} failed in the full run and passed when re-run alone, so {} flaky. Make {} deterministic - find the shared state, timing, order or port {} depend on - and keep every assertion; do not skip or weaken a test. The pull request merges only on a green check of its head.{}",
-        rec.cmd,
-        short(&rec.head_sha),
-        rec.exit_words(),
-        rec.flaky.join(", "),
-        if rec.flaky.len() == 1 {
-            "it is"
-        } else {
-            "they are"
-        },
-        if rec.flaky.len() == 1 { "it" } else { "them" },
-        if rec.flaky.len() == 1 {
-            "it may"
-        } else {
-            "they may"
-        },
-        if rec.log.is_empty() {
-            String::new()
-        } else {
-            format!(" Log of the red run: {}", rec.log)
-        }
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -503,5 +604,174 @@ mod tests {
         );
         assert_eq!(env_prefix("cargo test"), "");
         assert_eq!(env_prefix("env A='x y' sh c.sh"), "");
+    }
+}
+
+#[cfg(test)]
+mod rerun_tests {
+    use super::*;
+
+    const TMPL: &str = "cargo test --workspace -- --exact {test}";
+
+    /// What scripts/verify-check.sh prints for a red run with `failed`
+    /// failing tests, every chunk having run all its tests.
+    fn verify_output(failed: &[&str]) -> String {
+        let mut t = String::new();
+        for name in failed {
+            t.push_str(&format!(
+                "\n=== FAILED: hive_runner chunk 3 (exit 101, 19 passed, 1 failed, 0 ignored of 20)\ntest {name} ... FAILED\nfailures:\n    {name}\n"
+            ));
+        }
+        t.push_str("verify-check: failing tests (each binary runs from its package directory):\n");
+        for name in failed {
+            t.push_str(&format!("  {name}\n"));
+        }
+        t.push_str(&format!("verify-check: {} chunk(s) failed\n", failed.len()));
+        t
+    }
+
+    #[test]
+    fn one_or_two_failing_tests_are_rerun_alone() {
+        let one = verify_output(&["daemon::tests::daemon_wakes_on_post_question"]);
+        assert_eq!(
+            rerun_plan(Some(1), &one, TMPL),
+            Ok(vec![
+                "daemon::tests::daemon_wakes_on_post_question".to_string()
+            ])
+        );
+        let two = verify_output(&["a::b", "c::d"]);
+        assert_eq!(
+            rerun_plan(Some(1), &two, TMPL),
+            Ok(vec!["a::b".to_string(), "c::d".to_string()])
+        );
+        // Plain cargo test output works the same.
+        assert_eq!(
+            rerun_plan(Some(101), "test a::b ... FAILED\n", TMPL),
+            Ok(vec!["a::b".to_string()])
+        );
+    }
+
+    #[test]
+    fn a_check_red_for_any_other_reason_is_not_rerun() {
+        let three = verify_output(&["a::b", "c::d", "e::f"]);
+        assert_eq!(
+            rerun_plan(Some(1), &three, TMPL),
+            Err("3 tests failed; only up to 2 are re-run alone".into())
+        );
+        assert_eq!(
+            rerun_plan(None, &verify_output(&["a::b"]), TMPL),
+            Err("the check was stopped at its time bound".into())
+        );
+        let lint =
+            "error: this could be written more simply\nerror: could not compile `hive-runner`\n";
+        assert!(
+            rerun_plan(Some(101), lint, TMPL)
+                .unwrap_err()
+                .contains("no failing test is named")
+        );
+        assert!(
+            rerun_plan(Some(101), "test x - should panic ... FAILED\n", TMPL)
+                .unwrap_err()
+                .contains("cannot be re-run alone")
+        );
+        assert!(
+            rerun_plan(Some(1), &verify_output(&["a::b"]), "")
+                .unwrap_err()
+                .contains("review.rerun_cmd names no {test}")
+        );
+        assert!(
+            rerun_plan(Some(1), &verify_output(&["a::b"]), "cargo test")
+                .unwrap_err()
+                .contains("names no {test}")
+        );
+    }
+
+    /// A chunk that timed out, ran a rewritten binary or ended before all
+    /// its tests ran did not test the tree: its named failure passing alone
+    /// would prove nothing about the rest.
+    #[test]
+    fn a_check_whose_chunks_did_not_all_run_is_not_rerun() {
+        let timeout = "=== timeout: hive_runner chunk 4 (exit 142, 3 passed, 0 failed, 0 ignored of 20)\nkilled after 600s; tests that never finished:\n  a::slow\nverify-check: failing tests:\n  a::slow\n";
+        assert_eq!(
+            rerun_plan(Some(1), timeout, TMPL),
+            Err("hive_runner chunk 4 ended timeout, so some of its tests never ran".into())
+        );
+        let changed = "=== changed: hive_store chunk 0 (exit 0, 5 passed, 0 failed, 0 ignored of 20)\n=== FAILED: hive_runner chunk 1 (exit 101, 19 passed, 1 failed, 0 ignored of 20)\ntest a::b ... FAILED\n";
+        assert!(
+            rerun_plan(Some(1), changed, TMPL)
+                .unwrap_err()
+                .contains("hive_store chunk 0 ended changed")
+        );
+        // A panic that took the harness down: one failure, 7 of 20 ran.
+        let crashed = "=== FAILED: hive_runner chunk 2 (exit 101, 6 passed, 1 failed, 0 ignored of 20)\ntest a::b ... FAILED\n";
+        assert_eq!(
+            rerun_plan(Some(1), crashed, TMPL),
+            Err("hive_runner chunk 2 gave 7 of its 20 tests a verdict before it ended".into())
+        );
+        let missing =
+            "verify-check: only 40 of 41 chunks reported a result\ntest a::b ... FAILED\n";
+        assert!(
+            rerun_plan(Some(1), missing, TMPL)
+                .unwrap_err()
+                .contains("not every chunk")
+        );
+    }
+
+    #[test]
+    fn the_check_is_red_only_when_a_rerun_fails_again() {
+        let tests = vec!["a::b".to_string(), "c::d".to_string()];
+        let mut ran = Vec::new();
+        let (passed, again) = rerun_alone(&tests, |t| {
+            ran.push(t.to_string());
+            true
+        });
+        assert_eq!(ran, tests, "each test once, in order");
+        assert_eq!(passed, tests);
+        assert!(again.is_empty());
+
+        let (passed, again) = rerun_alone(&tests, |t| t == "a::b");
+        assert_eq!(passed, vec!["a::b".to_string()]);
+        assert_eq!(again, vec!["c::d".to_string()]);
+    }
+
+    #[test]
+    fn the_line_says_green_after_a_rerun_and_why_a_red_check_was_not_rerun() {
+        let green = Recorded {
+            head_sha: "0123456789abcdef".into(),
+            exit: Some(1),
+            green: true,
+            cmd: "sh check.sh".into(),
+            failures: vec!["a::b".into()],
+            flaky: vec!["a::b".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            green.line(7),
+            "check of #7 green at 0123456789ab (`sh check.sh`) after a re-run: a::b failed in the full run (exit 1) and passed re-run alone (flaky)"
+        );
+        let again = Recorded {
+            green: false,
+            flaky: vec![],
+            again: vec!["a::b".into()],
+            ..green.clone()
+        };
+        assert_eq!(
+            again.line(7),
+            "check of #7 red at 0123456789ab (exit 1); failed: a::b; failed again re-run alone: a::b"
+        );
+        let wide = Recorded {
+            again: vec![],
+            no_rerun: "3 tests failed; only up to 2 are re-run alone".into(),
+            ..again
+        };
+        assert!(
+            wide.line(7)
+                .ends_with("; not re-run: 3 tests failed; only up to 2 are re-run alone")
+        );
+        // A recorded event reads back the same.
+        let back = Recorded::from_detail(&json!({
+            "head_sha": "x", "exit": 1, "green": true, "flaky": ["a::b"], "again": [], "no_rerun": ""
+        }));
+        assert!(back.green && back.flaky == vec!["a::b".to_string()] && back.again.is_empty());
     }
 }

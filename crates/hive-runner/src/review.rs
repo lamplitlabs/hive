@@ -737,7 +737,7 @@ pub(crate) fn review_brief(
         review_branch(n)
     ));
     b.push(format!(
-        "3. `hive review check {n}` - runs the project's check here, on the pull request's head, and records the head, the exit and the log. Do not run the check by hand instead: `hive review merge {n}` refuses without a green check of this head recorded for this review. A red check is never merged; when its failing tests pass re-run alone they are flaky, and the command queues their fix as your verdict."
+        "3. `hive review check {n}` - runs the project's check here, on the pull request's head, and records the head, the exit and the log. Do not run the check by hand instead: `hive review merge {n}` refuses without a green check of this head recorded for this review. A check that fails in one or two tests re-runs them alone once and is red only when one fails again; a red check is never merged."
     ));
     b.push(format!(
         "4. `hive review diff {n}` and read the whole diff as a reviewer: does it do what the title and body say, is it correct, is it tested, does it touch anything the body does not explain (secrets, deletions, paths outside its scope), does it break a convention the README or an ADR states."

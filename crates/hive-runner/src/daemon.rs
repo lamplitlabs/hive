@@ -9108,13 +9108,26 @@ mod tests {
         );
     }
 
+    /// Under load (a loaded Mac running three task checks besides the hub and
+    /// the daemon) this test failed with "the daemon did not wake" although
+    /// nothing was wrong with the wake: its interval (30 s) equalled its
+    /// deadline (30 s), so it could not tell a wake from the interval timer,
+    /// and the second pass and the shutdown - with the runner sweep walking
+    /// the real $HOME - did not fit in what was left. Now the interval is an
+    /// hour, so only the wake can end the idle wait inside the deadline; the
+    /// sweep is off; the deadlines are minutes, scaled by
+    /// HIVE_TEST_DEADLINE_MULT; and the first beat is awaited, not assumed.
     #[test]
     fn daemon_wakes_on_post_question() {
         let _serial = crate::test_helpers::serial();
         hive_bus::reset_default();
         let s = new_store();
+        crate::test_helpers_daemon::set_setting(&s, "daemon.sweep", "off");
         new_bare_repo(&s);
         join(&s, "aurora");
+        // Longer than any deadline below: the idle wait after the first loop
+        // ends inside them only when the bus wakes it.
+        const INTERVAL: i32 = 3600;
         let cancel = hive_bus::CancellationToken::new();
         let out = OutBuf::new();
         let (done_tx, done_rx) = crossbeam_channel::bounded(1);
@@ -9126,7 +9139,7 @@ mod tests {
                 &cancel_daemon,
                 &s_daemon,
                 DaemonOpts {
-                    interval: 30,
+                    interval: INTERVAL,
                     max_loops: 2,
                     worker_cmd: "sh -c 'echo SUMMARY: ok'".into(),
                     out: Some(out_daemon.writer()),
@@ -9135,17 +9148,33 @@ mod tests {
             );
             let _ = done_tx.send(result);
         });
-        let deadline = std::time::Instant::now() + test_wait(Duration::from_secs(30));
-        while std::time::Instant::now() < deadline {
-            let beat = crate::util::must_one(
+        // The first loop's beat: the daemon has subscribed to its wake
+        // events by then (an event before that would be lost). The daemon's
+        // own end is watched in the same wait, so a daemon that ends early
+        // fails here with its output rather than at the wake below.
+        let beat_by = std::time::Instant::now() + test_wait(Duration::from_secs(180));
+        let beaten = || {
+            crate::util::must_one(
                 &*s.conn().unwrap(),
                 "SELECT value FROM meta WHERE key = 'daemon'",
                 &[],
+            )
+            .str("value")
+            .contains("\"loops\":1")
+        };
+        while !beaten() {
+            let left = beat_by.saturating_duration_since(std::time::Instant::now());
+            assert!(
+                !left.is_zero(),
+                "the daemon's first loop did not beat in time:\n{}",
+                out.string()
             );
-            if beat.str("value").contains("\"loops\":1") {
-                break;
+            if let Ok(result) = done_rx.recv_timeout(left.min(Duration::from_millis(50))) {
+                panic!(
+                    "the daemon ended ({result}) before its first beat was seen:\n{}",
+                    out.string()
+                );
             }
-            std::thread::sleep(Duration::from_millis(20));
         }
         hive_bus::emit(
             &s,
@@ -9155,15 +9184,20 @@ mod tests {
             serde_json::json!({"project": "proj"}),
         )
         .unwrap();
-        let result = done_rx
-            .recv_timeout(test_wait(Duration::from_secs(30)))
-            .unwrap_or_else(|_| {
-                cancel.cancel();
-                panic!(
-                    "the daemon did not wake on post.question:\n{}",
-                    out.string()
-                )
-            });
+        let woken = std::time::Instant::now();
+        let deadline = test_wait(Duration::from_secs(300));
+        assert!(
+            deadline < Duration::from_secs(INTERVAL as u64),
+            "HIVE_TEST_DEADLINE_MULT stretches the deadline past the interval, so the test could not tell a wake from the timer"
+        );
+        let result = done_rx.recv_timeout(deadline).unwrap_or_else(|_| {
+            cancel.cancel();
+            panic!(
+                "the daemon did not wake on post.question within {deadline:?}:\n{}",
+                out.string()
+            )
+        });
+        assert!(woken.elapsed() < Duration::from_secs(INTERVAL as u64));
         assert_eq!(result, "done", "daemon = {result}\n{}", out.string());
         let raw = crate::util::must_one(
             &*s.conn().unwrap(),

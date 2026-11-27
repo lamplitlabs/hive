@@ -734,13 +734,13 @@ fn clone_dir() -> Result<String> {
 }
 
 /// `hive review check N`: runs the project's check in this clone, on the
-/// pull request's head, and records it (`review.check`). A red check whose
-/// failing tests all pass when re-run alone is flaky: the fix is queued on
-/// the pull request's head as this review's verdict.
+/// pull request's head, and records it (`review.check`). A check that
+/// failed in at most two tests re-runs them alone once first: it is red
+/// only when one fails again, and green - with the tests named as flaky -
+/// when every one passes.
 fn check(c: &mut Context, number: i64) -> Result<()> {
     let project = project_of(c)?;
     let s = &store(c)?.clone();
-    let slug = project.str("slug");
     let view = fetch_view(s, &project, number)?;
     need_open(&view)?;
     let dir = clone_dir()?;
@@ -762,27 +762,13 @@ fn check(c: &mut Context, number: i64) -> Result<()> {
             c.out,
             "Recorded for this review: `hive review merge {number}` may merge this head."
         )?;
-        return Ok(());
-    }
-    if !rec.flaky.is_empty() && need_undecided(s, &slug, number, Decider::Reviewer).is_ok() {
-        let pr = known_pr(s, &slug, number, &view);
-        let note = review_check::flaky_note(&rec, number);
-        let job =
-            review::request_changes(s, &project, &pr, &view, &note, &actor, &now).map_err(|e| {
-                hive_cli::errorf(
-                    1,
-                    &format!("Could not queue the fix of the flaky tests of #{number}"),
-                    &e,
-                    "the failure is recorded (review.failed)",
-                )
-            })?;
-        writeln!(
-            c.out,
-            "Not merged: the failing tests passed when re-run alone, so they are flaky ({}). The fix is queued as this review's verdict: {} ({}) makes them deterministic on the pull request's head - finish the job.",
-            rec.flaky.join(", "),
-            job.str("id"),
-            job.str("kind")
-        )?;
+        if !rec.flaky.is_empty() {
+            writeln!(
+                c.out,
+                "Flaky: {} failed in the full run and passed re-run alone, so this check counts as green; the tests are named in its record (review.check `flaky`) to be made deterministic.",
+                rec.flaky.join(", ")
+            )?;
+        }
         return Ok(());
     }
     writeln!(
@@ -1391,8 +1377,12 @@ mod tests {
         assert!(calls(&log).iter().any(|c| c == "pr merge 7"));
     }
 
+    /// TASK-147: a check that fails in one or two tests re-runs them alone,
+    /// once each, before it is called red. Passing alone, the check is
+    /// recorded green with the tests named as flaky, and the reviewer may
+    /// merge it.
     #[test]
-    fn a_red_check_whose_failures_pass_alone_queues_their_fix_and_never_merges() {
+    fn a_check_whose_one_failure_passes_alone_is_green_for_the_merge_gate() {
         let _serial = crate::test_helpers::serial();
         let _env = hive_testutil::env_lock();
         let (_bin, _path, log, view) = fake_gh();
@@ -1407,51 +1397,114 @@ mod tests {
         )
         .unwrap();
         set_check(&s, "printf 'test a::flaky ... FAILED\\n'; exit 1");
-
-        // Failing alone too: plainly red, nothing is queued.
+        let reruns = tempfile::NamedTempFile::new().unwrap();
         set_setting(
             &s,
             review_check::RERUN_SETTING,
-            "printf 'test %s ... FAILED\\n' {test}; exit 1",
+            &format!(
+                "echo {{test}} >> {}; printf 'test %s ... ok\\n' {{test}}",
+                reruns.path().display()
+            ),
         );
         let (out, err, code) = invoke(&s, "review", "proj", &["check", "7"]);
         assert_eq!(code, 0, "{out} {err}");
-        assert!(
-            out.contains("red at") && out.contains("failed: a::flaky"),
-            "{out}"
+        assert!(out.contains("green at"), "{out}");
+        assert!(out.contains("after a re-run: a::flaky failed"), "{out}");
+        assert!(out.contains("may merge this head"), "{out}");
+        // Re-run once, alone.
+        assert_eq!(
+            std::fs::read_to_string(reruns.path()).unwrap(),
+            "a::flaky\n"
         );
-        assert!(out.contains("Red: never merged"), "{out}");
+        let checks = events(&s, review_check::ACTION);
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0]["green"], true);
+        assert_eq!(checks[0]["exit"], 1);
+        assert_eq!(checks[0]["failures"], json!(["a::flaky"]));
+        assert_eq!(checks[0]["flaky"], json!(["a::flaky"]));
+        assert_eq!(checks[0]["again"], json!([]));
         assert!(events(&s, "review.changes").is_empty());
-        assert_eq!(events(&s, review_check::ACTION)[0]["flaky"], json!([]));
 
-        // Passing alone: flaky, and the fix is queued as the verdict.
+        // The merge gate lets this head through.
+        let gate = review_check::merge_gate(&*s.conn().unwrap(), "proj", 7, &sha);
+        assert!(gate.as_ref().is_ok_and(|r| r.green), "{gate:?}");
+        assert!(calls(&log).iter().all(|c| !c.starts_with("pr merge")));
+    }
+
+    /// A failing test that fails again alone keeps the check red; more
+    /// than two failures are not re-run at all. Neither is merged.
+    #[test]
+    fn a_check_whose_failure_fails_again_alone_or_fails_widely_stays_red() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let (_bin, _path, log, view) = fake_gh();
+        let s = new_store();
+        let (_proj, repo, _bare) = push_fixture(&s);
+        land_pr(&s, 7, "job", "", "JOB-a");
+        let (_dir, sha, _pin) = review_clone(&repo);
+        std::fs::write(
+            &view,
+            view_json(7, "hive/worker/JOB-a", &[("src/a.rs", 5, 2)], "OPEN")
+                .replace("abc123", &sha),
+        )
+        .unwrap();
+        let reruns = tempfile::NamedTempFile::new().unwrap();
+
+        // Two failures, one of which fails again alone: red.
+        set_check(
+            &s,
+            "printf 'test a::one ... FAILED\\ntest a::two ... FAILED\\n'; exit 1",
+        );
         set_setting(
             &s,
             review_check::RERUN_SETTING,
-            "printf 'test %s ... ok\\n' {test}",
+            &format!(
+                "echo {{test}} >> {p}; if [ {{test}} = a::two ]; then printf 'test %s ... FAILED\\n' {{test}}; exit 101; fi; printf 'test %s ... ok\\n' {{test}}",
+                p = reruns.path().display()
+            ),
+        );
+        let (out, err, code) = invoke(&s, "review", "proj", &["check", "7"]);
+        assert_eq!(code, 0, "{out} {err}");
+        assert!(out.contains("red at"), "{out}");
+        assert!(out.contains("failed again re-run alone: a::two"), "{out}");
+        assert!(out.contains("Red: never merged"), "{out}");
+        assert_eq!(
+            std::fs::read_to_string(reruns.path()).unwrap(),
+            "a::one\na::two\n"
+        );
+        let checks = events(&s, review_check::ACTION);
+        assert_eq!(checks[0]["green"], false);
+        assert_eq!(checks[0]["again"], json!(["a::two"]));
+        assert_eq!(checks[0]["flaky"], json!([]));
+
+        // Three failures: red without a re-run.
+        set_check(
+            &s,
+            "printf 'test a::one ... FAILED\\ntest a::two ... FAILED\\ntest a::three ... FAILED\\n'; exit 1",
         );
         let (out, err, code) = invoke(&s, "review", "proj", &["check", "7"]);
         assert_eq!(code, 0, "{out} {err}");
         assert!(
-            out.contains("a::flaky passed when re-run alone (flaky)"),
+            out.contains("not re-run: 3 tests failed; only up to 2 are re-run alone"),
             "{out}"
         );
-        assert!(out.contains("The fix is queued"), "{out}");
+        assert_eq!(
+            std::fs::read_to_string(reruns.path()).unwrap(),
+            "a::one\na::two\n",
+            "nothing more was re-run"
+        );
         let checks = events(&s, review_check::ACTION);
         assert_eq!(checks.len(), 2);
-        assert_eq!(checks[1]["flaky"], json!(["a::flaky"]));
         assert_eq!(checks[1]["green"], false);
-        let changes = events(&s, "review.changes");
-        assert_eq!(changes.len(), 1);
         assert!(
-            changes[0]["note"]
+            checks[1]["no_rerun"]
                 .as_str()
                 .unwrap_or_default()
-                .contains("a::flaky"),
+                .contains("3 tests failed"),
             "{}",
-            changes[0]
+            checks[1]
         );
-        // Never merged: the verdict is given, and no merge was asked of GitHub.
+
         let (_, err, code) = invoke(&s, "review", "proj", &["merge", "7"]);
         assert_eq!(code, 2, "{err}");
         assert!(
@@ -1460,6 +1513,7 @@ mod tests {
             calls(&log)
         );
         assert!(events(&s, "review.merged").is_empty());
+        assert!(events(&s, "review.changes").is_empty());
     }
 
     #[test]
