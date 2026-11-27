@@ -541,6 +541,11 @@ pub(crate) fn job_wait_seconds(q: &Querier, job: &Row, now: &str) -> i64 {
         .unwrap_or(0)
 }
 
+/// The queued jobs whose `task:` source names a done or cancelled task,
+/// with the task's id and status: [`lease_job`] cancels them instead of
+/// leasing them. Task ids are `TASK-NNN`, so the LIKE needs no escape.
+pub(crate) const CLOSED_TASK_QUEUED_SQL: &str = "SELECT j.id, t.id AS task, t.status AS task_status FROM jobs j JOIN tasks t ON (j.source = 'task:' || t.id OR j.source LIKE 'task:' || t.id || ':%') WHERE j.status = 'queued' AND j.source LIKE 'task:%' AND t.status IN ('done', 'cancelled') ORDER BY j.created_at, j.id";
+
 pub(crate) fn lease_job(
     s: &hive_store::Store,
     agent: String,
@@ -578,6 +583,31 @@ pub(crate) fn lease_job(
                 "job.requeue",
                 &r.str("id"),
                 Value::String("lease expired".into()),
+            );
+        }
+        // A job of a closed task is never leased (TASK-140): its work would
+        // not be delivered - delivery skips done and cancelled tasks, and a
+        // task job is not delivered on its own. It ends cancelled here with
+        // the reason, wherever it came from (a store from before the add
+        // check, a requeue by hand).
+        for r in query_rows_dyn(q, CLOSED_TASK_QUEUED_SQL, &[])? {
+            let why = format!(
+                "{} is {}: a closed task takes no more runs; file a new task for work still wanted",
+                r.str("task"),
+                r.str("task_status")
+            );
+            crate::util::exec1(
+                q,
+                "UPDATE jobs SET status = 'cancelled', result = ?, finished_at = ?, lease_agent = '', lease_until = '' WHERE id = ? AND status = 'queued'",
+                &[&why, &now, &r.str("id")],
+            );
+            crate::util::event_at(
+                q,
+                &now,
+                "lease",
+                "job.cancelled",
+                &r.str("id"),
+                Value::String(why),
             );
         }
         // The plain per-project count (the project's share of the fleet)
@@ -910,6 +940,7 @@ mod tests {
         let s = crate::test_helpers::new_store();
         crate::test_helpers::new_bare_repo(&s);
         let add = |kind: &str, source: &str| {
+            crate::test_helpers::task_for_source(&s, "proj", source);
             crate::jobs::add_job(
                 &s,
                 "proj".into(),
@@ -959,6 +990,65 @@ mod tests {
         by_row.sort();
         assert_eq!(by_sql, by_row);
         assert_eq!(by_row.len(), 7, "{by_row:?}");
+    }
+
+    /// TASK-140: a queued job of a closed task is never leased; the lease
+    /// ends it cancelled with the reason and takes the next job.
+    #[test]
+    fn lease_cancels_a_closed_tasks_job_instead_of_running_it() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        join(&s, "aurora");
+        let done = hive_tasks::new(&s, "proj", "Done work", "", 0, "human").unwrap();
+        let open = hive_tasks::new(&s, "proj", "Open work", "", 0, "human").unwrap();
+        let add = |source: String, priority: i32| {
+            crate::jobs::add_job(
+                &s,
+                "proj".into(),
+                "task".into(),
+                source.clone(),
+                "brief".into(),
+                1,
+                priority,
+                source,
+                hive_store::HUMAN_AGENT.into(),
+                false,
+            )
+            .unwrap()
+            .0
+        };
+        let late = add(format!("task:{}:followups", done.id), 90);
+        let wanted = add(format!("task:{}", open.id), 10);
+        // The task closed after its follow-up was queued (or the job came
+        // back to the queue by hand).
+        crate::util::exec1(
+            &*s.conn().unwrap(),
+            "UPDATE tasks SET status = 'done' WHERE id = ?",
+            &[&done.id],
+        );
+        let now = crate::util::plus_minutes(&late.str("created_at"), 1.0);
+        let leased = super::lease_job(
+            &s,
+            "aurora".into(),
+            now,
+            super::LeaseOpts {
+                any_proj: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(leased.str("id"), wanted.str("id"));
+        let late = super::job_row(&*s.conn().unwrap(), late.str("id"));
+        assert_eq!(late.str("status"), "cancelled", "{late:?}");
+        assert_eq!(late.int("attempts"), 0, "it never ran: {late:?}");
+        assert!(
+            late.str("result").starts_with(&format!(
+                "{} is done: a closed task takes no more runs",
+                done.id
+            )),
+            "{late:?}"
+        );
     }
 
     #[test]
@@ -1752,6 +1842,7 @@ mod tests {
         source: &str,
         priority: i32,
     ) -> String {
+        crate::test_helpers::task_for_source(s, project, source);
         let (job, _) = crate::jobs::add_job(
             s,
             project.into(),
@@ -8130,7 +8221,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             "do self".into(),
             1,
             0,
-            "task:self".into(),
+            "work:self".into(),
             "human".into(),
             false,
         )
@@ -8143,7 +8234,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             "do other".into(),
             1,
             0,
-            "task:other".into(),
+            "work:other".into(),
             "human".into(),
             false,
         )
@@ -8218,7 +8309,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             "do self".into(),
             1,
             0,
-            "task:self".into(),
+            "work:self".into(),
             "human".into(),
             false,
         )
@@ -8253,7 +8344,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             "do it".into(),
             1,
             0,
-            "task:disk".into(),
+            "work:disk".into(),
             "human".into(),
             false,
         )
@@ -8342,7 +8433,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             "do self".into(),
             1,
             0,
-            "task:self".into(),
+            "work:self".into(),
             "human".into(),
             false,
         )
@@ -8376,7 +8467,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             "do it".into(),
             1,
             0,
-            "task:one".into(),
+            "work:one".into(),
             "human".into(),
             false,
         )
@@ -8548,7 +8639,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             "do self".into(),
             1,
             0,
-            "task:self".into(),
+            "work:self".into(),
             "human".into(),
             false,
         )
