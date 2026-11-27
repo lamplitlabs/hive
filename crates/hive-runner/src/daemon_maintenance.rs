@@ -517,8 +517,11 @@ impl DaemonMaintenance {
                 }
                 // Kept and pushed as a pull request: the branch stays on
                 // the job until the forge merges it, and measuring it again
-                // would open nothing new.
-                if crate::delivery::open_pr_for_job(&conn, &slug, &job.str("id")).is_some() {
+                // would open nothing new. A store that cannot say counts
+                // as open, for the same reason.
+                if crate::delivery::open_pr_for_job(&conn, &slug, &job.str("id"))
+                    .map_or(true, |open| open.is_some())
+                {
                     continue;
                 }
                 return Some((project.clone(), job));
