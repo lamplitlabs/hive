@@ -1093,6 +1093,10 @@ struct Conflict {
     /// conflicts with is the task's other branches, and one job joins them
     /// all (`join_or_hold`).
     siblings: bool,
+    /// The task's job branches the build merges, as indices into its
+    /// branches: the ones another side carries already are passed over
+    /// (`carried_elsewhere`), and a join merges these alone.
+    sides: Vec<usize>,
 }
 
 /// What a pull request targets: the default branch, or the head of the open
@@ -2711,6 +2715,7 @@ fn deliver_task(
                     files: unmerged,
                     base: base.clone(),
                     siblings: merges_alone(&wt_path, &start, rev),
+                    sides: merges.iter().filter_map(|m| m.2).collect(),
                 })),
                 _ => format!(
                     "{what} does not merge cleanly onto {} with the task's other branches: {}",
@@ -2869,7 +2874,7 @@ fn rebase_or_hold(
         s,
         slug.clone(),
         "task".into(),
-        format!("Rebase {} onto {def}: {}", c.branch, rt.title),
+        format!("Merge {} onto {def}: {}", c.branch, rt.title),
         brief,
         job.int("tier").max(1),
         job.int("priority"),
@@ -2975,11 +2980,20 @@ fn join_or_hold(
     } else {
         String::new()
     };
+    // Only the branches the build merges: one another side carries already
+    // (a first job's old branch after a rebuild, the ones a join merged) is
+    // passed over, and merging it again meets the conflict it was left out
+    // for. An empty list (no build named any) keeps every branch.
+    let sides: Vec<&(String, String)> = if c.sides.is_empty() {
+        rt.branches.iter().collect()
+    } else {
+        c.sides.iter().filter_map(|&i| rt.branches.get(i)).collect()
+    };
     let mut list = String::new();
     let mut shas = Vec::new();
     let mut tier = 1;
     let mut priority = 0;
-    for (job, branch) in &rt.branches {
+    for (job, branch) in sides.iter().copied() {
         let sha = rev(&root, &format!("refs/heads/{branch}"));
         list.push_str(&format!(
             "- `{branch}` (job {job}): `git merge --no-ff {sha}`\n"
@@ -2999,11 +3013,17 @@ fn join_or_hold(
         }
     }
     let brief = format!(
-        "Task {task} ({title}) has {n} finished job branches. Each merges onto `{def}` alone, but they conflict with each other: `{branch}` (job {job_id}) conflicts with the ones before it in {files}.\n\n\
+        "Task {task} ({title}) has {n} finished job branches to bring together{passed}. Each merges onto `{def}` alone, but they conflict with each other: `{branch}` (job {job_id}) conflicts with the ones before it in {files}.\n\n\
          Start from the current `{def}`{which} and merge every branch below into it, in this order:\n\n{list}\n\
          {MERGE_RECIPE} Commit on your own branch and leave the branches as they are: your branch then carries the task's work, and the task's pull request opens from it alone.",
         title = rt.title,
-        n = rt.branches.len(),
+        n = sides.len(),
+        passed = match rt.branches.len() - sides.len() {
+            0 => String::new(),
+            k => format!(
+                " ({k} more of its branches are carried by these already and are left out: do not merge them)"
+            ),
+        },
         branch = c.branch,
         job_id = c.job,
     );
@@ -3027,8 +3047,8 @@ fn join_or_hold(
             return format!("task pr {slug} {task}: held: {note}");
         }
     };
-    let jobs: Vec<&str> = rt.branches.iter().map(|(j, _)| j.as_str()).collect();
-    let branches: Vec<&str> = rt.branches.iter().map(|(_, b)| b.as_str()).collect();
+    let jobs: Vec<&str> = sides.iter().map(|(j, _)| j.as_str()).collect();
+    let branches: Vec<&str> = sides.iter().map(|(_, b)| b.as_str()).collect();
     event(
         s,
         now,
@@ -3780,7 +3800,7 @@ fn poll_open(s: &hive_store::Store, project: &Row, now: &str) -> Vec<String> {
         match state.state.as_str() {
             "MERGED" => {
                 lines.push(settle_merged(s, project, &pr, &state, now));
-                let stacked = stacked_on_head(s, &slug, &pr);
+                let stacked = stacked_on_head(s, &slug, &pr) || kept_unread(s, &slug, &pr);
                 lines.extend(retarget_stacked(s, project, &up, &pr, &listed, false, now));
                 if stacked {
                     lines.extend(delete_kept_head(s, project, &up, &pr, &state));
@@ -4369,6 +4389,22 @@ fn stacked_on_head(s: &hive_store::Store, slug: &str, pr: &Value) -> bool {
         })
 }
 
+/// Whether the merge of `pr` kept its branch because the store could not
+/// say which pull requests were open (`review.merged` with `branch_kept`):
+/// it is deleted here once a pass reads that none is based on it.
+fn kept_unread(s: &hive_store::Store, slug: &str, pr: &Value) -> bool {
+    let n = number_of(pr);
+    s.conn().is_ok_and(|c| {
+        crate::util::query_rows(
+            &c,
+            "SELECT 1 AS k FROM events WHERE subject = ? AND action = 'review.merged' AND json_valid(detail)
+             AND json_extract(detail, '$.number') = ? AND json_extract(detail, '$.branch_kept') IS NOT NULL LIMIT 1",
+            &[&slug, &n],
+        )
+        .is_ok_and(|rows| !rows.is_empty())
+    })
+}
+
 /// Deletes a merged pull request's head on the upstream once no open pull
 /// request is based on it any more. The merge kept it while some were
 /// (`review::merge`: GitHub closes, never retargets, the pull requests
@@ -4618,12 +4654,13 @@ fn rebuild_stacked(
                         &format!(
                             "Pull request #{n} ({url}) was stacked on #{}, which was closed without merging, so #{n} carries #{}'s rejected commits. \
                              Rebuilding {head} on {} without them conflicts in {list}, so the pull request was left as it is and still targets {below}. \
-                             Start a branch from {}, bring over only #{n}'s own commits (`git cherry-pick` of what {} has beyond {}), resolve the conflicts keeping the intent of both sides, run the project's check, force-push it to {head} and retarget the pull request to {}; the pull request follows the branch.",
+                             Start a branch from {}, merge #{n}'s head ({}) into it with `git merge --no-ff` - not a copy of its commits, which the landing refuses as work the worker did not write - and take out what #{} added (its commits up to {}) in that merge or a commit of your own, keeping the intent of #{n}'s own work; run the project's check, force-push it to {head} and retarget the pull request to {}; the pull request follows the branch.",
                             dropped.number,
                             dropped.number,
                             onto.branch,
                             onto.branch,
                             crate::recipe::short(&was, 12),
+                            dropped.number,
                             crate::recipe::short(&onto.old_below, 12),
                             onto.branch
                         ),
@@ -4721,16 +4758,60 @@ fn rebuild_branch(
         .into());
     }
     let in_wt = |args: &[&str]| crate::util::git_timeout(&wt_path, Duration::from_secs(300), args);
-    let r = in_wt(&[
-        "-c",
-        "user.name=Hive",
-        "-c",
-        "user.email=hive@localhost",
-        "rebase",
-        "--onto",
-        &onto.sha,
-        &cut,
-    ]);
+    let rebase = |merges: bool| {
+        let mut args = vec![
+            "-c",
+            "user.name=Hive",
+            "-c",
+            "user.email=hive@localhost",
+            "rebase",
+        ];
+        if merges {
+            args.push("--rebase-merges");
+        }
+        args.extend(["--onto", onto.sha.as_str(), cut.as_str()]);
+        in_wt(&args)
+    };
+    let unmerged = || -> Vec<String> {
+        in_wt(&["diff", "--name-only", "--diff-filter=U"])
+            .stdout
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect()
+    };
+    let mut r = rebase(false);
+    // A branch a join built holds the join's resolutions in merge commits,
+    // which a plain rebase drops: it replays the sides one by one into the
+    // conflict the join resolved. Such a branch is replayed again with its
+    // merges kept, and when a kept merge meets that conflict once more (its
+    // first parent moved), the branch's own change is taken whole - its
+    // range merged onto the new base from the cut, which carries the
+    // resolutions - before the conflict is the task's.
+    let mut conflicted = Vec::new();
+    if !r.ok() {
+        conflicted = unmerged();
+        let _ = in_wt(&["rebase", "--abort"]);
+        let merges = git(&["rev-list", "--merges", "--count", &format!("{cut}..{was}")])
+            .stdout
+            .trim()
+            .parse::<i64>()
+            .unwrap_or(0);
+        if merges > 0 {
+            let kept = rebase(true);
+            if kept.ok() {
+                r = kept;
+            } else {
+                let _ = in_wt(&["rebase", "--abort"]);
+                let _ = in_wt(&["checkout", "-q", "--detach", &was]);
+                let whole = replay_whole(&wt_path, head, onto, &cut, &was);
+                if whole.ok() {
+                    r = whole;
+                }
+            }
+        }
+    }
     let result = if r.ok() {
         let tip = in_wt(&["rev-parse", "HEAD"]).stdout.trim().to_string();
         let own = in_wt(&["rev-list", "--count", &format!("{}..{tip}", onto.sha)])
@@ -4746,14 +4827,8 @@ fn rebuild_branch(
             Ok((tip, own))
         }
     } else {
-        let unmerged: Vec<String> = in_wt(&["diff", "--name-only", "--diff-filter=U"])
-            .stdout
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty())
-            .map(str::to_string)
-            .collect();
         let _ = in_wt(&["rebase", "--abort"]);
+        let unmerged = conflicted;
         Err(if unmerged.is_empty() {
             Rebuild::Other(format!(
                 "rebase of {head} onto {} failed: {}",
@@ -4772,6 +4847,54 @@ fn rebuild_branch(
     push_rev(s, root, up, &tip, head, Some(&was))?;
     let _ = git(&["update-ref", &format!("refs/heads/{head}"), &tip]);
     Ok(Rebuilt { was, tip, own })
+}
+
+/// Replays a branch's own change, `cut..was`, onto `onto` as one commit:
+/// the three-way merge of `was` onto the new base with the cut as its
+/// base, so the resolutions the branch's merge commits hold stay. Leaves
+/// the worktree on the new commit, or fails and leaves it as it was when
+/// the change does not merge onto the new base.
+fn replay_whole(
+    wt: &str,
+    head: &str,
+    onto: &Onto,
+    cut: &str,
+    was: &str,
+) -> hive_hand_core::util::GitResult {
+    let git = |args: &[&str]| crate::util::git_timeout(wt, Duration::from_secs(300), args);
+    let mt = git(&[
+        "merge-tree",
+        "--write-tree",
+        "--merge-base",
+        cut,
+        &onto.sha,
+        was,
+    ]);
+    let tree = mt.stdout.lines().next().unwrap_or("").trim().to_string();
+    if !mt.ok() || tree.is_empty() {
+        return mt;
+    }
+    let message = format!(
+        "{head}: its own change rebuilt on {} without what was below it\n\nWas {was}, cut from {cut}; the merges on it are kept in this one commit.",
+        onto.branch
+    );
+    let commit = git(&[
+        "-c",
+        "user.name=Hive",
+        "-c",
+        "user.email=hive@localhost",
+        "commit-tree",
+        &tree,
+        "-p",
+        &onto.sha,
+        "-m",
+        &message,
+    ]);
+    let sha = commit.stdout.trim().to_string();
+    if !commit.ok() || sha.is_empty() {
+        return commit;
+    }
+    git(&["checkout", "-q", "--detach", &sha])
 }
 
 /// The jobs a pull request delivered: the `jobs` list of its `land.pr`,
@@ -8963,6 +9086,10 @@ exit 0
         );
         assert!(brief.contains("error[E0061]"), "{brief}");
         assert!(brief.contains("- `hive/worker/a` (job "), "{brief}");
+        // A merge, never a copy: the landing refuses cherry-picked commits
+        // as work the worker did not write.
+        assert!(brief.contains("`git merge --no-ff <commit>`"), "{brief}");
+        assert!(!brief.contains("cherry-pick their commits"), "{brief}");
         for j in [&a, &b] {
             assert_eq!(
                 job_row(&s, j).str("branch"),
@@ -9140,7 +9267,7 @@ exit 0
         assert_eq!(fu.str("source"), format!("task:{task}"));
         assert!(
             fu.str("title")
-                .starts_with("Rebase hive/worker/b onto main:"),
+                .starts_with("Merge hive/worker/b onto main:"),
             "{}",
             fu.str("title")
         );
@@ -9270,6 +9397,65 @@ exit 0
                 && !brief.contains("or rebase the branch"),
             "{brief}"
         );
+    }
+
+    /// A join lists only the branches the build merges: one another branch
+    /// carries already is passed over by the build, so the join brief does
+    /// not name it either (TASK-139 item 7) - merging it again would meet
+    /// the conflict it was left out for.
+    #[test]
+    fn a_join_brief_leaves_out_a_branch_another_one_carries() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let _gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, _bare) = push_fixture(&s);
+        let task = task_with_branches(
+            &s,
+            &proj,
+            &repo,
+            "Add the thing",
+            &["hive/worker/a", "hive/worker/b", "hive/worker/c"],
+        );
+        // `a` and `b` write the same file; `c` was cut from `a` and carries
+        // it whole, so the build passes `a` over and `b` meets `c`.
+        let a_tip = commit_on(&repo, "hive/worker/a", "shared.txt");
+        let b_tip = commit_on(&repo, "hive/worker/b", "shared.txt");
+        run(&repo, &["git", "branch", "-f", "hive/worker/c", &a_tip]);
+        let c_tip = commit_on(&repo, "hive/worker/c", "c.txt");
+        let a = job_row_by_branch(&s, "hive/worker/a");
+        let b = job_row_by_branch(&s, "hive/worker/b");
+        let c = job_row_by_branch(&s, "hive/worker/c");
+
+        tend_proj(&s, &proj, TEST_NOW);
+        let join = last_detail(&s, "land.rebase");
+        assert_eq!(join["join"], true, "{join}");
+        assert_eq!(join["task"], task);
+        let mut joined: Vec<String> = join["jobs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|j| j.as_str().unwrap().to_string())
+            .collect();
+        joined.sort();
+        let mut sides = vec![b.clone(), c.clone()];
+        sides.sort();
+        assert_eq!(joined, sides, "{join}");
+        assert!(!joined.contains(&a), "{join}");
+        let brief = job_row(&s, join["follow_up"].as_str().unwrap()).str("brief");
+        for tip in [&b_tip, &c_tip] {
+            assert!(
+                brief.contains(&format!("`git merge --no-ff {tip}`")),
+                "{brief}"
+            );
+        }
+        assert!(
+            !brief.contains(&format!("`git merge --no-ff {a_tip}`"))
+                && !brief.contains("hive/worker/a`"),
+            "{brief}"
+        );
+        assert!(brief.contains("has 2 finished job branches"), "{brief}");
+        assert!(brief.contains("1 more of its branches"), "{brief}");
     }
 
     /// Branches of one task that each merge onto the base alone but
@@ -9832,6 +10018,112 @@ exit 0
         assert_eq!(events(&s, "land.pr-rebuilt"), 1);
     }
 
+    /// A stacked pull request built by a join holds the join's
+    /// resolution in a merge commit. When the pull request below closes
+    /// unmerged, the rebuild keeps that resolution instead of replaying the
+    /// branches one by one into the conflict the join resolved, which held
+    /// the pull request for the owner (TASK-139 item 5).
+    #[test]
+    fn a_stacked_pull_request_built_by_a_join_is_rebuilt_with_the_joins_resolution() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        gh.track_remote(&bare);
+        let (first, second, first_head) = stacked_task(&s, &proj, &repo, &bare, &gh);
+        let second_branch = task_branch(&second);
+        let main = bare_ref(&bare, "refs/heads/main");
+
+        // #8's head is a join: two sides that write the same file, merged
+        // on top of #7's head, the second merge resolved by hand.
+        let second_head = bare_ref(&bare, &format!("refs/heads/{second_branch}"));
+        run(&repo, &["git", "branch", "-f", "side-x", &second_head]);
+        run(&repo, &["git", "branch", "-f", "side-y", &second_head]);
+        commit_on(&repo, "side-x", "joined.txt");
+        commit_on(&repo, "side-y", "joined.txt");
+        run(
+            &repo,
+            &["git", "checkout", "-q", "-B", "join", &second_head],
+        );
+        run(
+            &repo,
+            &["git", "merge", "-q", "--no-ff", "-m", "take x", "side-x"],
+        );
+        let clash = std::process::Command::new("git")
+            .args(["merge", "-q", "--no-ff", "-m", "take y", "side-y"])
+            .current_dir(&repo)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@x")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@x")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .unwrap();
+        assert!(!clash.status.success(), "the sides must conflict");
+        std::fs::write(std::path::Path::new(&repo).join("joined.txt"), "x and y\n").unwrap();
+        run(&repo, &["git", "add", "joined.txt"]);
+        run(&repo, &["git", "commit", "-q", "--no-edit"]);
+        run(&repo, &["git", "checkout", "-q", "main"]);
+        let joined = ref_of(&repo, "refs/heads/join");
+        run(
+            &repo,
+            &[
+                "git",
+                "push",
+                "-q",
+                "-f",
+                &bare,
+                &format!("join:{second_branch}"),
+            ],
+        );
+
+        gh.set_state(7, "CLOSED");
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("#7 closed unmerged; task back in progress")),
+            "{lines:?}"
+        );
+        assert_eq!(events(&s, "land.pr-held"), 0, "{lines:?}");
+        assert_eq!(events(&s, "land.pr-rebuilt"), 1, "{lines:?}");
+        let tip = bare_ref(&bare, &format!("refs/heads/{second_branch}"));
+        assert_ne!(tip, joined);
+        assert_eq!(gh.base_of(8), "main");
+        // The join's resolution is what the rebuilt head holds, and #7's
+        // commits are gone from it.
+        assert_eq!(
+            run(&repo, &["git", "show", &format!("{tip}:joined.txt")]),
+            "x and y\n"
+        );
+        let first_own = run(
+            &repo,
+            &[
+                "git",
+                "diff",
+                "--name-only",
+                &format!("{main}..{first_head}"),
+            ],
+        );
+        let rebuilt = run(
+            &repo,
+            &["git", "diff", "--name-only", &format!("{main}..{tip}")],
+        );
+        for f in first_own.lines() {
+            assert!(
+                !rebuilt.lines().any(|r| r == f),
+                "{f} is still on #8: {rebuilt}"
+            );
+        }
+        assert!(rebuilt.lines().any(|r| r == "joined.txt"), "{rebuilt}");
+        assert!(
+            rebuilt.lines().any(|r| r == "hive_worker_c.txt"),
+            "{rebuilt}"
+        );
+        let _ = first;
+    }
+
     /// A follow-up job on a rebuilt pull request is cut from the rebuilt
     /// head and edits what the first job added; the first job's branch
     /// still holds the commits from before the rebuild. Those are on the
@@ -10008,6 +10300,16 @@ exit 0
             &[&second],
         );
         assert_eq!(told, 1);
+        // The way out it names is a merge, never a copy of the commits.
+        let body = crate::util::query_rows(
+            &s.conn().unwrap(),
+            "SELECT body FROM messages WHERE task_id = ? AND body LIKE '%conflicts in shared%'",
+            &[&second],
+        )
+        .unwrap()[0]
+            .str("body");
+        assert!(body.contains("`git merge --no-ff`"), "{body}");
+        assert!(!body.contains("git cherry-pick"), "{body}");
         assert!(
             crate::util::git_timeout(&repo, Duration::from_secs(10), &["worktree", "list"])
                 .stdout
@@ -10225,7 +10527,7 @@ exit 0
         assert_eq!(
             fu.str("title"),
             format!(
-                "Rebase hive/worker/c onto {}: Add the other thing",
+                "Merge hive/worker/c onto {}: Add the other thing",
                 task_branch(&first)
             )
         );
