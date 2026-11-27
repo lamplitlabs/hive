@@ -1566,7 +1566,11 @@ mod go_harness_tests {
                 ..HarnessSession::default()
             })
             .unwrap();
+            // One transaction per session: a commit per row waited on the
+            // disk's sync 20000 times (105 s on a rented Linux machine's
+            // network disk, the store's longest test by far).
             let conn = s.conn().unwrap();
+            conn.execute_batch("BEGIN").unwrap();
             for n in 1..=steps_per_session {
                 conn.execute(
                     "INSERT INTO harness_steps (session_id, n, at, kind, content) VALUES (?, ?, ?, 'assistant', 'x')",
@@ -1584,6 +1588,7 @@ mod go_harness_tests {
                 params![s.now(), id],
             )
             .unwrap();
+            conn.execute_batch("COMMIT").unwrap();
             if ended {
                 s.finish_harness_session(id, "submitted", "ok", "done", "", 0.1, "")
                     .unwrap();

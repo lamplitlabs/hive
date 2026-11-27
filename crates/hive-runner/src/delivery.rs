@@ -8864,10 +8864,12 @@ exit 0
         // With the identity `run` gives git: a user without a name in the
         // password database (a rented Linux machine's) otherwise fails the
         // merge on "empty ident name" before it stops at the conflict, and
-        // the commit below finds no merge message.
+        // the commit below finds no merge message. LC_ALL=C keeps git's
+        // "CONFLICT" untranslated under a machine's own locale.
         let merged = std::process::Command::new("git")
             .args(["merge", "-q", "--no-ff", "--no-edit", &b_tip])
             .current_dir(&repo)
+            .env("LC_ALL", "C")
             .env("GIT_AUTHOR_NAME", "t")
             .env("GIT_AUTHOR_EMAIL", "t@x")
             .env("GIT_COMMITTER_NAME", "t")
