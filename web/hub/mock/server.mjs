@@ -1371,15 +1371,18 @@ async function handle(req, res) {
       return res.end(f.bytes);
     }
     const method = segs[1] === "repair" ? "POST" : "GET";
-    if (segs.length !== 2 || !["failed", "repair"].includes(segs[1]))
+    const stop = segs.length === 3 && segs[2] === "stop";
+    if (stop && req.method !== "POST")
+      return fail(res, 405, "Method not allowed", "This route does not support " + req.method + ".", "Use POST.");
+    if (!stop && (segs.length !== 2 || !["failed", "repair"].includes(segs[1])))
       return fail(
         res,
         404,
         "Unknown jobs route",
-        "Use failed, repair or <id>/artifacts.",
+        "Use failed, repair, <id>/artifacts or <id>/stop.",
         "Open Runs and pick Failed.",
       );
-    if (req.method !== method)
+    if (!stop && req.method !== method)
       return fail(
         res,
         405,
@@ -1925,6 +1928,22 @@ async function handle(req, res) {
           cost: 0,
         },
       });
+    }
+    // The console's Stop (POST jobs/<id>/stop {requeue}): the hub writes
+    // run.stop for the job's running run on whatever machine runs it.
+    if (segs[0] === "jobs" && segs.length === 3 && segs[2] === "stop") {
+      const job = state.tasks
+        .flatMap((t) => t._detail?.jobs || [])
+        .find((j) => j.id === segs[1]);
+      if (!job)
+        return fail(res, 404, "No job '" + segs[1] + "'", "No job has this id.", "Open the job from its list and stop it there.");
+      if (job.status !== "leased")
+        return fail(res, 409, "Job " + job.id + " is " + job.status + " with no run in flight", "The job has no run in flight to stop.", "Refresh: the run may have ended already.");
+      const run = "run-" + job.id;
+      const executor = job.executor || "local";
+      const requeue = body.requeue === true;
+      emit("human", "run.stop", run, { job: job.id, executor, requeue });
+      return send(res, 200, { job: job.id, run, executor, requeue });
     }
     if (segs[0] === "jobs" && segs[1] === "repair") {
       if (req.headers["x-hive-job-repair"] !== "yes")

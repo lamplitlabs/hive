@@ -2449,6 +2449,20 @@ pub(crate) fn run_job(
                         project: project.str("slug"),
                         detail: verify_note.clone(),
                     });
+                } else if verify_rc.is_none()
+                    && stopped_by_runner(&cancel)
+                    && owner_cancelled.load(Ordering::SeqCst)
+                {
+                    // The owner stopped the job (`hive job stop` without
+                    // --requeue, the console's Stop, a cancel): it ends
+                    // here. Kept as 'lost', the commits would be landed by
+                    // the job's next run and the stop would not stop it.
+                    status = "failed".into();
+                    summary = format!(
+                        "{OWNER_CANCEL_SUMMARY} (during the check; {commits} commit(s) not judged and dropped, nothing landed)"
+                    );
+                    exit_code = Some(5);
+                    log.add("the owner stopped the run during its check; its commits are dropped");
                 } else if verify_rc.is_none() && stopped_by_runner(&cancel) {
                     // The runner stopped the check before its cap (a restart
                     // the owner asked for now): the commits were not judged,
@@ -2601,7 +2615,20 @@ pub(crate) fn run_job(
                             &holding,
                             &log,
                         )?;
-                        if fetched.exit_code != 0 && stopped_by_runner(&cancel) {
+                        if fetched.exit_code != 0
+                            && stopped_by_runner(&cancel)
+                            && owner_cancelled.load(Ordering::SeqCst)
+                        {
+                            // The owner stopped the job during its landing:
+                            // it ends here, its commits not landed and not
+                            // kept for a next run (see the check above).
+                            status = "failed".into();
+                            branch.clear();
+                            summary = format!(
+                                "{OWNER_CANCEL_SUMMARY} (during the landing; {commits} commit(s) dropped, nothing landed)"
+                            );
+                            exit_code = Some(5);
+                        } else if fetched.exit_code != 0 && stopped_by_runner(&cancel) {
                             // The runner stopped the landing (a forced
                             // restart): the checked work is kept below for
                             // the job's next run, not failed and removed.
@@ -3638,6 +3665,11 @@ pub(crate) fn owner_stop(q: &(impl crate::util::Querier + ?Sized), run_id: &str)
             .unwrap_or(false),
     )
 }
+
+/// The summary of a run the owner stopped for good (`hive job stop`
+/// without --requeue, the console's Stop, a harness or task cancel); the
+/// recovery reads the prefix as the owner's cancel.
+pub(crate) const OWNER_CANCEL_SUMMARY: &str = "cancelled by the owner";
 
 /// The summary of a run the owner stopped with `hive job stop --requeue`.
 pub(crate) const OWNER_REQUEUE_SUMMARY: &str =
@@ -6958,6 +6990,106 @@ mod tests {
         let j = crate::jobs::job_row(&s.conn().unwrap(), job_id.clone());
         assert_eq!(j.str("status"), "done", "job: {j:?}");
         assert_eq!(j.str("branch"), landed, "job: {j:?}");
+    }
+
+    /// Review of PR 300: the owner's stop (no --requeue) that arrives
+    /// during the run's end check ended the run 'lost', kept the commits and
+    /// requeued the job, whose next run landed them: the Stop did not stop
+    /// the job. Now the job ends as the owner's cancel and nothing is kept.
+    #[test]
+    fn owner_stop_during_the_end_check_ends_the_job_and_drops_the_commits() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = hive_testutil::env_lock();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let s = new_store();
+        let (proj, root) = new_repo(&s);
+        join(&s, "aurora");
+        let marker = std::path::Path::new(&s.home).join("check-started");
+        let mark = crate::util::shell_quote(&marker.display().to_string());
+        crate::util::exec1(
+            &s.conn().unwrap(),
+            "UPDATE projects SET verify_cmd = ? WHERE slug = ?",
+            &[&format!("touch {mark}; sleep 60"), &proj.str("slug")],
+        );
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "a note".into(),
+            "add a note".into(),
+            1,
+            0,
+            "test".into(),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        let job_id = job.str("id");
+        let leased = crate::jobs::lease_job(
+            &s,
+            "aurora".into(),
+            TEST_NOW.into(),
+            crate::jobs::LeaseOpts {
+                job_id: job_id.clone(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!leased.0.is_empty(), "lease returned no job");
+        let run_store = s.clone();
+        let (result_tx, result_rx) = crossbeam_channel::bounded(1);
+        std::thread::spawn(move || {
+            let worker = "echo note > NOTE.md && git add NOTE.md && git commit -q -m note && echo 'SUMMARY: done - added a note'";
+            let r = run_job(
+                &run_store,
+                leased,
+                "aurora",
+                TEST_NOW,
+                RunOpts {
+                    worker_cmd: format!("sh -c {}", crate::util::shell_quote(worker)),
+                    ..Default::default()
+                },
+            );
+            let _ = result_tx.send(r);
+        });
+        let began = std::time::Instant::now();
+        while !marker.exists() {
+            assert!(
+                began.elapsed() < crate::test_helpers_daemon::test_wait(Duration::from_secs(60)),
+                "the check never started"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let stop = hive_board::stop_job(&s, &job_id, false, hive_store::HUMAN_AGENT).unwrap();
+        assert!(!stop.requeue);
+        let r = result_rx
+            .recv_timeout(crate::test_helpers_daemon::test_wait(Duration::from_secs(
+                60,
+            )))
+            .expect("the run did not settle after the owner stopped it")
+            .unwrap();
+        let log = std::fs::read_to_string(r.str("log")).unwrap_or_default();
+        assert_eq!(r.str("id"), stop.run);
+        assert_eq!(r.str("status"), "failed", "run: {r:?}\n{log}");
+        assert!(
+            r.str("summary").starts_with(OWNER_CANCEL_SUMMARY)
+                && r.str("summary").contains("during the check")
+                && r.str("summary").contains("dropped"),
+            "run: {r:?}\n{log}"
+        );
+        let kept = crate::unchecked::unchecked_branch("aurora", &job_id);
+        assert!(
+            !crate::unchecked::branch_exists(&root, &kept),
+            "a stopped job keeps no work for a next run"
+        );
+        let j = crate::jobs::job_row(&s.conn().unwrap(), job_id.clone());
+        assert_eq!(j.str("status"), "failed", "job: {j:?}");
+        assert!(
+            j.str("result").starts_with(OWNER_CANCEL_SUMMARY),
+            "job: {j:?}"
+        );
     }
 
     #[test]

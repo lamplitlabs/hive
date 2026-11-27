@@ -52,6 +52,7 @@ import {
   Notice,
   SkeletonRows,
 } from "@/components/hive/panel";
+import { JobStopButton } from "@/components/hive/job-stop";
 import { Avatar, Mono, ProjectLink, When } from "@/components/hive/who";
 import { LifecyclePanel, PhaseChip, useTaskLifecycle } from "@/components/tasks/lifecycle";
 import { TaskActivityPane } from "@/components/tasks/task-activity";
@@ -1113,6 +1114,7 @@ function StepList({
                   </div>
                 )}
                 <JobEvidence job={j} onOpen={onEvidence} className="mr-1.5" />
+                <JobStopButton job={j.id} status={j.status} executor={j.executor} title={j.title} iconOnly className="mr-1.5" />
               </li>
             );
           })}

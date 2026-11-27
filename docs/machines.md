@@ -117,7 +117,15 @@ either, and its reason counts only the jobs the rented machine could take
 **Stopping a run anywhere.** `hive job stop JOB` stops the job's run on
 whatever machine it runs - this one, a paired or a rented one - within a few
 seconds, and the job ends cancelled by the owner; `--requeue` puts it back in
-the queue instead, the attempt not counted.
+the queue instead, the attempt not counted. The console has the same control:
+**Stop** beside a working step of a task, on a running run's page, and in the
+list of running runs for one on another machine (`POST
+/api/v1/jobs/{id}/stop {"requeue": true|false}`). The dialog names the
+machine and says what happens to the commits: a stop without requeue drops
+them even when the run is already checking or landing them, and the job ends
+cancelled; with requeue, work the run was checking or landing is kept and the
+next run lands it. Only the owner or the agent holding the job's lease may
+stop a run, so one agent cannot stop another's sitting or review.
 
 **When no machine fits.** A job whose needs no active machine offers waits
 in the queue. After ten minutes, when the needs are what a rented Linux

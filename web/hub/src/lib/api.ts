@@ -4097,6 +4097,16 @@ export const writes = {
       "voice/model" + query({ id: model }),
       { method: "DELETE", credentials: "same-origin" },
     ),
+  // Stop a job's run on whatever machine runs it (this one, a paired or a
+  // rented one): the hub writes run.stop as the owner (hive job stop) and
+  // the run's watcher stops it within seconds. `requeue` puts the job back
+  // in the queue at no cost of an attempt; else it ends cancelled. 409 with
+  // the runner's words when the job has no run in flight.
+  stopJob: (id: string, requeue: boolean) =>
+    post<{ job: string; run: string; executor: string; requeue: boolean }>(
+      "jobs/" + enc(id) + "/stop",
+      { requeue },
+    ),
   harnessCancel: (id: string) =>
     post<{ cancelled: boolean; session: HarnessSession }>(
       "harness/sessions/" + enc(id) + "/cancel",
