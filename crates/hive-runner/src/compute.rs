@@ -1067,6 +1067,72 @@ fn rented(s: &hive_store::Store, req: &hive_tasks::ComputeRequest) -> (String, S
     }
     (executor, ready_at)
 }
+/// The task a job was planned for: `TASK-7` from a `task:TASK-7` or
+/// `task:TASK-7:label` source; empty for any other job.
+pub(crate) fn task_of_source(source: &str) -> &str {
+    source
+        .strip_prefix("task:")
+        .and_then(|rest| rest.split(':').next())
+        .unwrap_or("")
+}
+
+/// Says on the task of each job in `kept` that its work went with the
+/// released machine `executor`: the commits were never fetched, so the
+/// branch and patch they would have been kept as do not exist and the work
+/// has to be done again. Before, the loss was named only on the compute card
+/// and in a finding, which whoever reads the task never saw (review of PR 283
+/// item 4). A cancelled job's work is wanted by nobody and is not said.
+/// Returns the daemon's lines.
+pub(crate) fn say_lost_work(
+    s: &hive_store::Store,
+    actor: &str,
+    executor: &str,
+    kept: &[crate::executor::KeptClone],
+    why: &str,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    let Ok(conn) = s.conn() else {
+        return lines;
+    };
+    for k in kept {
+        if k.job_status == "cancelled" {
+            continue;
+        }
+        let job = crate::util::must_one(
+            &conn,
+            "SELECT j.project, j.source, j.title, COALESCE(r.agent, j.lease_agent, '') AS agent FROM jobs j LEFT JOIN runs r ON r.id = ? WHERE j.id = ?",
+            &[&k.run, &k.job],
+        );
+        let source = job.str("source");
+        let task = task_of_source(&source);
+        if task.is_empty() {
+            continue;
+        }
+        let branch = crate::land::failed_work_branch(&job.str("agent"), &k.job);
+        let patch = std::path::Path::new(&s.home)
+            .join("patches")
+            .join(job.str("project"))
+            .join(format!("{}.patch", branch.replace('/', "__")));
+        let body = format!(
+            "The work of job {job_id} ({title}) is lost. Its run {run} committed on the rented machine {executor}, but neither the fetch nor the bundle brought the commits back, so its clone was kept there (since {at}). {executor} is released ({why}) and the clone went with it, so the branch {branch} and the patch {patch} were never made. Nothing of that run's work can be fetched any more; it has to be done again.",
+            job_id = k.job,
+            title = job.str("title"),
+            run = k.run,
+            at = k.at,
+            patch = patch.display(),
+        );
+        match hive_tasks::send_message(s, &job.str("project"), task, actor, &body) {
+            Ok(_) => lines.push(format!("the loss of {}'s work is said on {task}", k.job)),
+            Err(e) => lines.push(format!(
+                "the loss of {}'s work is not said on {task}: {}",
+                k.job,
+                crate::run::err_message(&e)
+            )),
+        }
+    }
+    lines
+}
+
 /// The jobs of kept clones, for a line: `job-a, job-b`.
 fn kept_jobs(kept: &[crate::executor::KeptClone]) -> String {
     kept.iter()
@@ -1344,6 +1410,13 @@ pub(crate) fn release_compute(
             return false;
         }
     }
+    // What the machine still holds goes with it: read before its executor
+    // is removed, said on the jobs' tasks once the release is written down.
+    let kept = if m.executor.is_empty() {
+        Vec::new()
+    } else {
+        crate::executor::kept_work(s, &m.executor)
+    };
     if !m.executor.is_empty()
         && !crate::executor::executor_row(s, &m.executor).0.is_empty()
         && let Err(e) = hive_board::remove_executor(s, &m.executor, actor, false)
@@ -1369,6 +1442,9 @@ pub(crate) fn release_compute(
         return false;
     }
     let _ = hive_tasks::note_compute(s, &req.id, why);
+    for line in say_lost_work(s, actor, &m.executor, &kept, why) {
+        say(&format!("compute {}: {line}", req.id));
+    }
     if let Err(e) = compute_finding(
         s,
         actor,

@@ -1324,6 +1324,138 @@ hive-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOCK
         cancel.cancel();
     }
 
+    /// Review of PR 283 item 4: when a rented machine's hours are up while it still holds a
+    /// clone whose commits nobody could fetch, the loss is said on the job's task, with the
+    /// branch and patch that were never made, so whoever reads the task learns the work has to
+    /// be done again. Before, only the compute card and a finding named it.
+    #[test]
+    fn a_rental_released_with_unfetched_work_says_the_loss_on_the_task() {
+        let _serial = crate::test_helpers::serial();
+        let _lock = provider_test_lock();
+        let s = new_store();
+        let h = compute_harness(&s, AZURE_SETTINGS);
+        let az = new_fake_az();
+        let _fake = install_fake(crate::azure::set_run_az, {
+            let az = az.clone();
+            Box::new(move |ctx, args, timeout| az.run(ctx, args, timeout))
+        });
+        let req = approved_request(&s);
+        let log = once(&s, &h);
+        let got = hive_tasks::get_compute(&s, &req.id).unwrap_or_default();
+        assert_eq!(got.status, "ready", "request: {got:?}\n{log}");
+        let executor = crate::compute::compute_executor_name(&req.id);
+        let after = |minutes: f64| crate::util::plus_minutes(TEST_NOW, minutes);
+        let task = hive_tasks::new(&s, "proj", "Ship the fixtures", "the brief", 30, "human")
+            .unwrap_or_else(|err| panic!("{err}"));
+        crate::test_helpers_daemon::queued_job(
+            &s,
+            "job-kept",
+            "proj",
+            "task",
+            &format!("task:{}:fixtures", task.id),
+        );
+        exec1(
+            &s,
+            "UPDATE jobs SET status = 'failed' WHERE id = 'job-kept'",
+            &[],
+        );
+        exec1(
+            &s,
+            "INSERT INTO runs (id, job_id, agent, project, started_at, finished_at, status, commits, executor) VALUES ('run-kept', 'job-kept', 'aurora', 'proj', ?, ?, 'failed', 1, ?)",
+            &[&after(5.0), &after(10.0), &executor],
+        );
+        crate::util::event_at(
+            &s.conn().unwrap(),
+            &after(10.0),
+            "runner",
+            crate::executor::FETCH_FAILED_EVENT,
+            &executor,
+            serde_json::json!({"job": "job-kept", "run": "run-kept", "clone": "/srv/hive/job-kept/clone"}),
+        );
+        // A cancelled job's clone goes too, but nobody wants its work.
+        crate::test_helpers_daemon::queued_job(
+            &s,
+            "job-dropped",
+            "proj",
+            "task",
+            &format!("task:{}", task.id),
+        );
+        exec1(
+            &s,
+            "UPDATE jobs SET status = 'cancelled' WHERE id = 'job-dropped'",
+            &[],
+        );
+        crate::util::event_at(
+            &s.conn().unwrap(),
+            &after(11.0),
+            "runner",
+            crate::executor::FETCH_FAILED_EVENT,
+            &executor,
+            serde_json::json!({"job": "job-dropped", "run": "run-dropped", "clone": "/srv/hive/job-dropped/clone"}),
+        );
+        let cancel = hive_bus::CancellationToken::new();
+        let worker = crate::compute::new_compute_worker(
+            &cancel,
+            &s,
+            crate::compute::ComputeOpts {
+                actor: TEST_DAEMON.into(),
+                hub_home: h.hub_home.clone(),
+            },
+        );
+        let said = |s: &hive_store::Store| {
+            hive_tasks::messages(s, "proj", &task.id, "", "")
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|m| m.author == TEST_DAEMON)
+                .map(|m| m.body)
+                .collect::<Vec<_>>()
+        };
+        // Inside its hours the machine stays and nothing is said on the task.
+        let mut lines = worker.tick(&cancel, &after(60.0));
+        worker.wait(Duration::from_secs(60));
+        lines.extend(worker.drain());
+        assert!(said(&s).is_empty(), "{lines:?}");
+        // Its hours are up: it goes, and the task hears what went with it.
+        let mut lines = worker.tick(&cancel, &after(121.0));
+        worker.wait(Duration::from_secs(60));
+        lines.extend(worker.drain());
+        let got = hive_tasks::get_compute(&s, &req.id).unwrap_or_default();
+        assert_eq!(got.status, "released", "{lines:?}");
+        let bodies = said(&s);
+        assert_eq!(bodies.len(), 1, "{bodies:?}\n{lines:?}");
+        let body = &bodies[0];
+        assert!(
+            body.contains("The work of job job-kept")
+                && body.contains("is lost")
+                && body.contains(&executor)
+                && body.contains("hive/aurora/job-kept-failed")
+                && body.contains("hive__aurora__job-kept-failed.patch")
+                && body.contains("has to be done again"),
+            "{body}"
+        );
+        assert!(
+            !body.starts_with("The work of job job-dropped"),
+            "the cancelled job's loss is said: {body}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains(&format!(
+                "the loss of job-kept's work is said on {}",
+                task.id
+            ))),
+            "{lines:?}"
+        );
+        cancel.cancel();
+    }
+
+    /// `task_of_source` names the task of a task job only.
+    #[test]
+    fn task_of_source_reads_the_task_of_a_task_job() {
+        assert_eq!(crate::compute::task_of_source("task:TASK-7"), "TASK-7");
+        assert_eq!(crate::compute::task_of_source("task:TASK-7:ui"), "TASK-7");
+        assert_eq!(crate::compute::task_of_source("owner"), "");
+        assert_eq!(crate::compute::task_of_source("review:task:TASK-7"), "");
+    }
+
     /// A failure after the machine exists releases it (VM and its siblings) before the request
     /// is failed, as the Go runner did; the machine row keeps the released time.
     #[test]

@@ -4370,7 +4370,7 @@ pub(crate) fn fetch_run_work(
             Duration::from_secs(300),
         )
     };
-    let fetched = fetch(ex.fetch_source(), &ex.fetch_env())?;
+    let fetched = fetch(ex.fetch_source(cancel), &ex.fetch_env())?;
     log.add(format!(
         "$ git fetch <{} clone> HEAD:{}\n{}",
         ex.name(),
@@ -4384,7 +4384,7 @@ pub(crate) fn fetch_run_work(
     if cancel.is_cancelled() {
         return Ok(fetched);
     }
-    let bundle = ex.fetch_fallback();
+    let bundle = ex.fetch_fallback(cancel);
     if bundle.is_empty() {
         return Ok(fetched);
     }
@@ -4851,7 +4851,7 @@ mod tests {
         ) -> Result<()> {
             Ok(())
         }
-        fn fetch_source(&self) -> String {
+        fn fetch_source(&self, _: &hive_bus::CancellationToken) -> String {
             String::new()
         }
         fn fetch_env(&self) -> Vec<String> {
@@ -4928,7 +4928,7 @@ mod tests {
         ) -> Result<()> {
             Ok(())
         }
-        fn fetch_source(&self) -> String {
+        fn fetch_source(&self, _: &hive_bus::CancellationToken) -> String {
             String::new()
         }
         fn fetch_env(&self) -> Vec<String> {
