@@ -1885,6 +1885,8 @@ export interface PrState {
   conversation: string;
   head: string;
   base: string;
+  // The head commit Hive holds for the pull request: the one Merge is for.
+  sha?: string;
   state: PrReviewState | string;
   reasons: string[]; // why the reviewer handed it to the owner
   note: string;
@@ -2900,6 +2902,10 @@ export interface TaskDelivery {
   kind?: string;
   base?: string;
   can_merge?: boolean;
+  // The head commit Hive holds for the task's pull request: the one Merge
+  // is for. Sent with the press so the hub refuses it once a newer commit
+  // is the head.
+  head_sha?: string;
 }
 
 export interface TaskDetail {
@@ -4132,15 +4138,18 @@ export const writes = {
   // The owner's Merge on a pull request the reviewer handed to them: the hub
   // records the ask and the daemon merges it on GitHub as the owner on its
   // next pass, so the answer is the refreshed state, not the merge.
-  mergeTaskPr: (id: string) =>
+  // Merge sends the commit of the card the owner pressed (`sha`): the hub
+  // refuses the press (409, "The pull request moved") once another commit
+  // is the head, so a newer commit is never merged on an older card's word.
+  mergeTaskPr: (id: string, sha?: string) =>
     post<{ task: Task; delivery: TaskDelivery }>(
       "tasks/" + enc(id) + "/pr/merge",
-      {},
+      sha ? { sha } : {},
     ),
-  mergeProjectPr: (project: string, number: number) =>
+  mergeProjectPr: (project: string, number: number, sha?: string) =>
     post<{ pr: PrState }>(
       "projects/" + enc(project) + "/prs/" + enc(String(number)) + "/merge",
-      {},
+      sha ? { sha } : {},
     ),
   // The owner moves a task on (done after "good enough", in_progress to hand a
   // review back); `words` reach the task's chat first so the lead reads why.

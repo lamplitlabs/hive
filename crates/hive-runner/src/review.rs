@@ -911,6 +911,7 @@ pub(crate) fn tend_reviews(s: &hive_store::Store, projects: &[Row], now: &str) -
         if p.str("path").is_empty() {
             continue;
         }
+        lines.extend(answer_lapses(s, p, now));
         lines.extend(honour_asks(s, p, now));
         lines.extend(retry_merges(s, p, now));
         lines.extend(tend_project(s, p, now));
@@ -971,26 +972,131 @@ fn honour_asks(s: &hive_store::Store, project: &Row, now: &str) -> Vec<String> {
         // while a merge waited, queued for review) is reviewed on its own;
         // the click does not merge it, even when its checks are green
         // before its verdict. The owner is told once, where they pressed.
-        if let Some(outrun) = ask_outrun(&conn, &slug, number, seq, &asked) {
-            let key = format!("review-ask-lapsed:{slug}:{number}");
-            if s.meta(&key).map(|m| m.0).unwrap_or_default() != seq.to_string() {
-                let _ = s.set_meta(&key, &seq.to_string());
-                let told = tell_lapsed(s, &conn, &slug, number, &outrun);
-                lines.push(format!(
-                    "review {slug}: #{number} not merged for the owner: Merge was pressed at {}, the pull request is at {} now ({}); it is reviewed again{told}",
-                    crate::recipe::short(&outrun.was, 12),
-                    crate::recipe::short(&outrun.head, 12),
-                    outrun.why,
-                ));
-            }
+        // A lapse is for good: an ask once told as lapsed is never honoured
+        // again, even when the head comes back to the commit it was pressed
+        // for (a force-push back, a review queued at a stale commit). The
+        // owner's answer to the lapse ([`answer_lapses`]) or a new press is
+        // a new ask.
+        if ask_lapsed(s, &conn, &slug, number, seq) {
             continue;
         }
-        match merge_as_owner(s, project, number, now) {
+        if let Some(outrun) = ask_outrun(&conn, &slug, number, seq, &asked) {
+            let _ = s.set_meta(&lapsed_key(&slug, number), &seq.to_string());
+            let told = tell_lapsed(s, &conn, &slug, number, seq, &outrun, now);
+            lines.push(format!(
+                "review {slug}: #{number} not merged for the owner: Merge was pressed at {}, the pull request is at {} now ({}); it is reviewed again{told}",
+                crate::recipe::short(&outrun.was, 12),
+                crate::recipe::short(&outrun.head, 12),
+                outrun.why,
+            ));
+            continue;
+        }
+        match merge_as_owner(s, project, number, &asked, now) {
             Ok(url) => lines.push(format!(
                 "review {slug}: #{number} merged for the owner {url}"
             )),
             Err(e) => lines.push(format!(
                 "review {slug}: #{number} could not be merged for the owner: {e}"
+            )),
+        }
+    }
+    lines
+}
+
+/// The meta key that held the seq of the newest lapsed ask of a number
+/// before `review.ask-lapsed` was recorded; still read for those.
+fn lapsed_key(slug: &str, number: i64) -> String {
+    format!("review-ask-lapsed:{slug}:{number}")
+}
+
+/// The event that says an owner's Merge lapsed: `ask` is the seq of the
+/// `review.ask`, `was` the commit it was pressed for, `head` the one Hive
+/// holds now, `post` the owner's question with the two answers.
+pub(crate) const LAPSED_ACTION: &str = "review.ask-lapsed";
+
+/// Whether the `review.ask` at `seq` lapsed already: a `review.ask-lapsed`
+/// names it, or (before that event) the lapse mark does.
+fn ask_lapsed(
+    s: &hive_store::Store,
+    q: &(impl crate::util::Querier + ?Sized),
+    slug: &str,
+    number: i64,
+    seq: i64,
+) -> bool {
+    if s.meta(&lapsed_key(slug, number))
+        .map(|m| m.0)
+        .unwrap_or_default()
+        == seq.to_string()
+    {
+        return true;
+    }
+    !crate::util::query_rows(
+        q,
+        "SELECT 1 AS one FROM events WHERE subject = ? AND action = 'review.ask-lapsed'
+         AND json_extract(detail, '$.number') = ? AND json_extract(detail, '$.ask') = ? LIMIT 1",
+        &[&slug, &number, &seq],
+    )
+    .unwrap_or_default()
+    .is_empty()
+}
+
+/// The two answers of a lapse, as the owner picks them.
+pub(crate) const LAPSE_MERGE: &str = "Merge this commit";
+pub(crate) const LAPSE_WAIT: &str = "Wait for the review of the new commit";
+
+/// The owner answered a lapse ([`tell_lapsed`]'s question): "Merge this
+/// commit" asks for the merge of the commit the question named - a new
+/// `review.ask` pinned to it, honoured on this pass like a press of Merge,
+/// and lapsing in turn if the head moved again; "Wait for the review of the
+/// new commit" asks nothing, the review goes on. Each answer is acted on
+/// once.
+fn answer_lapses(s: &hive_store::Store, project: &Row, now: &str) -> Vec<String> {
+    let slug = project.str("slug");
+    let Ok(conn) = s.conn() else {
+        return Vec::new();
+    };
+    let rows = crate::util::query_rows(
+        &conn,
+        "SELECT e.detail, d.answer, d.decided_by FROM events e JOIN decisions d ON d.post_id = json_extract(e.detail, '$.post')
+         WHERE e.subject = ? AND e.action = 'review.ask-lapsed' ORDER BY e.seq",
+        &[&slug],
+    )
+    .unwrap_or_default();
+    let mut lines = Vec::new();
+    for r in rows {
+        let detail: Value = serde_json::from_str(&r.str("detail")).unwrap_or(Value::Null);
+        let post = detail["post"].as_str().unwrap_or_default().to_string();
+        let key = format!("review-ask-lapsed-answered:{post}");
+        if post.is_empty() || s.meta(&key).is_ok_and(|m| !m.0.is_empty()) {
+            continue;
+        }
+        let _ = s.set_meta(&key, now);
+        let number = detail["number"].as_i64().unwrap_or(0);
+        let head = detail["head"].as_str().unwrap_or_default().to_string();
+        // A merge is the owner's alone: only the owner's own pick asks it.
+        if r.str("answer") != LAPSE_MERGE || r.str("decided_by") != hive_store::HUMAN_AGENT {
+            lines.push(format!(
+                "review {slug}: #{number} the owner waits for the review of {}",
+                crate::recipe::short(&head, 12)
+            ));
+            continue;
+        }
+        let Some((pr, action)) = pr_state(&conn, &slug, number) else {
+            continue;
+        };
+        if matches!(
+            action.as_str(),
+            "land.merged" | "land.pr-closed" | "review.merged"
+        ) {
+            continue;
+        }
+        match hive_tasks::ask_merge(s, &slug, number, &pr.task, &head, hive_store::HUMAN_AGENT) {
+            Ok(()) => lines.push(format!(
+                "review {slug}: #{number} the owner picked {LAPSE_MERGE:?}: Merge asked for {}",
+                crate::recipe::short(&head, 12)
+            )),
+            Err(e) => lines.push(format!(
+                "review {slug}: #{number} the owner's {LAPSE_MERGE:?} was not asked: {e}"
             )),
         }
     }
@@ -1007,9 +1113,10 @@ pub(crate) fn merge_as_owner(
     s: &hive_store::Store,
     project: &Row,
     number: i64,
+    pressed: &str,
     now: &str,
 ) -> Result<String, String> {
-    merge(s, project, number, "owner", ACTOR, now)
+    merge_pinned(s, project, number, None, pressed, "owner", ACTOR, now)
 }
 
 /// The head an event of a pull request records: the commit `land.pr`
@@ -1034,6 +1141,9 @@ pub(crate) struct Outrun {
     pub was: String,
     pub head: String,
     pub why: String,
+    /// The new head is Hive's own refresh (its base merged in): nothing
+    /// new to review in the work itself.
+    pub refresh: bool,
 }
 
 /// Whether the owner's Merge (the `review.ask` at `seq`, pressed for
@@ -1087,6 +1197,7 @@ fn ask_outrun(
         was,
         head,
         why: moved_because(&action, &detail),
+        refresh: action == "land.pr" && detail["refreshed"].as_bool() == Some(true),
     })
 }
 
@@ -1107,18 +1218,22 @@ fn moved_because(action: &str, detail: &Value) -> String {
     }
 }
 
-/// Says once, where the owner pressed Merge, that the press lapsed: a
-/// message on the task's conversation for a task's pull request, a note in
-/// the chat's transcript for a conversation's. The ask asked nothing new
-/// of the owner - the new head is reviewed, and handed over again if it
-/// is still the owner's - so the words carry no question. Returns the log
-/// line's tail.
+/// Says once that the owner's press lapsed, and hands the pull request
+/// back with answers to pick (`review.ask-lapsed` names the question): a
+/// question for the owner - on the Sessions strip, whatever the pull
+/// request carries - with "Merge this commit" (the commit it is at now)
+/// and "Wait for the review of the new commit", the second recommended
+/// unless the new commit is Hive's own refresh; plus a message on the
+/// task's conversation for a task's pull request, or a note in the chat's
+/// transcript for a conversation's. Returns the log line's tail.
 fn tell_lapsed(
     s: &hive_store::Store,
     conn: &(impl crate::util::Querier + ?Sized),
     slug: &str,
     number: i64,
+    seq: i64,
     outrun: &Outrun,
+    now: &str,
 ) -> String {
     let pr = pr_state(conn, slug, number).map(|(p, _)| p);
     let url = pr
@@ -1127,37 +1242,96 @@ fn tell_lapsed(
         .filter(|u| !u.is_empty())
         .map(|u| format!(" ({u})"))
         .unwrap_or_default();
+    let was = crate::recipe::short(&outrun.was, 12);
+    let head = crate::recipe::short(&outrun.head, 12);
     let text = format!(
-        "Pull request #{number}{url} was not merged: your Merge was for commit {}, and {} - it is at {} now. \
-         The new commit is reviewed on its own; if it comes back to you, press Merge again.",
-        crate::recipe::short(&outrun.was, 12),
+        "Pull request #{number}{url} was not merged: your Merge was for commit {was}, and {} - it is at {head} now. \
+         The new commit is reviewed on its own; pick an answer on the Sessions strip to merge it now, or press Merge again if it comes back to you.",
         outrun.why,
-        crate::recipe::short(&outrun.head, 12),
     );
+    let merge =
+        format!("{LAPSE_MERGE} - merges commit {head} now, as you, without waiting for its review");
+    let wait = format!(
+        "{LAPSE_WAIT} - the reviewer reads commit {head}; it is merged, or comes back to you if it is still yours"
+    );
+    let answers = hive_board::option_lines(
+        &[&merge, &wait],
+        if outrun.refresh { 0 } else { 1 },
+        if outrun.refresh {
+            "the new commit only merges the base in; the work you approved is unchanged"
+        } else {
+            "the new commit changes what you approved; let it be reviewed first"
+        },
+    );
+    let title = pr
+        .as_ref()
+        .map(|p| p.title.clone())
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| format!("commit {head}"));
+    let body = format!(
+        "{text}\n\nWas: commit {was} (your Merge)\nNow: commit {head} ({})\n\n{answers}",
+        outrun.why
+    );
+    let post = crate::board::create_post(
+        s,
+        now.to_string(),
+        crate::board::PostOpts {
+            kind: "question".into(),
+            project: slug.to_string(),
+            area: "runner".into(),
+            thread: "review".into(),
+            summary: format!("Merge pull request #{number}: {title}? Your Merge lapsed"),
+            body,
+            agent: crate::board::actor_agent(s, ACTOR.to_string()),
+            date: now.to_string(),
+            for_owner: true,
+            ..Default::default()
+        },
+    )
+    .map(|p| p.str("id"))
+    .unwrap_or_default();
+    event(
+        s,
+        now,
+        ACTOR,
+        LAPSED_ACTION,
+        slug,
+        json!({"project": slug, "number": number, "ask": seq, "was": outrun.was,
+            "head": outrun.head, "why": outrun.why, "refresh": outrun.refresh, "post": post}),
+    );
+    let mut told = if post.is_empty() {
+        String::new()
+    } else {
+        format!("; asked the owner ({post})")
+    };
     let task = pr.as_ref().map(|p| p.task.clone()).unwrap_or_default();
     if !task.is_empty() {
-        return match hive_tasks::send_message(s, slug, &task, ACTOR, &text) {
-            Ok(_) => format!("; task {task} told"),
-            Err(e) => format!("; task {task} not told: {e}"),
-        };
+        told.push_str(
+            &match hive_tasks::send_message(s, slug, &task, ACTOR, &text) {
+                Ok(_) => format!("; task {task} told"),
+                Err(e) => format!("; task {task} not told: {e}"),
+            },
+        );
+        return told;
     }
     let conversation = land_pr_field(conn, slug, number, "conversation");
     if conversation.is_empty() {
-        return String::new();
+        return told;
     }
     match s.chat_get(&conversation) {
         Ok(Some(c)) if c.status != "archived" => {}
-        _ => return String::new(),
+        _ => return told,
     }
-    match s.chat_add_message(
+    told.push_str(&match s.chat_add_message(
         &conversation,
         "note",
         &text,
-        &json!({"pr": {"number": number, "url": pr.map(|p| p.url).unwrap_or_default(), "state": "merge_lapsed"}}),
+        &json!({"pr": {"number": number, "url": pr.map(|p| p.url).unwrap_or_default(), "state": "merge_lapsed", "post": post}}),
     ) {
         Ok(_) => format!("; conversation {conversation} told"),
         Err(e) => format!("; conversation {conversation} not told: {e}"),
-    }
+    });
+    told
 }
 
 /// A field of the newest `land.pr` of one pull request.
@@ -1329,9 +1503,10 @@ fn ci_expected(s: &hive_store::Store, project: &Row) -> bool {
         .unwrap_or(false)
 }
 
-/// `gh pr view`, then `gh pr merge --merge --delete-branch` (without
-/// `--delete-branch` while an open pull request is based on its head:
-/// `branch_kept_for` names them), then `review.merged`; on a gh failure of the merge `review.failed` with the
+/// `gh pr view`, then `gh pr merge --merge --delete-branch
+/// --match-head-commit <the head read>` (without `--delete-branch` while
+/// an open pull request is based on its head: `branch_kept_for` names
+/// them), then `review.merged`; on a gh failure of the merge `review.failed` with the
 /// error. Returns the pull request's url. Refused before gh is asked to
 /// merge, and without a `review.failed`: a pull request stacked on another
 /// (its turn has not come), and whatever [`refusal_of`] names from the
@@ -1340,7 +1515,9 @@ fn ci_expected(s: &hive_store::Store, project: &Row) -> bool {
 /// failure of the merge; an owner's ask stands until the next pass finds
 /// the pull request ready. The `review.merged` records the head sha merged
 /// and how many checks reported (`no_checks` when none did although the
-/// project has workflows).
+/// project has workflows). The daemon's callers go through
+/// [`merge_viewed`] or [`merge_as_owner`]; the tests call this.
+#[cfg(test)]
 pub(crate) fn merge(
     s: &hive_store::Store,
     project: &Row,
@@ -1364,9 +1541,25 @@ pub(crate) fn merge_viewed(
     actor: &str,
     now: &str,
 ) -> Result<String, String> {
-    match try_merge(s, project, number, viewed, by, actor, now) {
+    merge_pinned(s, project, number, viewed, "", by, actor, now)
+}
+
+/// [`merge_viewed`] pinned to `pin`, the commit the owner pressed Merge
+/// for (empty: the head the forge is read at).
+#[allow(clippy::too_many_arguments)]
+fn merge_pinned(
+    s: &hive_store::Store,
+    project: &Row,
+    number: i64,
+    viewed: Option<&PrView>,
+    pin: &str,
+    by: &str,
+    actor: &str,
+    now: &str,
+) -> Result<String, String> {
+    match try_merge(s, project, number, viewed, pin, by, actor, now) {
         Tried::Merged(url) => Ok(url),
-        Tried::Refused(_, why) | Tried::Unread(why) => Err(why),
+        Tried::Refused(_, why) | Tried::Unread(why) | Tried::Outrun(why) => Err(why),
         Tried::Failed { url, error } => {
             let slug = project.str("slug");
             event(
@@ -1392,16 +1585,39 @@ enum Tried {
     Unread(String),
     /// `gh pr merge` failed; nothing is recorded yet.
     Failed { url: String, error: String },
+    /// The forge refused `gh pr merge --match-head-commit`: a commit
+    /// reached the pull request between the read and the merge. Nothing is
+    /// merged; the new head is recorded (`review.again`) and reviewed on
+    /// its own. The words say what moved.
+    Outrun(String),
 }
 
-/// The merge itself: the gate, `gh pr merge`, and `review.merged` when it
-/// went through. A failure is returned, not recorded: [`merge_viewed`]
-/// records it as `review.failed`, [`merge_or_wait`] may wait instead.
+/// Whether a failed `gh pr merge --match-head-commit` says the head is no
+/// longer the commit it was pinned to (GitHub: "Head branch was modified.
+/// Review and try the merge again."). Not a failure that passes: the
+/// commit that was approved is not the one the forge would merge.
+pub(crate) fn forge_head_moved(error: &str) -> bool {
+    let low = error.to_ascii_lowercase();
+    low.contains("head branch was modified")
+        || low.contains("expectedheadoid")
+        || low.contains("expected head")
+}
+
+/// The merge itself: the gate, `gh pr merge --match-head-commit`, and
+/// `review.merged` when it went through. The merge is pinned to `pin` (the
+/// commit the owner pressed Merge for) or, when it is empty, to the head
+/// the forge was read at: a forge holding another commit than `pin` is
+/// refused before gh is asked, and a commit pushed between the read and
+/// the merge makes the forge refuse it ([`Tried::Outrun`]). A failure is
+/// returned, not recorded: [`merge_viewed`] records it as `review.failed`,
+/// [`merge_or_wait`] may wait instead.
+#[allow(clippy::too_many_arguments)]
 fn try_merge(
     s: &hive_store::Store,
     project: &Row,
     number: i64,
     viewed: Option<&PrView>,
+    pin: &str,
     by: &str,
     actor: &str,
     now: &str,
@@ -1430,9 +1646,31 @@ fn try_merge(
             Err(e) => return Tried::Unread(e),
         },
     };
-    if let Some((gate, why)) = refusal_of(&view, seen.as_ref()) {
+    // The owner pressed Merge (or picked "Merge this commit") for the very
+    // commit the forge holds: that it moved since the last review does not
+    // stop it - the owner approved this commit - but every other gate does.
+    let pressed_for_head = !pin.is_empty() && pin == view.head_sha;
+    let refusal = match refusal_of(&view, seen.as_ref()) {
+        Some((Gate::Moved, _)) if pressed_for_head => refusal_of(&view, None),
+        other => other,
+    };
+    if let Some((gate, why)) = refusal {
         return Tried::Refused(gate, why);
     }
+    if !pin.is_empty() && !view.head_sha.is_empty() && view.head_sha != pin {
+        let why = format!(
+            "the pull request moved since Merge was pressed: pressed {}, now {}; it is reviewed again",
+            crate::recipe::short(pin, 12),
+            crate::recipe::short(&view.head_sha, 12)
+        );
+        record_forge_head(s, &slug, number, &url, &view.head_sha, pin, &why, now);
+        return Tried::Refused(Gate::Moved, why);
+    }
+    let pinned = if pin.is_empty() {
+        view.head_sha.clone()
+    } else {
+        pin.to_string()
+    };
     // A branch another open pull request is based on stays: GitHub closes
     // the pull requests whose base branch `--delete-branch` deletes, and a
     // closed one never reopens (#170 closed so when #168 merged). Delivery
@@ -1473,6 +1711,11 @@ fn try_merge(
     if stacked_above.is_empty() && unread.is_none() {
         args.push("--delete-branch");
     }
+    // Only the commit that was read (or pressed for) merges: a push onto
+    // the pull request after the read makes the forge refuse it.
+    if !pinned.is_empty() {
+        args.extend(["--match-head-commit", pinned.as_str()]);
+    }
     let result = gh(s, &slug, &repo, &args, MERGE_TIMEOUT);
     let job = std::env::var("HIVE_JOB").unwrap_or_default();
     match result {
@@ -1497,11 +1740,65 @@ fn try_merge(
             event(s, now, actor, "review.merged", &slug, detail);
             Tried::Merged(url)
         }
+        Err(e) if !pinned.is_empty() && forge_head_moved(&e) => {
+            // Read the head the forge holds now, so Hive reviews that one.
+            let head = pr_view(s, &slug, &repo, number)
+                .map(|v| v.head_sha)
+                .unwrap_or_default();
+            let why = format!(
+                "a commit reached the pull request after it was read: GitHub refused the merge at {}{}; it is reviewed again",
+                crate::recipe::short(&pinned, 12),
+                if head.is_empty() || head == pinned {
+                    String::new()
+                } else {
+                    format!(", it is at {} now", crate::recipe::short(&head, 12))
+                }
+            );
+            if !head.is_empty() && head != pinned {
+                record_forge_head(s, &slug, number, &url, &head, &pinned, &why, now);
+            }
+            Tried::Outrun(why)
+        }
         Err(e) => Tried::Failed {
             url,
             error: hive_cred::redact(&e, &[]),
         },
     }
+}
+
+/// The forge holds `head`, not the commit `was` a merge was pinned to:
+/// `review.again` records it, so the pull request is open for review at
+/// the new head and an owner's Merge pressed for `was` lapses. Written
+/// once per head.
+#[allow(clippy::too_many_arguments)]
+fn record_forge_head(
+    s: &hive_store::Store,
+    slug: &str,
+    number: i64,
+    url: &str,
+    head: &str,
+    was: &str,
+    why: &str,
+    now: &str,
+) {
+    let known = s
+        .conn()
+        .ok()
+        .and_then(|c| pr_state(&c, slug, number))
+        .map(|(p, _)| p.sha)
+        .unwrap_or_default();
+    if known == head {
+        return;
+    }
+    event(
+        s,
+        now,
+        ACTOR,
+        AGAIN_ACTION,
+        slug,
+        json!({"project": slug, "number": number, "url": url,
+            "head_sha": head, "was": was, "note": why}),
+    );
 }
 
 /// What a reviewer's merge verdict came to.
@@ -1584,11 +1881,11 @@ pub(crate) fn merge_or_wait(
             s, &slug, number, head, waiting, error, attempt, by, actor, now,
         ))
     };
-    match try_merge(s, project, number, viewed, by, actor, now) {
+    match try_merge(s, project, number, viewed, "", by, actor, now) {
         Tried::Merged(url) => Ok(Verdict::Merged(url)),
         Tried::Refused(Gate::Pending, why) => Ok(wait("checks", &why, 0)),
         Tried::Unread(e) if passing_forge_error(&e) => Ok(wait("forge", &e, 1)),
-        Tried::Refused(_, why) | Tried::Unread(why) => Err(why),
+        Tried::Refused(_, why) | Tried::Unread(why) | Tried::Outrun(why) => Err(why),
         Tried::Failed { error, .. } if passing_forge_error(&error) => Ok(wait("forge", &error, 1)),
         Tried::Failed { url, error } => {
             event(
@@ -1929,11 +2226,13 @@ fn retry_merges(s: &hive_store::Store, project: &Row, now: &str) -> Vec<String> 
         // try, or end the wait at its bound. The last try past the hours is
         // the merge's: a read that fails for a passing reason before it
         // counts as a failure of the forge but does not spend it - the
-        // wait ends then only when it is out of tries, and the next due
-        // pass makes the last try.
+        // next due pass makes the last try. That grace is given once: a
+        // read that fails again on the deferred last try (`w.last`) ends
+        // the wait on its hours, so a large `review.merge_wait_tries` does
+        // not go on in 6-hour steps past `review.merge_wait_hours`.
         let forge_failed = |error: &str, merge_asked: bool, lines: &mut Vec<String>| {
             let failures = w.attempt + 1;
-            let bound = if last_try && !merge_asked {
+            let bound = if last_try && !merge_asked && !w.last {
                 wait_spent(&w, failures, tries, hours, now).filter(|_| failures >= tries)
             } else {
                 wait_spent(&w, failures, tries, hours, now)
@@ -1997,7 +2296,7 @@ fn retry_merges(s: &hive_store::Store, project: &Row, now: &str) -> Vec<String> 
             lines.push(give_up_wait(s, project, &w, bound, &w.error, now));
             continue;
         }
-        match try_merge(s, project, n, Some(&view), by, ACTOR, now) {
+        match try_merge(s, project, n, Some(&view), "", by, ACTOR, now) {
             Tried::Merged(url) => {
                 let _ = s.set_meta(&wait_logged_key(&slug, n), "");
                 lines.push(format!(
@@ -2019,6 +2318,13 @@ fn retry_merges(s: &hive_store::Store, project: &Row, now: &str) -> Vec<String> 
             }
             Tried::Refused(Gate::Moved, why) => {
                 review_again(s, &slug, &w, &view, &why, now);
+                lines.push(format!("review {slug}: #{n} not merged: {why}"));
+            }
+            // The forge refused the pinned merge: the head moved after the
+            // read. `try_merge` recorded the new head (`review.again`) when
+            // it could read it; otherwise the next pass finds it moved.
+            Tried::Outrun(why) => {
+                let _ = s.set_meta(&wait_logged_key(&slug, n), "");
                 lines.push(format!("review {slug}: #{n} not merged: {why}"));
             }
             Tried::Refused(Gate::Stop, why) => {
@@ -2669,7 +2975,10 @@ mod tests {
     /// the `view` file (the test writes it), `pr diff` a one-line diff,
     /// `pr merge`/`pr review`/`pr comment` succeed unless the `fail` file
     /// names the verb, and `auth status` knows no accounts. Every call is
-    /// logged.
+    /// logged. A `pushed` file holding a sha is a push that lands while
+    /// `pr merge` runs: the view becomes `view.next`, and a merge pinned
+    /// with `--match-head-commit` to another commit is refused as GitHub
+    /// refuses it; an unpinned one merges whatever the head is.
     fn fake_gh() -> (
         tempfile::TempDir,
         hive_testutil::SetenvGuard,
@@ -2687,10 +2996,12 @@ mod tests {
         let fail = bin.path().join("fail");
         std::fs::write(&fail, "").unwrap();
         let body = format!(
-            "#!/bin/sh\necho \"$@\" >> '{log}'\nif grep -q \"^$2$\" '{fail}'; then echo \"$(cat '{failmsg}')\" >&2; exit 1; fi\ncase \"$1 $2\" in\n\"pr view\") cat '{view}' ;;\n\"pr diff\") echo 'diff --git a/src/a.rs b/src/a.rs' ;;\n\"pr merge\") echo merged ;;\n\"pr review\") echo reviewed ;;\n\"pr comment\") echo commented ;;\n\"auth status\") exit 1 ;;\n*) echo \"unexpected gh $*\" >&2; exit 2 ;;\nesac\n",
+            "#!/bin/sh\necho \"$@\" >> '{log}'\nif grep -q \"^$2$\" '{fail}'; then echo \"$(cat '{failmsg}')\" >&2; exit 1; fi\ncase \"$1 $2\" in\n\"pr view\") cat '{view}' ;;\n\"pr diff\") echo 'diff --git a/src/a.rs b/src/a.rs' ;;\n\"pr merge\") if [ -s '{pushed}' ]; then cp '{next}' '{view}'; want=$(cat '{pushed}'); pin=''; prev=''; for a in \"$@\"; do [ \"$prev\" = --match-head-commit ] && pin=\"$a\"; prev=\"$a\"; done; if [ -n \"$pin\" ] && [ \"$pin\" != \"$want\" ]; then echo 'GraphQL: Head branch was modified. Review and try the merge again. (mergePullRequest)' >&2; exit 1; fi; fi; echo merged ;;\n\"pr review\") echo reviewed ;;\n\"pr comment\") echo commented ;;\n\"auth status\") exit 1 ;;\n*) echo \"unexpected gh $*\" >&2; exit 2 ;;\nesac\n",
             view = view.display(),
             fail = fail.display(),
             failmsg = bin.path().join("failmsg").display(),
+            pushed = bin.path().join("pushed").display(),
+            next = bin.path().join("view.next").display(),
         );
         std::fs::write(bin.path().join("failmsg"), "HTTP 422: boom").unwrap();
         let path = bin.path().join("gh");
@@ -3290,7 +3601,7 @@ mod tests {
         // the newest land.pr pushed; the forge holds another commit now.
         view_with(&view, |v| v["headRefOid"] = json!("def456def456def456"));
         assert_eq!(
-            merge_as_owner(&s, &proj, 7, TEST_NOW).unwrap_err(),
+            merge_as_owner(&s, &proj, 7, "", TEST_NOW).unwrap_err(),
             "the pull request moved since Hive pushed it: pushed abc123, now def456def456; it is reviewed again"
         );
         assert!(events(&s, "review.failed").is_empty());
@@ -4832,7 +5143,7 @@ mod tests {
         );
         assert!(jobs_of(&s, "review").is_empty());
         assert_eq!(
-            merge_as_owner(&s, &proj, 8, TEST_NOW).unwrap_err(),
+            merge_as_owner(&s, &proj, 8, "", TEST_NOW).unwrap_err(),
             "pull request #8 is stacked on #7; #7 must merge first"
         );
         assert!(calls(&log).is_empty(), "{:?}", calls(&log));
@@ -4856,5 +5167,317 @@ mod tests {
             "{lines:?}"
         );
         assert_eq!(jobs_of(&s, "review").len(), 1);
+    }
+
+    /// The owner's #7, handed over at abc123 and asked to merge there.
+    fn owner_asked(s: &hive_store::Store) {
+        land_pr(s, 7, "task", "TASK-001", "JOB-a");
+        event(
+            s,
+            TEST_NOW,
+            "reviewer-1",
+            "review.owner",
+            "proj",
+            json!({"project": "proj", "number": 7, "url": "https://github.com/o/r/pull/7", "reasons": ["touches 40 files"]}),
+        );
+        hive_tasks::ask_merge(s, "proj", 7, "TASK-001", "", hive_store::HUMAN_AGENT).unwrap();
+    }
+
+    /// A commit the daemon records for #7 (a fix job's push, a refresh).
+    fn new_head(s: &hive_store::Store, to: &str, refreshed: bool) {
+        event(
+            s,
+            TEST_NOW,
+            "daemon",
+            "land.pr",
+            "proj",
+            json!({"project": "proj", "kind": "task", "task": "TASK-001", "number": 7,
+                "url": "https://github.com/o/r/pull/7", "head": "hive/task/TASK-001", "base": "main",
+                "remote": "origin", "to": to, "opened": false, "refreshed": refreshed, "title": "PR 7 title"}),
+        );
+    }
+
+    fn merge_args(log: &str) -> Vec<String> {
+        std::fs::read_to_string(log)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.starts_with("pr merge"))
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// TASK-147 item 1: every merge Hive makes is pinned to the commit it
+    /// read (`--match-head-commit`), the owner's and the reviewer's; a
+    /// commit pushed between the read and the merge is not merged. The
+    /// forge refuses it, the new head is recorded (`review.again`) and the
+    /// owner's ask lapses as for any moved head.
+    #[test]
+    fn a_head_that_moves_between_the_read_and_the_merge_is_not_merged() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        for owner in [true, false] {
+            let (bin, _path, log, view) = fake_gh();
+            let s = new_store();
+            let (proj, _repo, _bare) = push_fixture(&s);
+            // A push of def456 lands while `gh pr merge` runs.
+            std::fs::write(bin.path().join("pushed"), "def456def456def456").unwrap();
+            let mut next = view_value(7, "hive/task/TASK-001", &[("src/a.rs", 5, 2)]);
+            next["headRefOid"] = json!("def456def456def456");
+            std::fs::write(bin.path().join("view.next"), next.to_string()).unwrap();
+            let lines = if owner {
+                owner_asked(&s);
+                tend_reviews(&s, std::slice::from_ref(&proj), TEST_NOW)
+            } else {
+                land_pr(&s, 7, "task", "TASK-001", "JOB-a");
+                reviewed(&s, &proj);
+                let err = merge_or_wait(&s, &proj, 7, None, "reviewer-1", "reviewer-1", TEST_NOW)
+                    .unwrap_err();
+                vec![err]
+            };
+            let args = merge_args(&log);
+            assert_eq!(args.len(), 1, "{args:?}");
+            assert!(
+                args[0].contains("--match-head-commit abc123"),
+                "pinned to the commit read: {args:?}"
+            );
+            assert!(events(&s, "review.merged").is_empty(), "{lines:?}");
+            assert!(
+                events(&s, "review.failed").is_empty(),
+                "no failure: {lines:?}"
+            );
+            let again = events(&s, "review.again");
+            assert_eq!(again.len(), 1, "{lines:?}");
+            assert_eq!(again[0]["head_sha"], "def456def456def456");
+            assert_eq!(again[0]["was"], "abc123");
+            assert!(
+                lines
+                    .iter()
+                    .any(|l| l.contains("a commit reached the pull request after it was read")),
+                "{lines:?}"
+            );
+            let _ = view;
+            if owner {
+                // The next pass: the ask was for abc123; it lapses, once.
+                let lines = tend_reviews(&s, std::slice::from_ref(&proj), TEST_NOW);
+                assert!(
+                    lines
+                        .iter()
+                        .any(|l| l.contains("#7 not merged for the owner")),
+                    "{lines:?}"
+                );
+                assert_eq!(events(&s, LAPSED_ACTION).len(), 1);
+                assert_eq!(merge_args(&log).len(), 1, "no second merge");
+            }
+        }
+    }
+
+    /// TASK-147 item 2: a lapse is for good. When the head comes back to
+    /// the commit Merge was pressed for (a force-push back, a review queued
+    /// at a stale commit), the ask already told as lapsed is not honoured
+    /// again: nothing is merged and nothing is said twice.
+    #[test]
+    fn a_lapsed_ask_whose_head_returns_stays_lapsed() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let (_bin, _path, log, view) = fake_gh();
+        let s = new_store();
+        let (proj, _repo, _bare) = push_fixture(&s);
+        owner_asked(&s);
+        new_head(&s, "def456def456def456", false);
+        view_with(&view, |v| v["headRefOid"] = json!("def456def456def456"));
+        let tend = || tend_reviews(&s, std::slice::from_ref(&proj), TEST_NOW);
+        let lines = tend();
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("#7 not merged for the owner")),
+            "{lines:?}"
+        );
+        // The head returns to abc123, green and clean on the forge.
+        new_head(&s, "abc123", false);
+        view_with(&view, |_| {});
+        let lines = tend();
+        assert_eq!(merges(&log), 0, "the lapsed ask is not honoured: {lines:?}");
+        assert!(events(&s, "review.merged").is_empty());
+        assert_eq!(events(&s, LAPSED_ACTION).len(), 1, "said once: {lines:?}");
+        assert!(
+            !lines.iter().any(|l| l.contains("for the owner")),
+            "{lines:?}"
+        );
+    }
+
+    /// TASK-147 item 3: the hours end a forge wait whose reads keep
+    /// failing, whatever `review.merge_wait_tries` says. Past the hours the
+    /// failed read gives the last try one more back-off; when that read
+    /// fails too, the wait ends then - not 6-hour steps later.
+    #[test]
+    fn reads_that_keep_failing_end_the_wait_on_its_hours() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let (bin, _path, log, _view) = fake_gh();
+        let s = new_store();
+        let (proj, _repo, _bare) = push_fixture(&s);
+        set_setting(&s, WAIT_TRIES, "50");
+        land_pr(&s, 7, "task", "TASK-001", "JOB-a");
+        reviewed(&s, &proj);
+        waiting_for_forge(&s, &proj, bin.path());
+        std::fs::write(bin.path().join("fail"), "view\n").unwrap();
+        std::fs::write(bin.path().join("failmsg"), "HTTP 502: Bad Gateway").unwrap();
+        let late = crate::util::plus_minutes(TEST_NOW, 7 * 60);
+        let tend = |at: &str| tend_reviews(&s, std::slice::from_ref(&proj), at);
+        let lines = tend(&late);
+        assert!(events(&s, "review.owner").is_empty(), "{lines:?}");
+        assert_eq!(
+            events(&s, "review.merge-wait").last().unwrap()["last"],
+            true
+        );
+        // The deferred last try: its read fails too, and the hours end it.
+        let lines = tend(&crate::util::plus_minutes(&late, 20));
+        assert!(
+            lines.iter().any(|l| l.contains(
+                "#7 handed to the owner, the lead told: the approved merge waited since"
+            )),
+            "{lines:?}"
+        );
+        assert_eq!(events(&s, "review.owner").len(), 1);
+        assert_eq!(merges(&log), 1, "no merge was tried past the hours");
+        assert!(tend(&crate::util::plus_minutes(&late, 600)).is_empty());
+    }
+
+    /// TASK-147 item 6: reads that fail on every try end the wait when the
+    /// tries are spent, with the forge's last answer.
+    #[test]
+    fn reads_that_fail_until_the_tries_end_hand_it_to_the_owner() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let (bin, _path, log, _view) = fake_gh();
+        let s = new_store();
+        let (proj, _repo, _bare) = push_fixture(&s);
+        set_setting(&s, WAIT_TRIES, "3");
+        land_pr(&s, 7, "task", "TASK-001", "JOB-a");
+        reviewed(&s, &proj);
+        waiting_for_forge(&s, &proj, bin.path());
+        std::fs::write(bin.path().join("fail"), "view\n").unwrap();
+        std::fs::write(bin.path().join("failmsg"), "HTTP 503: Service Unavailable").unwrap();
+        let mut said = Vec::new();
+        for minutes in [6, 25] {
+            said.extend(tend_reviews(
+                &s,
+                std::slice::from_ref(&proj),
+                &crate::util::plus_minutes(TEST_NOW, minutes),
+            ));
+        }
+        assert!(
+            said.iter().any(|l| l.contains(
+                "#7 handed to the owner, the lead told: the forge failed the approved merge 3 time(s)"
+            )),
+            "{said:?}"
+        );
+        assert_eq!(events(&s, "review.owner").len(), 1);
+        assert_eq!(merges(&log), 1, "only the first merge was tried");
+    }
+
+    /// TASK-147 item 4: a lapse hands the pull request back with answers
+    /// to pick, one recommended, as a question for the owner - also for a
+    /// pull request with neither a task nor a chat. "Wait for the review of
+    /// the new commit" is recommended when the new commit is not Hive's own
+    /// refresh; "Merge this commit" when it is. The owner's "Merge this
+    /// commit" merges the commit the question named and nothing else; a
+    /// pick of "Wait ..." merges nothing; neither queues a job.
+    #[test]
+    fn a_lapse_comes_back_with_answers_and_the_owners_pick_is_acted_on() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        for (refresh, pick) in [(false, LAPSE_MERGE), (true, LAPSE_WAIT)] {
+            let (_bin, _path, log, view) = fake_gh();
+            let s = new_store();
+            let (proj, _repo, _bare) = push_fixture(&s);
+            // A job's pull request: no task, no chat.
+            land_pr(&s, 7, "job", "", "JOB-a");
+            event(
+                &s,
+                TEST_NOW,
+                "reviewer-1",
+                "review.owner",
+                "proj",
+                json!({"project": "proj", "number": 7, "url": "https://github.com/o/r/pull/7", "reasons": ["touches 40 files"]}),
+            );
+            hive_tasks::ask_merge(&s, "proj", 7, "", "", hive_store::HUMAN_AGENT).unwrap();
+            let mut d = json!({"project": "proj", "kind": "job", "job": "JOB-a", "number": 7,
+                "url": "https://github.com/o/r/pull/7", "head": "hive/worker/JOB-a", "base": "main",
+                "remote": "origin", "to": "def456def456def456", "opened": false, "title": "PR 7 title"});
+            if refresh {
+                d["refreshed"] = json!(true);
+            }
+            event(&s, TEST_NOW, "daemon", "land.pr", "proj", d);
+            view_with(&view, |v| v["headRefOid"] = json!("def456def456def456"));
+            let tend = || tend_reviews(&s, std::slice::from_ref(&proj), TEST_NOW);
+            let lines = tend();
+            let lapsed = events(&s, LAPSED_ACTION);
+            assert_eq!(lapsed.len(), 1, "{lines:?}");
+            let post = lapsed[0]["post"].as_str().unwrap().to_string();
+            assert!(!post.is_empty(), "{lines:?}");
+            let q = crate::board::post_row(&*s.conn().unwrap(), post.clone());
+            assert_eq!(q.str("kind"), "question");
+            assert!(
+                q.str("summary")
+                    .starts_with("Merge pull request #7: PR 7 title?"),
+                "{}",
+                q.str("summary")
+            );
+            let body = q.str("body");
+            let options = hive_board::ask_options(&body);
+            let mut labels: Vec<&str> = options.options.iter().map(|o| o.label.as_str()).collect();
+            labels.sort_unstable();
+            assert_eq!(labels, [LAPSE_MERGE, LAPSE_WAIT], "{body}");
+            assert!(options.ready(), "{body}");
+            let recommended = if refresh { LAPSE_MERGE } else { LAPSE_WAIT };
+            assert_eq!(
+                options
+                    .options
+                    .iter()
+                    .find(|o| o.recommended)
+                    .unwrap()
+                    .label,
+                recommended
+            );
+            assert!(
+                body.contains(&format!("Recommended: {recommended} - ")),
+                "{body}"
+            );
+            assert!(body.contains("Was: commit abc123"), "{body}");
+            assert!(body.contains("Now: commit def456def456"), "{body}");
+            // The owner picks.
+            let decision =
+                hive_board::decide_option(&s, &post, pick, "", hive_store::HUMAN_AGENT).unwrap();
+            assert!(decision.job.is_none(), "the daemon acts on the pick itself");
+            let lines = tend();
+            if pick == LAPSE_MERGE {
+                assert!(
+                    lines.iter().any(|l| l.contains("#7 merged for the owner")),
+                    "{lines:?}"
+                );
+                let args = merge_args(&log);
+                assert_eq!(args.len(), 1, "{args:?}");
+                assert!(
+                    args[0].contains("--match-head-commit def456def456def456"),
+                    "{args:?}"
+                );
+            } else {
+                assert_eq!(merges(&log), 0, "{lines:?}");
+                assert!(
+                    lines
+                        .iter()
+                        .any(|l| l.contains("the owner waits for the review")),
+                    "{lines:?}"
+                );
+            }
+            // Acted on once.
+            assert!(
+                !tend()
+                    .iter()
+                    .any(|l| l.contains("the owner picked") || l.contains("the owner waits")),
+            );
+        }
     }
 }
