@@ -222,8 +222,8 @@ export default function HarnessPage() {
             "hive harness login                                  # GitHub's device flow, for the default provider",
             "hive settings set provider openai                   # or anthropic, gemini, ollama, custom, ...",
             "hive harness login --provider openai --with-token   # reads the key on stdin",
-            "hive harness models                                 # the models of the provider you chose; --provider NAME lists another's",
-            "hive harness status                                 # the provider, the login, the models and limits in force",
+            "hive harness models                                 # the models on offer; --provider NAME for another",
+            "hive harness status                                 # the provider, the login, the models, the limits",
           ].join("\n")}
         />
         <p>

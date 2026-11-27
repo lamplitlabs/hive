@@ -37,7 +37,7 @@ export type Section = { id: string; title: string };
  */
 export function Article({ sections, children }: { sections: readonly Section[]; children: ReactNode }) {
   return (
-    <div className="mx-auto grid max-w-6xl gap-10 px-5 py-12 sm:px-8 lg:grid-cols-[13rem_minmax(0,1fr)] lg:gap-14 lg:py-16">
+    <div className="mx-auto grid max-w-6xl gap-10 px-5 py-12 sm:px-8 lg:grid-cols-[12rem_minmax(0,1fr)] lg:gap-12 lg:py-16">
       <nav aria-label="On this page" className="hidden lg:block">
         <div className="sticky top-20">
           <p className="text-xs font-semibold tracking-[0.14em] text-muted-foreground uppercase">On this page</p>

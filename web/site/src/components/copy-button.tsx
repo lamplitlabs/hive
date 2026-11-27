@@ -4,7 +4,7 @@
 // clipboard. Kept apart and small, so a page that has none ships none of it.
 import { useEffect, useRef, useState } from "react";
 
-export function CopyButton({ text, what = "the command", className = "" }: { text: string; what?: string; className?: string }) {
+export function CopyButton({ text, what = "the command", primary = false, className = "" }: { text: string; what?: string; /** The page's main action: drawn as the primary button. */ primary?: boolean; className?: string }) {
   const [copied, setCopied] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(timer.current), []);
@@ -26,7 +26,9 @@ export function CopyButton({ text, what = "the command", className = "" }: { tex
       <button
         type="button"
         onClick={copy}
-        className={`inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-xs font-medium text-foreground transition-colors hover:bg-muted ${className}`}
+        className={`inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border px-3 text-xs font-medium transition-colors ${
+          primary ? "border-transparent bg-primary text-primary-foreground hover:bg-primary-strong" : "border-border bg-card text-foreground hover:bg-muted"
+        } ${className}`}
       >
         <svg viewBox="0 0 24 24" className="size-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           {copied ? (

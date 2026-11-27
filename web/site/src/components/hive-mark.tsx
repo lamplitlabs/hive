@@ -14,13 +14,13 @@ export const HIVE_NODES = [
 ] as const;
 export const HIVE_CORE = "M128 100L152.25 114L152.25 142L128 156L103.75 142L103.75 114z";
 
-/** The mark in the text colour. `draw` lets the brackets draw themselves once. */
-export function HiveMark({ className, draw = false }: { className?: string; draw?: boolean }) {
+/** The mark in the text colour. */
+export function HiveMark({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 256 256" aria-hidden="true" className={className}>
       <g fill="none" stroke="currentColor" strokeWidth="22" strokeLinejoin="miter" strokeMiterlimit="6">
         {HIVE_BRACKETS.map((d) => (
-          <path key={d} d={d} pathLength={1} className={draw ? "hive-draw" : undefined} />
+          <path key={d} d={d} />
         ))}
       </g>
       <g fill="currentColor">
