@@ -53,6 +53,7 @@ import {
   SkeletonRows,
 } from "@/components/hive/panel";
 import { Avatar, Mono, ProjectLink, When } from "@/components/hive/who";
+import { LifecyclePanel, PhaseChip, useTaskLifecycle } from "@/components/tasks/lifecycle";
 import { TaskActivityPane } from "@/components/tasks/task-activity";
 import {
   CancelTaskDialog,
@@ -216,7 +217,7 @@ function TaskBody({
     session: run,
     steps: runSteps,
     live: working,
-    initial: [makeTab("steps"), makeTab("brief")],
+    initial: [makeTab("steps"), makeTab("lifecycle"), makeTab("brief")],
   });
   // A done task shows its report: the step that did the work opens on its
   // page in the canvas (Hive builds it), on the way in and the moment the
@@ -224,6 +225,7 @@ function TaskBody({
   const reportStep = t.status === "done" ? reportJob(d.jobs) : undefined;
   const reportTab = reportStep ? jobEvidenceTab(reportStep) : null;
   const openTab = ctl.openTab;
+  const lifecycle = useTaskLifecycle(t.id);
   const shownReport = useRef("");
   useEffect(() => {
     if (!reportTab || shownReport.current === reportTab.id) return;
@@ -358,6 +360,18 @@ function TaskBody({
               </span>
               <span aria-hidden>·</span>
               <ProjectLink slug={t.project} />
+              {lifecycle.data ? (
+                <>
+                  <span aria-hidden>·</span>
+                  <button
+                    type="button"
+                    className="min-w-0 hover:text-foreground hover:underline"
+                    onClick={() => ctl.openTab(makeTab("lifecycle"))}
+                  >
+                    <PhaseChip l={lifecycle.data} />
+                  </button>
+                </>
+              ) : null}
               <span aria-hidden>·</span>
               {t.lead ? (
                 <span
@@ -580,7 +594,7 @@ function TaskBody({
       live={working}
       texts={texts}
       jobs={d.jobs}
-      menu={["terminal", "browser", "plan", "steps", "brief", "links"]}
+      menu={["terminal", "browser", "plan", "steps", "lifecycle", "brief", "links"]}
       counts={{ steps: d.jobs.length }}
       panels={{
         steps: (
@@ -592,6 +606,7 @@ function TaskBody({
             onEvidence={(j) => ctl.openTab(jobEvidenceTab(j))}
           />
         ),
+        lifecycle: <LifecyclePanel id={t.id} />,
         brief: (
           <BriefPanel d={d} closed={closed} onEdit={() => setAmend(true)} />
         ),
