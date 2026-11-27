@@ -715,6 +715,9 @@ mod tests {
         let b = brain(&s);
         let now = crate::test_helpers::TEST_NOW;
         let add = |source: &str, kind: &str| {
+            // `add_job` refuses a `task:` source that names no task of the
+            // project (TASK-140), so the owner's job gets its task first.
+            crate::test_helpers::task_for_source(&s, "proj", source);
             crate::jobs::add_job(
                 &s,
                 "proj".into(),
