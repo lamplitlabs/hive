@@ -1626,21 +1626,24 @@ pub(crate) fn run_job(
                 agent_spec.as_ref(),
             ),
         };
-        // The owner's work job starts over its project's narrowed lanes
-        // (jobs.rs lease_job), so on this machine its gated commit may wait
-        // for every other check in the project before its own: the harness
-        // command gets a commit cap that covers them. A custom worker's
-        // command is its own, and a hand's checks take turns on the hand.
+        // The owner's work job starts past its project's narrowed lanes and
+        // share (jobs.rs lease_job), up to the lock's bound, so on this
+        // machine its gated commit may wait for every other check in the
+        // project before its own - those of the runs that start after it
+        // too, since its cap is fixed now: the harness command gets a
+        // commit cap that covers the bound, the first run included. A
+        // custom worker's command is its own, and a hand's checks take
+        // turns on the hand.
         if !custom_worker
             && !ex.remote()
             && crate::jobs::is_owner_driven(&job)
             && crate::jobs::WORK_KINDS.contains(&job.str("kind").as_str())
-            && let Some(cap) = crate::jobs::commit_cap_over_lanes(s, &job.str("project"))
+            && let Some(cap) = crate::jobs::owner_commit_cap(s, &job.str("project"))
         {
             let lanes = crate::jobs::project_lanes(s, &job.str("project"));
-            let checks = crate::jobs::occupied_work_jobs(s, &job.str("project"));
+            let checks = crate::jobs::owner_work_bound(s).unwrap_or(1);
             log.add(format!(
-                "commit cap widened to {} min: {checks} checks share the verify lock on {} (verify ~{} min each)",
+                "commit cap widened to {} min: up to {checks} checks share the verify lock on {} (verify ~{} min each)",
                 crate::jobs::minutes_up(cap),
                 job.str("project"),
                 crate::jobs::minutes_up(lanes.verify_seconds.unwrap_or(0))

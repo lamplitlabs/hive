@@ -690,6 +690,113 @@ mod tests {
         assert!(lines.is_empty(), "{lines:?}");
     }
 
+    /// A run in flight of job `job`, as the runs table holds it.
+    fn running_run(s: &hive_store::Store, job: &str) {
+        s.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO runs (id, job_id, agent, project, started_at, status) VALUES (?, ?, 'aurora', 'proj', ?, 'running')",
+                rusqlite::params![format!("run-{job}"), job, crate::test_helpers::TEST_NOW],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn the_fleet_holding_every_slot_asks_the_owner_once_past_its_wait_and_answers_when_a_slot_frees()
+     {
+        // Review of PR 284, item e: the fleet-full question itself. The
+        // fleet's own runs hold every slot and the owner's job waits: the
+        // owner is asked once, only after the job has waited the kind's 30
+        // minutes, and answered when a slot is free for the owner's work.
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        crate::test_helpers::join(&s, "aurora");
+        let b = brain(&s);
+        let now = crate::test_helpers::TEST_NOW;
+        let add = |source: &str, kind: &str| {
+            crate::jobs::add_job(
+                &s,
+                "proj".into(),
+                kind.into(),
+                source.into(),
+                "brief".into(),
+                1,
+                10,
+                source.into(),
+                hive_store::HUMAN_AGENT.into(),
+                false,
+            )
+            .unwrap()
+            .0
+            .str("id")
+        };
+        // Who holds the slots decides whether it is the fleet's: no run,
+        // no hold; the fleet's runs alone, the fleet's; one owner run among
+        // them, not.
+        assert!(!fleet_holds_every_slot(&s));
+        let fleet = add("suggestion:abc", "improve");
+        running_run(&s, &fleet);
+        assert!(fleet_holds_every_slot(&s));
+        let owners = add("task:TASK-145", "task");
+        running_run(&s, &owners);
+        assert!(!fleet_holds_every_slot(&s));
+        // The question: the governor admits the owner's run, which does not
+        // pass this hold (it is not the governor's).
+        let gov = governor(crate::daemon_load::CALM, 4, 0);
+        let full = [Hold::new(&FLEET_FULL, "every executor slot is busy")];
+        let pass = Duration::from_secs(60);
+        let t0 = Instant::now();
+        let mut holds = IdleHolds::default();
+        let mut tend = |held: &[Hold], seconds: i64, at: Instant| {
+            holds.tend(
+                &s,
+                &b,
+                held,
+                &gov,
+                &waiting(1, seconds),
+                pass,
+                now,
+                "daemon",
+                at,
+            )
+        };
+        assert!(tend(&full, 60, t0).is_empty(), "the owner's work seen once");
+        // Past a pass but not past the kind's wait: nothing asked.
+        let short = FLEET_FULL.owner_wait_minutes * 60 - 60;
+        assert!(tend(&full, short, t0 + pass).is_empty());
+        assert!(open(&s, &FLEET_FULL).is_empty());
+        let lines = tend(&full, FLEET_FULL.owner_wait_minutes * 60, t0 + pass);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0]
+                .starts_with("the fleet's own work holds the owner's work: 1 owner job(s) queued")
+                && lines[0].contains("(asked the owner: "),
+            "{lines:?}"
+        );
+        let q = open(&s, &FLEET_FULL);
+        assert_eq!(q.len(), 1, "{q:?}");
+        assert_eq!(q[0].str("thread"), FLEET_FULL.ask_kind);
+        assert!(q[0].str("body").contains("hive executor add"), "{q:?}");
+        // Still full a pass later: nothing new.
+        assert!(tend(&full, 3600, t0 + pass * 2).is_empty());
+        assert_eq!(open(&s, &FLEET_FULL).len(), 1);
+        // A slot frees: answered once, and only once.
+        let lines = tend(&[], 3600, t0 + pass * 3);
+        assert_eq!(
+            lines,
+            vec![
+                "the fleet's own work lifted: a slot is free for the owner's work again; 1 owner question(s) answered"
+            ]
+        );
+        assert!(open(&s, &FLEET_FULL).is_empty());
+        assert!(tend(&[], 3600, t0 + pass * 4).is_empty());
+        // No other kind was asked about.
+        for kind in KINDS.iter().filter(|k| k.ask_kind != FLEET_FULL.ask_kind) {
+            assert!(open(&s, kind).is_empty(), "{}", kind.ask_kind);
+        }
+    }
+
     #[test]
     fn no_question_without_owner_work_and_kinds_keep_their_own_bounds() {
         let _serial = crate::test_helpers::serial();

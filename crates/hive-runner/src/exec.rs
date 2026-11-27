@@ -1319,8 +1319,8 @@ pub(crate) fn with_resume(mut cmd: Vec<String>, trajectory: &str) -> Vec<String>
 
 /// The harness command with its gated-commit cap set to `seconds`: the value
 /// after `--commit-timeout` replaced, or the flag added when the command
-/// carries none. For a run starting over its project's narrowed work lanes
-/// (`jobs::commit_cap_over_lanes`), whose commit waits for the other checks
+/// carries none. For the owner's work run of a project whose checks take turns
+/// (`jobs::owner_commit_cap`), whose commit waits for the other checks
 /// under the verify lock before its own.
 pub(crate) fn with_commit_cap(mut cmd: Vec<String>, seconds: i64) -> Vec<String> {
     let value = seconds.to_string();
