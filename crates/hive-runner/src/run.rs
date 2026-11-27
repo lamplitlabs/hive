@@ -3450,6 +3450,22 @@ pub(crate) fn post_result_answer(
     Ok(())
 }
 
+/// Whether run `run_id` works for a task the owner cancelled (TASK-140): the
+/// task's cancel asks the run's harness session to stop, and this covers a
+/// run that has no session yet (still setting up its clone) or a worker
+/// that keeps none. The run then ends as the owner's cancel of a run does.
+pub(crate) fn run_task_cancelled(s: &hive_store::Store, run_id: &str) -> bool {
+    let Ok(conn) = s.conn() else {
+        return false;
+    };
+    conn.query_row(
+        "SELECT 1 FROM runs r JOIN jobs j ON j.id = r.job_id JOIN tasks t ON (j.source = 'task:' || t.id OR j.source LIKE 'task:' || t.id || ':%') WHERE r.id = ? AND j.source LIKE 'task:%' AND t.status = 'cancelled' LIMIT 1",
+        [run_id],
+        |_| Ok(()),
+    )
+    .is_ok()
+}
+
 pub(crate) fn watch_run_harness_cancel(
     cancel: &hive_bus::CancellationToken,
     s: &hive_store::Store,
@@ -3475,9 +3491,11 @@ pub(crate) fn watch_run_harness_cancel_every(
     let done_t = Arc::clone(&done);
     let handle = std::thread::spawn(move || {
         let check = || -> bool {
-            if let Ok(Some(session)) = s.harness_session_head(&run_id)
-                && !session.cancel_requested_at.is_empty()
-            {
+            let asked = matches!(
+                s.harness_session_head(&run_id),
+                Ok(Some(session)) if !session.cancel_requested_at.is_empty()
+            );
+            if asked || run_task_cancelled(&s, &run_id) {
                 owner_cancelled.store(true, Ordering::SeqCst);
                 child_cancel.cancel();
                 return true;

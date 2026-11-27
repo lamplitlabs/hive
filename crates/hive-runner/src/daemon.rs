@@ -5278,6 +5278,7 @@ mod tests {
         crate::capacity::pin_per_project(&s, 4);
         let _calm = crate::daemon_load::pin_pressure(crate::daemon_load::CALM);
         let add = |title: &str, source: &str| {
+            crate::test_helpers::task_for_source(&s, "proj", source);
             crate::jobs::add_job(
                 &s,
                 "proj".into(),
@@ -5490,6 +5491,7 @@ mod tests {
         }
 
         fn add(&self, title: &str, source: &str) -> String {
+            crate::test_helpers::task_for_source(&self.s, "proj", source);
             crate::jobs::add_job(
                 &self.s,
                 "proj".into(),
@@ -5987,6 +5989,7 @@ mod tests {
         )
         .unwrap();
         let add_from = |title: &str, source: &str| {
+            crate::test_helpers::task_for_source(&s, "proj", source);
             crate::jobs::add_job(
                 &s,
                 "proj".into(),
@@ -7122,6 +7125,7 @@ mod tests {
             s.set_setting(hive_store::HUMAN_AGENT, key, value).unwrap();
         }
         let add = |s: &hive_store::Store, title: &str, source: &str| {
+            crate::test_helpers::task_for_source(s, "proj", source);
             crate::jobs::add_job(
                 s,
                 "proj".into(),

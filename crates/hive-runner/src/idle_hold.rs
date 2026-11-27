@@ -1074,6 +1074,7 @@ mod tests {
             })
             .unwrap();
             let add = |kind: &str, source: &str| {
+                crate::test_helpers::task_for_source(&early, "proj", source);
                 crate::jobs::add_job(
                     &early,
                     "proj".into(),
@@ -1437,6 +1438,7 @@ mod tests {
             ..Default::default()
         })
         .unwrap();
+        crate::test_helpers::task_for_source(&early, "proj", source);
         crate::jobs::add_job(
             &early,
             "proj".into(),
