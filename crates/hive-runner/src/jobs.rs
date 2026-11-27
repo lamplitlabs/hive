@@ -611,6 +611,10 @@ pub(crate) fn lease_job(
         .ok()
         .flatten()
         .is_some_and(|a| a.kind == crate::lead::LEAD_KIND);
+    // A remote slot passes a job whose kept work pins it here, but only
+    // while this machine could take it (TASK-152 review).
+    let kept_pin = (!o.executor.is_empty() && o.executor != crate::executor::LOCAL_EXECUTOR)
+        .then(|| crate::unchecked::pinned_here_sql(&crate::executor::local_executor_row(s)));
     let mut leased = Row::new();
     crate::db::immediate(s, |q| {
         for r in query_rows_dyn(
@@ -831,6 +835,16 @@ pub(crate) fn lease_job(
                 " AND NOT EXISTS (SELECT 1 FROM harness_sessions h JOIN runs r ON r.id = h.run_id WHERE h.job_id = j.id AND h.status = 'held' AND r.executor = '{}')",
                 crate::executor::LOCAL_EXECUTOR
             ));
+            // Work a stopped check kept on this machine's checkout waits
+            // for its check here: a hand would do the task again from
+            // nothing (TASK-152 item 2). Only while this machine could take
+            // the job: one it cannot run would otherwise never be leased.
+            if let Some((pin, words)) = &kept_pin {
+                sql.push_str(&format!(" AND NOT {pin}"));
+                for w in words {
+                    vals.push(Box::new(w.clone()));
+                }
+            }
             sql.push_str(&format!(" AND j.kind NOT IN ({})", store_kinds_sql()));
             // A machine whose fetch the brain saw fail takes no run that
             // changes code until a fetch from it works again or the owner
@@ -2045,6 +2059,152 @@ mod tests {
         );
         let fourth = lease("aurora");
         assert_eq!(fourth.str("id"), held, "{fourth:?}");
+    }
+
+    /// TASK-152 item 2: work a stopped check kept on this machine's
+    /// checkout waits for its check here; a hand's slot passes the job, as
+    /// it passes a session held here, instead of doing the task again.
+    #[test]
+    fn a_job_with_kept_work_is_leased_only_here() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        crate::capacity::pin_per_project(&s, 4);
+        join(&s, "borealis");
+        let kept = queue(&s, "proj", "improve", "kept-work", 5);
+        let other = queue(&s, "proj", "improve", "other-work", 1);
+        crate::util::exec1(
+            &s.conn().unwrap(),
+            "INSERT INTO runs (id, job_id, agent, project, started_at, status, executor) VALUES ('run-kept', ?, 'borealis', 'proj', ?, 'lost', 'local')",
+            &[&kept, &crate::test_helpers::TEST_NOW],
+        );
+        crate::unchecked::record(
+            &s.conn().unwrap(),
+            crate::test_helpers::TEST_NOW,
+            &kept,
+            &crate::unchecked::Unchecked {
+                run: "run-kept".into(),
+                agent: "borealis".into(),
+                branch: crate::unchecked::unchecked_branch("borealis", &kept),
+                base: "abc".into(),
+                commits: 1,
+                ..Default::default()
+            },
+        );
+        let lease = |executor: &str| {
+            super::lease_job(
+                &s,
+                "borealis".into(),
+                crate::test_helpers::TEST_NOW.into(),
+                super::LeaseOpts {
+                    any_proj: true,
+                    executor: executor.into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        let requeue = |id: &str| {
+            crate::util::exec1(
+                &s.conn().unwrap(),
+                "UPDATE jobs SET status = 'queued', lease_agent = '', lease_until = '' WHERE id = ?",
+                &[&id],
+            );
+        };
+        let on_hand = lease("hands-1");
+        assert_eq!(on_hand.str("id"), other, "{on_hand:?}");
+        requeue(&other);
+        let at_home = lease(crate::executor::LOCAL_EXECUTOR);
+        assert_eq!(at_home.str("id"), kept, "{at_home:?}");
+        // Once a later run judged the job, the kept work is spent: any
+        // machine may take the job again.
+        requeue(&kept);
+        crate::util::exec1(
+            &s.conn().unwrap(),
+            "INSERT INTO runs (id, job_id, agent, project, started_at, status, executor) VALUES ('run-judged', ?, 'borealis', 'proj', ?, 'failed', 'local')",
+            &[&kept, &crate::test_helpers::TEST_NOW],
+        );
+        let elsewhere = lease("hands-1");
+        assert_eq!(elsewhere.str("id"), kept, "{elsewhere:?}");
+    }
+
+    /// TASK-152 review: the pin of kept work holds only while this machine
+    /// could take the job. A job that needs what this machine lacks, or a
+    /// plain job while this machine is kept for the work that needs
+    /// something, would wait for a lease that never comes here; a hand
+    /// takes it and does the task again instead.
+    #[test]
+    fn kept_work_this_machine_cannot_run_is_leased_by_a_hand() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        crate::capacity::pin_per_project(&s, 4);
+        join(&s, "borealis");
+        let kept = queue(&s, "proj", "improve", "kept-work", 5);
+        crate::util::exec1(
+            &s.conn().unwrap(),
+            "INSERT INTO runs (id, job_id, agent, project, started_at, status, executor) VALUES ('run-kept', ?, 'borealis', 'proj', ?, 'lost', 'local')",
+            &[&kept, &crate::test_helpers::TEST_NOW],
+        );
+        crate::unchecked::record(
+            &s.conn().unwrap(),
+            crate::test_helpers::TEST_NOW,
+            &kept,
+            &crate::unchecked::Unchecked {
+                run: "run-kept".into(),
+                agent: "borealis".into(),
+                branch: crate::unchecked::unchecked_branch("borealis", &kept),
+                base: "abc".into(),
+                commits: 1,
+                ..Default::default()
+            },
+        );
+        let hand_caps: std::collections::BTreeSet<String> = ["linux", "amd64", "gpu-only-here"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let lease = || {
+            super::lease_job(
+                &s,
+                "borealis".into(),
+                crate::test_helpers::TEST_NOW.into(),
+                super::LeaseOpts {
+                    any_proj: true,
+                    executor: "hands-1".into(),
+                    caps: Some(hand_caps.clone()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        let requeue = || {
+            crate::util::exec1(
+                &s.conn().unwrap(),
+                "UPDATE jobs SET status = 'queued', lease_agent = '', lease_until = '' WHERE id = ?",
+                &[&kept],
+            );
+        };
+        // This machine could take the plain job: the hand passes it.
+        assert!(lease().0.is_empty(), "the kept job stays here");
+        // It needs a word this machine does not offer: the hand takes it.
+        crate::util::exec1(
+            &s.conn().unwrap(),
+            "UPDATE jobs SET needs = 'gpu-only-here' WHERE id = ?",
+            &[&kept],
+        );
+        assert_eq!(lease().str("id"), kept);
+        // Plain again, but this machine is kept for the work that needs
+        // something: the hand takes it too.
+        requeue();
+        crate::util::exec1(
+            &s.conn().unwrap(),
+            "UPDATE jobs SET needs = '' WHERE id = ?",
+            &[&kept],
+        );
+        assert!(lease().0.is_empty(), "the kept job stays here");
+        s.set_setting(hive_store::HUMAN_AGENT, "machine.reserve", "on")
+            .unwrap();
+        assert_eq!(lease().str("id"), kept);
     }
 
     #[test]

@@ -127,10 +127,13 @@ export function updatePendingText(update: DaemonUpdate | null | undefined, now: 
   const until = update.until ? Date.parse(update.until) : NaN;
   const parts: string[] = [];
   if (Number.isFinite(since)) parts.push("Pending for " + minutesText(now - since));
-  if (Number.isFinite(until)) {
-    parts.push(until > now ? "new runs, yours included, stop starting in " + minutesText(until - now) : "its time limit is up, so nothing new starts until it has swapped");
-  } else if (!update.dispatching) {
+  // A daemon past its loop (the drain is over, or Restart now) starts
+  // nothing whatever its bound says: "stop starting in N minutes" would
+  // contradict "It has stopped taking new work" beside it.
+  if (!update.dispatching) {
     parts.push("nothing new starts");
+  } else if (Number.isFinite(until)) {
+    parts.push(until > now ? "new runs, yours included, stop starting in " + minutesText(until - now) : "its time limit is up, so nothing new starts until it has swapped");
   }
   if (!parts.length) return "";
   const text = parts.join("; ");

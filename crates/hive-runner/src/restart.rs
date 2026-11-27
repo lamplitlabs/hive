@@ -386,8 +386,26 @@ impl Restart {
 /// drain, the stay for the owner's queued work and every owner's run that
 /// anchors the window again. Zero is no bound.
 fn restart_max(s: &hive_store::Store) -> Duration {
+    restart_max_of(restart_max_minutes(s))
+}
+
+/// `daemon.restart_max_minutes` as every reader takes it: held to
+/// `0..=`[`RESTART_MAX_MINUTES_CAP`], so a value stored before the setting
+/// refused more never reaches a clock (the handover's here, the
+/// self-update's settle wait in selfupdate.rs).
+pub(crate) fn restart_max_minutes(s: &hive_store::Store) -> i64 {
+    s.setting_int("daemon.restart_max_minutes")
+        .clamp(0, RESTART_MAX_MINUTES_CAP)
+}
+
+/// The most minutes `daemon.restart_max_minutes` takes (a week): the setting
+/// refuses more, and a value stored before that rule is held to it here, so
+/// `restart_until` never adds a duration the clock overflows on.
+pub(crate) const RESTART_MAX_MINUTES_CAP: i64 = 10080;
+
+fn restart_max_of(minutes: i64) -> Duration {
     Duration::from_secs(
-        (s.setting_int("daemon.restart_max_minutes").max(0) as u64) * max_minute_secs(),
+        (minutes.clamp(0, RESTART_MAX_MINUTES_CAP) as u64).saturating_mul(max_minute_secs()),
     )
 }
 
@@ -1615,6 +1633,33 @@ mod tests {
             Tend::Goes(_)
         ));
         assert!(r.beat(&inflight, true).get("until").is_none());
+    }
+
+    /// TASK-152: a bound near 1.4e11 minutes overflowed `restart_until`; the
+    /// setting refuses more than a week, and a stored value is held to it.
+    #[test]
+    fn the_restart_bound_is_held_to_a_week() {
+        assert_eq!(
+            hive_store::validate_setting("daemon.restart_max_minutes", "10080").unwrap(),
+            "10080"
+        );
+        assert!(
+            hive_store::validate_setting("daemon.restart_max_minutes", "140000000000").is_err()
+        );
+        assert_eq!(
+            restart_max_of(140_000_000_000),
+            Duration::from_secs(RESTART_MAX_MINUTES_CAP as u64 * max_minute_secs())
+        );
+        assert_eq!(restart_max_of(-5), Duration::ZERO);
+        // A value stored before the rule, past the setting's refusal, is
+        // read held to the cap by every reader (the self-update's too).
+        let s = crate::test_helpers::new_store();
+        crate::util::exec1(
+            &s.conn().unwrap(),
+            "INSERT INTO settings (name, value, updated_at) VALUES ('daemon.restart_max_minutes', '140000000000', '') ON CONFLICT(name) DO UPDATE SET value = excluded.value",
+            &[],
+        );
+        assert_eq!(restart_max_minutes(&s), RESTART_MAX_MINUTES_CAP);
     }
 
     #[test]
