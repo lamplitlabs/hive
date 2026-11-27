@@ -7,6 +7,12 @@
 //! from `pgrep`, `pidof`, `lsof` or `ps` (in `$(...)` or through `xargs`)
 //! are refused before they run. `kill <pid>`, `kill $!`, `kill %1` and
 //! `kill $(cat server.pid)` stay allowed.
+//!
+//! The shell's own words do not hide a command: `if`, `then`, `else`, `do`,
+//! `while`, `!`, `{` and the like are skipped before the program is read, so
+//! `if true; then pkill node; fi` is refused. A variable filled from a pid
+//! lister - `pid=$(pgrep node)`, `for p in $(pgrep node)`, `pgrep node |
+//! while read p` - makes a later `kill $pid` refused too (TASK-170).
 use crate::readonly::{Item, basename, strip_assignments, strip_flags, tokenize};
 
 /// The one line a refused command gets.
@@ -28,9 +34,9 @@ fn refused(command: &str, depth: usize) -> bool {
     if depth > 8 {
         return false;
     }
-    // Whether an earlier segment of this command line listed pids: its
-    // output may reach a `kill` through `xargs` further down the pipe.
-    let mut listed = false;
+    // What earlier segments of this command line listed: pids that may
+    // reach a `kill` through `xargs` or a variable further down.
+    let mut listed = Listed::default();
     let mut words: Vec<String> = Vec::new();
     let mut nested: Vec<String> = Vec::new();
     for item in tokenize(command) {
@@ -55,14 +61,67 @@ fn refused(command: &str, depth: usize) -> bool {
     segment_refused(words, &nested, &mut listed, depth)
 }
 
+/// What the segments of one command line have listed so far.
+#[derive(Default)]
+struct Listed {
+    /// An earlier segment ran a pid lister: its output may reach `xargs kill`.
+    output: bool,
+    /// Shell variables whose value came from a pid lister.
+    vars: Vec<String>,
+}
+
+/// The shell's reserved words and grouping marks that may open a segment
+/// before the command it runs.
+const SHELL_KEYWORDS: &[&str] = &[
+    "if", "then", "elif", "else", "fi", "do", "done", "while", "until", "!", "{", "}",
+];
+
+/// Notes the variables `words` assign from a `$(...)` that lists pids.
+fn note_assignments(words: &[String], nested: &[String], listed: &mut Listed, depth: usize) {
+    let from_lister = || nested.iter().any(|n| lists_pids(n, depth + 1));
+    for w in words {
+        let Some((name, value)) = w.split_once('=') else {
+            break;
+        };
+        let is_name = name
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+        if !is_name {
+            break;
+        }
+        if value.contains("$(...)") && from_lister() {
+            listed.vars.push(name.to_string());
+        }
+    }
+}
+
+/// Whether `word` expands one of `vars` (`$p`, `${p}`, `"$pids"`).
+fn uses_var(word: &str, vars: &[String]) -> bool {
+    vars.iter().any(|v| {
+        word.match_indices('$').any(|(i, _)| {
+            let rest = &word[i + 1..];
+            let rest = rest.strip_prefix('{').unwrap_or(rest);
+            rest.strip_prefix(v.as_str()).is_some_and(|after| {
+                !after
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+            })
+        })
+    })
+}
+
 /// Checks one simple command; `nested` holds the `$(...)` commands its
 /// words take their text from.
 fn segment_refused(
     mut words: Vec<String>,
     nested: &[String],
-    listed: &mut bool,
+    listed: &mut Listed,
     depth: usize,
 ) -> bool {
+    note_assignments(&words, nested, listed, depth);
     strip_assignments(&mut words);
     let mut from_stdin = false;
     loop {
@@ -71,6 +130,36 @@ fn segment_refused(
         };
         let prog = basename(first).to_string();
         match prog.as_str() {
+            k if SHELL_KEYWORDS.contains(&k) => {
+                words.remove(0);
+                note_assignments(&words, nested, listed, depth);
+                strip_assignments(&mut words);
+            }
+            "for" | "select" => {
+                // `for p in $(pgrep node)`: the loop variable holds pids.
+                if let Some(var) = words.get(1)
+                    && words.get(2).is_some_and(|w| w == "in")
+                    && nested.iter().any(|n| lists_pids(n, depth + 1))
+                {
+                    listed.vars.push(var.clone());
+                }
+                return false;
+            }
+            "export" | "local" | "declare" | "typeset" | "readonly" => {
+                words.remove(0);
+                strip_flags(&mut words, &[]);
+                note_assignments(&words, nested, listed, depth);
+                return false;
+            }
+            "read" => {
+                // `pgrep node | while read p`: each line read is a pid.
+                if listed.output {
+                    words.remove(0);
+                    strip_flags(&mut words, &["-d", "-n", "-N", "-p", "-t", "-u", "-a"]);
+                    listed.vars.extend(words.iter().cloned());
+                }
+                return false;
+            }
             "sudo" | "doas" => {
                 words.remove(0);
                 strip_flags(
@@ -125,7 +214,7 @@ fn segment_refused(
             "eval" => return refused(&words[1..].join(" "), depth + 1),
             p if PATTERN_KILLERS.contains(&p) => return true,
             p if PID_LISTERS.contains(&p) => {
-                *listed = true;
+                listed.output = true;
                 return false;
             }
             "kill" => {
@@ -134,7 +223,10 @@ fn segment_refused(
                 if pids.iter().any(|p| p == "-1") {
                     return true;
                 }
-                if from_stdin && *listed {
+                if from_stdin && listed.output {
+                    return true;
+                }
+                if pids.iter().any(|p| uses_var(p, &listed.vars)) {
                     return true;
                 }
                 let fed = pids.iter().any(|p| p.contains("$(...)"));
@@ -234,6 +326,24 @@ mod tests {
             "kill -9 -1",
             "kill -- -1",
             "echo $(pkill node)",
+            // The shell's own words before the command (TASK-170).
+            "if true; then pkill node; fi",
+            "if pgrep -q node; then killall node; fi",
+            "[ -f x ] && { pkill -f vite; }",
+            "while true; do killall -9 node; sleep 1; done",
+            "until false; do pkill node; done",
+            "! pkill node",
+            "if [ -n \"$CI\" ]; then :; else FOO=1 pkill node; fi",
+            "for i in 1 2; do sudo pkill -f server; done",
+            "(cd web && pkill -f next)",
+            // Pids that reach `kill` through a variable.
+            "pid=$(pgrep -f server.mjs); kill $pid",
+            "PIDS=$(lsof -ti :3000) && kill -9 $PIDS",
+            "export p=$(pidof node); kill \"${p}\"",
+            "for p in $(pgrep node); do kill $p; done",
+            "for p in `ps -o pid= -U me`; do kill -9 \"$p\"; done",
+            "pgrep node | while read p; do kill $p; done",
+            "if true; then pid=$(pgrep node); kill $pid; fi",
         ] {
             assert_eq!(
                 kill_refusal(cmd).as_deref(),
@@ -263,6 +373,14 @@ mod tests {
             "grep -rn pkill crates/",
             "git log --grep killall",
             "echo 'never pkill'",
+            "if [ -f /tmp/s.pid ]; then kill $(cat /tmp/s.pid); fi",
+            "while kill -0 4242; do sleep 1; done",
+            "for f in *.rs; do echo $f; done",
+            "pid=$(cat /tmp/server.pid); kill $pid",
+            "p=$(pgrep node); echo $p; kill $pids",
+            "for p in $(pgrep node); do echo $p; done",
+            "node server.mjs & pid=$!; sleep 2; kill $pid",
+            "if true; then echo pkill; fi",
         ] {
             assert_eq!(kill_refusal(cmd), None, "should run: {cmd}");
         }

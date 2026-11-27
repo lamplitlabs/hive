@@ -2168,6 +2168,87 @@ fn probe_local(s: &hive_store::Store, actor: &str, now: &str) -> (bool, String) 
     (true, note)
 }
 
+/// The meta key that remembers which executors' older hands the board was
+/// told about, so it is said once per machine, and again only after the
+/// machine was refreshed and went back to an older hive.
+const OLDER_HANDS_SAID: &str = "hands_older_said";
+
+/// The hook version hands answered (`trailers=N`); 0 when they predate it.
+fn hands_hook_version(fields: &BTreeMap<String, String>) -> u32 {
+    fields
+        .get("trailers")
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(0)
+}
+
+/// The thread the finding about hands on an older hive goes to.
+pub(crate) const OLDER_HANDS_THREAD: &str = "older-hands";
+
+/// What to say about hands that run a hive older than pull request 299
+/// (TASK-170): their trailer hook may let a commit go out without its
+/// trailers, which the landing then refuses, and their harness does not
+/// refuse `pkill`/`killall`. Nothing when they are current.
+pub(crate) fn older_hands_warning(name: &str, fields: &BTreeMap<String, String>) -> Option<String> {
+    if fields.get("hands").map(String::as_str) != Some("ok")
+        || hands_hook_version(fields) >= hive_hand_core::provenance::HOOK_VERSION
+    {
+        return None;
+    }
+    Some(format!(
+        "warning: hands run an older hive (before pull request 299): their trailer hook can let a commit out without its trailers and their harness does not refuse pkill; refresh them with `hive pair <admin@host> --name {name}`"
+    ))
+}
+
+/// Posts one finding the first time a probe finds `name`'s hands on an
+/// older hive; a later probe of current hands forgets it, so a machine that
+/// goes back to an older hive is said again.
+fn say_older_hands_once(
+    s: &hive_store::Store,
+    name: &str,
+    fields: &BTreeMap<String, String>,
+    actor: &str,
+    now: &str,
+) {
+    if fields.get("hands").map(String::as_str) != Some("ok") {
+        return;
+    }
+    let said_raw = s.meta(OLDER_HANDS_SAID).map(|(v, _)| v).unwrap_or_default();
+    let mut said = crate::util::json_map(&said_raw);
+    let Some(warning) = older_hands_warning(name, fields) else {
+        if said.remove(name).is_some() {
+            let _ = s.set_meta(OLDER_HANDS_SAID, &crate::util::py_json(&said));
+        }
+        return;
+    };
+    if said.contains_key(name) {
+        return;
+    }
+    let proj = crate::token::finding_project(s);
+    if !proj.is_empty() {
+        crate::board::create_finding_or_warn(
+            s,
+            now.to_string(),
+            &format!("older hands on {name}"),
+            crate::board::PostOpts {
+                kind: "finding".into(),
+                project: proj,
+                area: "runner".into(),
+                thread: OLDER_HANDS_THREAD.into(),
+                summary: format!("hands on {name} run an older hive (before pull request 299)"),
+                body: format!(
+                    "The probe of `{name}` found hands that do not answer `trailers={}`: they run a hive from before pull request 299 (TASK-151). Until they are refreshed, a commit there whose message ends in a `Word: text` paragraph or holds a `---` line can go out without its Hive trailers - the landing refuses it and keeps the work on the job's `-failed` branch - and the harness there still runs `pkill` and `killall`. Jobs keep running on it. Refresh the hands with `hive pair <admin@host> --name {name}`; this is said once per machine.\n\n{warning}\n",
+                    hive_hand_core::provenance::HOOK_VERSION
+                ),
+                agent: crate::board::actor_agent(s, actor.to_string()),
+                date: now.to_string(),
+                ..Default::default()
+            },
+        );
+    }
+    said.insert(name.to_string(), Value::String(now.to_string()));
+    let _ = s.set_meta(OLDER_HANDS_SAID, &crate::util::py_json(&said));
+}
+
 pub(crate) fn probe_executor(
     s: &hive_store::Store,
     name: &str,
@@ -2327,6 +2408,7 @@ pub(crate) fn probe_executor(
                 if fields.get("hive").map(String::as_str) == Some("present") {
                     note.push_str(&format!("; warning: hands predate hive path reporting (hive=present); refresh them with `hive pair <admin@host> --name {name}`"));
                 }
+                say_older_hands_once(s, name, &fields, actor, now);
             } else {
                 note = problems.join("; ");
             }
