@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { groupRecords, headings, RECORD_GROUPS, slugify, waitsOnYou, wantsContents } from "./records-state.ts";
+import { declineHappens, groupRecords, headings, RECORD_GROUPS, slugify, waitsOnYou, wantsContents } from "./records-state.ts";
 
 test("headings: h2 and h3 in order, h1 and deeper levels skipped", () => {
   const md = "# Title\n\nIntro.\n\n## Context\ntext\n### Why now\n#### Not listed\n## Decision\n";
@@ -79,4 +79,19 @@ test("the groups cover the spec's six names", () => {
     ["Decisions", "Plans", "Features", "Work items", "Memory", "Self-improvement", "Built-in guides"],
   );
   assert.equal(RECORD_GROUPS.filter((g) => !g.kinds.length).length, 1, "exactly one catch-all group");
+});
+
+test("declineHappens: says one job takes merged work out, only when some is merged", () => {
+  const plain = declineHappens([]);
+  assert.ok(!plain.includes("job"));
+  assert.equal(declineHappens(undefined), plain);
+  assert.equal(declineHappens(null), plain);
+  const one = declineHappens([{ task: "TASK-141", number: 280, url: "u", head: "hive/task-TASK-141", at: "t" }]);
+  assert.ok(one.startsWith(plain));
+  assert.match(one, /pull request #280 is on the default branch\), so one job takes that work out/);
+  const two = declineHappens([
+    { task: "TASK-141", number: 280, url: "u", head: "h", at: "t" },
+    { task: "TASK-141", number: 290, url: "u", head: "h", at: "t" },
+  ]);
+  assert.match(two, /pull requests #280, #290 are on the default branch/);
 });

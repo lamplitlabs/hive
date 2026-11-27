@@ -255,6 +255,23 @@ pub fn owner_only_ask(
     hard_stop_ask(kind, summary, body)
 }
 
+/// Whether the post is the question a lapsed owner's Merge put back
+/// (`review.ask-lapsed` names it): the reviewer's daemon pass acts on the
+/// pick itself - "Merge this commit" asks for the merge, "Wait for the
+/// review of the new commit" asks nothing - so a pick queues no job.
+pub fn is_lapsed_merge_question(conn: &rusqlite::Connection, post_id: &str) -> bool {
+    use rusqlite::OptionalExtension;
+    conn.query_row(
+        "SELECT 1 FROM events WHERE action = 'review.ask-lapsed' AND json_extract(detail, '$.post') = ? LIMIT 1",
+        [post_id],
+        |r| r.get::<_, i64>(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .is_some()
+}
+
 /// Whether `post_id` is the security watcher's finding about a major
 /// dependency upgrade: the one test the hub and the runner share, read from
 /// the `security.major` event the watcher writes with the post it told,

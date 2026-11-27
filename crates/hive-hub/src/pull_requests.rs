@@ -98,6 +98,10 @@ impl Handler {
             write_error(w, 409, "Nothing to merge".to_string(), why, fix);
             return;
         }
+        if let Some((why, fix)) = stale_press(r, number, &pr.sha) {
+            write_error(w, 409, "The pull request moved".to_string(), why, fix);
+            return;
+        }
         if let Err(e) = hive_tasks::ask_merge(
             store,
             slug,
@@ -150,6 +154,10 @@ impl Handler {
             write_error(w, 409, "Nothing to merge".to_string(), why, fix);
             return;
         }
+        if let Some((why, fix)) = stale_press(r, delivery.number, &delivery.head_sha) {
+            write_error(w, 409, "The pull request moved".to_string(), why, fix);
+            return;
+        }
         let project = addition_row_string(&task, "project");
         if let Err(e) = hive_tasks::ask_merge(
             store,
@@ -171,6 +179,38 @@ impl Handler {
         };
         write_json(w, 202, json!({"task": task, "delivery": delivery}));
     }
+}
+
+/// The commit the console showed on the card the owner pressed Merge on
+/// (`{"sha": "..."}`); empty when the press names none (an older console,
+/// a script), and the hub then judges the press on the head it holds.
+fn pressed_sha(r: &Request) -> String {
+    serde_json::from_slice::<Value>(&r.body)
+        .ok()
+        .and_then(|v| v["sha"].as_str().map(|s| s.trim().to_string()))
+        .unwrap_or_default()
+}
+
+/// Why a Merge pressed for a commit that is no longer the pull request's
+/// head does nothing, as (why, fix): a newer commit came back to "needs
+/// your review" while the card was open, and the press was for the commit
+/// the card showed, not for that one. None when the press names no commit
+/// or names the head Hive holds.
+fn stale_press(r: &Request, number: i64, head: &str) -> Option<(String, String)> {
+    let pressed = pressed_sha(r);
+    if pressed.is_empty() || head.is_empty() || pressed == head {
+        return None;
+    }
+    let short = |s: &str| s.chars().take(12).collect::<String>();
+    Some((
+        format!(
+            "Merge was pressed for commit {} of PR #{number}; the pull request is at {} now.",
+            short(&pressed),
+            short(head)
+        ),
+        "Nothing was merged. Look at the new commit on the card, then press Merge again if it is still yours to merge."
+            .to_string(),
+    ))
 }
 
 /// Why the owner's Merge does nothing in this state, as (why, fix). Every
@@ -414,6 +454,85 @@ mod tests {
         );
         assert_eq!(status, 202, "{result:?}");
         assert_eq!(result["delivery"]["state"], "merge_asked");
+    }
+
+    /// The console sends the commit of the card the owner pressed Merge on;
+    /// a press for a commit that is no longer the head is refused and says
+    /// so, on the project's card and on the task's sheet alike. Nothing is
+    /// asked of the daemon then.
+    #[test]
+    fn a_merge_pressed_for_a_commit_that_is_no_longer_the_head_is_refused() {
+        let _serial = crate::test_helpers::serial();
+        let s = http::additions_store(false);
+        http::additions_project(&s, "one");
+        let task = hive_tasks::new(&s.store, "one", "Footer", "add it", 0, "human").unwrap();
+        let id = task.id.clone();
+        emit(
+            &s.store,
+            "land.pr",
+            &format!(
+                r#"{{"project":"one","kind":"task","task":"{id}","number":8,"url":"https://github.com/o/r/pull/8","head":"hive/task/{id}","base":"main","to":"abc123abc123abc1","opened":true,"title":"Footer"}}"#
+            ),
+        );
+        emit(
+            &s.store,
+            "review.owner",
+            r#"{"project":"one","number":8,"url":"https://github.com/o/r/pull/8","reasons":["touches 40 files"]}"#,
+        );
+        // A newer commit came back to "needs your review" while the card
+        // showed the old one.
+        emit(
+            &s.store,
+            "land.pr",
+            &format!(
+                r#"{{"project":"one","kind":"task","task":"{id}","number":8,"url":"https://github.com/o/r/pull/8","head":"hive/task/{id}","base":"main","to":"def456def456def4","title":"Footer"}}"#
+            ),
+        );
+        emit(
+            &s.store,
+            "review.owner",
+            r#"{"project":"one","number":8,"url":"https://github.com/o/r/pull/8","reasons":["touches 40 files"]}"#,
+        );
+        let asks = || -> Vec<Value> {
+            s.store
+                .conn()
+                .unwrap()
+                .prepare("SELECT detail FROM events WHERE action = 'review.ask' ORDER BY seq")
+                .unwrap()
+                .query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .map(|d| serde_json::from_str(&d.unwrap()).unwrap())
+                .collect()
+        };
+        for path in [
+            "/api/v1/projects/one/prs/8/merge".to_string(),
+            format!("/api/v1/tasks/{id}/pr/merge"),
+        ] {
+            let (status, result) = http::additions_request(
+                http::handler(&s),
+                "POST",
+                &path,
+                r#"{"sha":"abc123abc123abc1"}"#,
+            );
+            assert_eq!(status, 409, "{path}: {result:?}");
+            assert_eq!(result["error"], "The pull request moved", "{result:?}");
+            let why = result["why"].as_str().unwrap();
+            assert!(
+                why.contains("pressed for commit abc123abc123")
+                    && why.contains("at def456def456 now"),
+                "{why}"
+            );
+            assert!(asks().is_empty(), "{path}: a stale press asks nothing");
+        }
+        // The card's commit is the head: the ask is for it.
+        let (status, result) = http::additions_request(
+            http::handler(&s),
+            "POST",
+            "/api/v1/projects/one/prs/8/merge",
+            r#"{"sha":"def456def456def4"}"#,
+        );
+        assert_eq!(status, 202, "{result:?}");
+        assert_eq!(asks()[0]["sha"], "def456def456def4");
     }
 
     #[test]

@@ -353,6 +353,9 @@ impl DaemonMaintenance {
                         lines.extend(b.each("pull request reviews", &projects, slug_of, |p| {
                             crate::review::tend_reviews(&s, std::slice::from_ref(p), &now)
                         }));
+                        lines.extend(b.each("declined records", &projects, slug_of, |p| {
+                            crate::record_gate::tend_declined(&s, p, &now)
+                        }));
                     }
                     if !dry && !cancel.is_cancelled() && crate::run::runner_stopped(&s).is_empty() {
                         if !bulk_away {
