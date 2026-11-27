@@ -595,3 +595,20 @@ fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
     }
     Ok(())
 }
+
+/// Files the task a `task:` job source names, in project `project`, when the
+/// store has none (TASK-140: `hive job add` refuses a `task:` source that
+/// names no open task of the project). The task is `in_progress`, so the
+/// lead has nothing to plan for it. Any other source is left alone.
+pub(crate) fn task_for_source(s: &hive_store::Store, project: &str, source: &str) {
+    let Some(id) = hive_store::task_source_id(source) else {
+        return;
+    };
+    s.conn()
+        .expect("conn")
+        .execute(
+            "INSERT OR IGNORE INTO tasks (id, project, title, status, created_by, created_at, updated_at) VALUES (?, ?, ?, 'in_progress', 'human', ?, ?)",
+            rusqlite::params![id, project, format!("Task {id}"), TEST_NOW, TEST_NOW],
+        )
+        .expect("file the source's task");
+}

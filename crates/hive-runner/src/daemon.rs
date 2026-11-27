@@ -901,17 +901,17 @@ pub(crate) fn rental_failed_lately(s: &hive_store::Store, now: &str) -> Option<N
     // it ends neither the run of failures nor the pause.
     let rows = crate::util::must_rows(
         &conn,
-        "SELECT id, status, executor, note, updated_at FROM compute_requests WHERE status != 'denied' ORDER BY rowid DESC LIMIT 8",
-        &[],
+        "SELECT r.id, r.status, r.executor, r.note, r.hours, r.updated_at, COALESCE(m.created_at, '') AS made_at, COALESCE(m.released_at, '') AS released_at, COALESCE((SELECT MIN(e.at) FROM events e WHERE e.action = ?1 AND e.subject = r.id), '') AS release_began FROM compute_requests r LEFT JOIN compute_machines m ON m.request_id = r.id WHERE r.status != 'denied' ORDER BY r.rowid DESC LIMIT 8",
+        &[&crate::compute::RELEASE_BEGAN_ACTION],
     );
     let last = rows.first()?;
     let since = crate::util::must_iso(&last.str("updated_at"))
         - chrono::Duration::hours(FAILED_RENTALS_HOURS);
+    let failed_before_ready = |r: &Row| r.str("status") == "failed" && r.str("executor").is_empty();
     let failed = rows
         .iter()
         .take_while(|r| {
-            r.str("status") == "failed"
-                && r.str("executor").is_empty()
+            (failed_before_ready(r) || ran_past_hours(r).is_some())
                 && crate::util::must_iso(&r.str("updated_at")) >= since
         })
         .count();
@@ -920,17 +920,73 @@ pub(crate) fn rental_failed_lately(s: &hive_store::Store, now: &str) -> Option<N
     }
     let id = last.str("id");
     let due = crate::failure::recover_due(last.str("updated_at"), failed as i32 - 1);
+    let overran = rows
+        .iter()
+        .take(failed)
+        .filter(|r| ran_past_hours(r).is_some())
+        .count();
     if crate::util::must_iso(now) < crate::util::must_iso(&due) {
+        let what = if overran == 0 {
+            format!(
+                "the last {failed} request(s) failed before a machine was ready ({id}: {})",
+                crate::util::trunc(&last.str("note"), 200)
+            )
+        } else if let Some(ran) = ran_past_hours(last) {
+            format!(
+                "{id}'s machine ran {ran:.1} hour(s) on {} approved and was released ({} of the last {failed} request(s) ran past their hours, the rest failed before a machine was ready)",
+                last.int("hours"),
+                overran
+            )
+        } else {
+            format!(
+                "the last {failed} request(s) failed before a machine was ready or ran past their hours ({id}: {})",
+                crate::util::trunc(&last.str("note"), 200)
+            )
+        };
         return Some(NoAutoCompute::Pause(format!(
-            "the last {failed} request(s) failed before a machine was ready ({id}: {}); the daemon asks again after {due}",
-            crate::util::trunc(&last.str("note"), 200)
+            "{what}; the daemon asks again after {due}"
         )));
+    }
+    if !failed_before_ready(last) {
+        return None;
     }
     crate::compute::would_fail_before_provider(s, AUTO_COMPUTE_HOURS, now).map(|why| {
         NoAutoCompute::Why(format!(
             "{id} failed before a machine was ready and the next request would fail too: {why}"
         ))
     })
+}
+
+/// How long past its approved hours a machine may go and still count as released on time: the
+/// compute worker lets a machine whose hours are up go on its next tick, within one daemon pass.
+pub(crate) const OVERRUN_GRACE_MINUTES: i64 = 5;
+
+/// The hours a released request's machine ran when that was more than it was approved for (by
+/// more than `OVERRUN_GRACE_MINUTES`), from when it was made to when its release began (the
+/// provider's delete that follows may take up to `compute::COMPUTE_RELEASE_BUDGET`; a release
+/// with no such mark, as the sweep's, counts to when it was released). A machine runs on past its hours until its last
+/// run ends (`compute::rentals_past_hours`); one hub replayed two that ran 5.2 and 8.0 hours on
+/// 4-hour approvals, and the daemon asked for the next machine at once after each.
+fn ran_past_hours(r: &Row) -> Option<f64> {
+    if r.str("status") != "released"
+        || r.str("made_at").is_empty()
+        || r.str("released_at").is_empty()
+    {
+        return None;
+    }
+    let began = r.str("release_began");
+    let until = if began.is_empty() || began > r.str("released_at") {
+        r.str("released_at")
+    } else {
+        began
+    };
+    let ran = crate::util::must_iso(&until) - crate::util::must_iso(&r.str("made_at"));
+    let asked = r.int("hours");
+    (asked > 0
+        && ran
+            > chrono::Duration::hours(asked as i64)
+                + chrono::Duration::minutes(OVERRUN_GRACE_MINUTES))
+    .then(|| ran.num_seconds() as f64 / 3600.0)
 }
 
 /// Rents a machine for a waiting queue when the owner pre-authorised it:
@@ -961,8 +1017,8 @@ pub(crate) fn auto_compute(
             caps.max_vms, caps.vms_now
         )));
     }
-    if caps.max_hours_per_day > 0 && caps.hours_today + AUTO_COMPUTE_HOURS > caps.max_hours_per_day
-    {
+    // 0 means none, as the setting's description says and the compute worker reads it.
+    if caps.hours_today.saturating_add(AUTO_COMPUTE_HOURS) > caps.max_hours_per_day {
         return Err(why(format!(
             "compute.max_hours_per_day {} would be passed ({} h today, {AUTO_COMPUTE_HOURS} h asked)",
             caps.max_hours_per_day, caps.hours_today
@@ -2083,6 +2139,9 @@ pub(crate) fn daemon(
                     binary.refused_queued = crate::restart::fits_phrase(
                         &crate::restart::refused_queued_work(s, &inflight, &now),
                     );
+                    // The build's wait for that work is bounded from the
+                    // arming of a restart already pending (selfupdate gate).
+                    binary.restart_armed = restart.armed_at().to_string();
                     let inflight_jobs = inflight
                         .values()
                         .map(|d| (d.job.str("id"), true))
@@ -2127,14 +2186,22 @@ pub(crate) fn daemon(
                     stages.mark("records");
                     // The decide role (ADR-072) answers the routine asks
                     // it can before the lead's pass reads what is left.
+                    // Both work from one reading of the project's asks:
+                    // it reads every marked post's thread.
+                    let asks = crate::lead::owner_addressed_asks(s, slug.clone());
                     if !o.dry_run {
-                        for line in crate::decide::tend_decide(s, &slug, &now) {
+                        for line in crate::decide::tend_decide_with(s, &slug, &now, &asks) {
                             say(&o, line);
                         }
                     }
                     stages.mark("decide");
-                    for line in crate::lead::tend_lead(s, slug.clone(), now.clone(), actor.clone())
-                    {
+                    for line in crate::lead::tend_lead_with(
+                        s,
+                        slug.clone(),
+                        now.clone(),
+                        actor.clone(),
+                        asks,
+                    ) {
                         say(&o, line);
                     }
                     for line in crate::lead_roles::tend_role_leads(s, &slug, &now, &actor) {
@@ -4381,7 +4448,14 @@ mod tests {
             auto_compute(&s, STARVED, HANDS_WANTED_MINUTES, TEST_NOW, "daemon"),
             why("compute.max_hours_per_day 2 would be passed (0 h today, 4 h asked)")
         );
+        // 0 means none, as the setting says: no machine is rented.
         s.set_setting(hive_store::HUMAN_AGENT, "compute.max_hours_per_day", "0")
+            .unwrap();
+        assert_eq!(
+            auto_compute(&s, STARVED, HANDS_WANTED_MINUTES, TEST_NOW, "daemon"),
+            why("compute.max_hours_per_day 0 would be passed (0 h today, 4 h asked)")
+        );
+        s.set_setting(hive_store::HUMAN_AGENT, "compute.max_hours_per_day", "8")
             .unwrap();
         exec1(
             &s,
@@ -4431,7 +4505,7 @@ mod tests {
         for (k, v) in [
             ("compute.auto_approve", "1"),
             ("compute.max_vms", "1"),
-            ("compute.max_hours_per_day", "0"),
+            ("compute.max_hours_per_day", "24"),
         ] {
             s.set_setting(hive_store::HUMAN_AGENT, k, v).unwrap();
         }
@@ -4717,6 +4791,133 @@ mod tests {
         );
     }
 
+    /// A released rental: requested at `at` for `hours`, its machine made at `made` and released
+    /// at `released`.
+    fn released_rental(
+        s: &hive_store::Store,
+        id: &str,
+        hours: i32,
+        at: &str,
+        made: &str,
+        released: &str,
+    ) {
+        exec1(
+            s,
+            "INSERT INTO compute_requests(id,project,requested_by,size,hours,reason,status,decided_by,executor,note,at,updated_at) VALUES(?,'proj','daemon','Standard_B2ms',?,'more hands','released','hive',?,'its hours are up',?,?)",
+            &[
+                &id,
+                &hours,
+                &format!("hands-{}", id.to_lowercase()),
+                &at,
+                &released,
+            ],
+        );
+        exec1(
+            s,
+            "INSERT INTO compute_machines(request_id,provider,name,executor,created_at,released_at) VALUES(?,'azure',?,?,?,?)",
+            &[
+                &id,
+                &format!("hive-{}", id.to_lowercase()),
+                &format!("hands-{}", id.to_lowercase()),
+                &made,
+                &released,
+            ],
+        );
+    }
+
+    /// Two rentals replayed on one hub ran 5.2 and 8.0 hours on 4-hour approvals, and each time
+    /// the daemon asked for the next machine as soon as the last was released. A release for
+    /// running past its hours now waits like a failed request does (`rental_failed_lately`).
+    #[test]
+    fn a_rental_released_past_its_hours_is_followed_by_the_pause() {
+        let _serial = crate::test_helpers::serial();
+        let _lock = crate::test_helpers_provider::provider_test_lock();
+        let s = new_store();
+        let _h = renting_hub(&s);
+        // Approved for 4 hours, ran 8 and released two minutes before TEST_NOW.
+        released_rental(
+            &s,
+            "CR-001",
+            4,
+            "2026-09-06T01:50:00Z",
+            "2026-09-06T01:58:00Z",
+            "2026-09-06T09:58:00Z",
+        );
+        const STARVED: &str = "1 job(s) waited 31 min with every slot on this machine busy or held";
+        let ask = |now: &str| auto_compute(&s, STARVED, HANDS_WANTED_MINUTES, now, "daemon");
+        assert_eq!(
+            ask(TEST_NOW),
+            Err(NoAutoCompute::Pause(
+                "CR-001's machine ran 8.0 hour(s) on 4 approved and was released (1 of the last 1 request(s) ran past their hours, the rest failed before a machine was ready); the daemon asks again after 2026-09-06T10:03:00Z".into()
+            ))
+        );
+        let next = ask(&crate::util::plus_minutes(TEST_NOW, 4.0)).expect("asked after the pause");
+        assert_eq!(next.hours, AUTO_COMPUTE_HOURS, "{next:?}");
+    }
+
+    /// A rental released inside its hours (or on the tick they ran out) is no overrun: the next
+    /// machine is asked for at once, as before.
+    #[test]
+    fn a_rental_released_on_time_is_followed_at_once() {
+        let _serial = crate::test_helpers::serial();
+        let _lock = crate::test_helpers_provider::provider_test_lock();
+        let s = new_store();
+        let _h = renting_hub(&s);
+        released_rental(
+            &s,
+            "CR-001",
+            4,
+            "2026-09-06T05:50:00Z",
+            "2026-09-06T05:57:00Z",
+            "2026-09-06T09:58:00Z",
+        );
+        let req = auto_compute(
+            &s,
+            "1 job(s) waited 31 min with every slot on this machine busy or held",
+            HANDS_WANTED_MINUTES,
+            TEST_NOW,
+            "daemon",
+        )
+        .expect("asked at once");
+        assert_eq!(req.hours, AUTO_COMPUTE_HOURS, "{req:?}");
+    }
+
+    /// A release that began on the tick the hours ran out but whose provider delete took 15
+    /// minutes (the budget is 20) is no overrun: the grace is measured to when the release
+    /// began, not to the `released_at` stamped after the delete returned.
+    #[test]
+    fn a_slow_teardown_is_no_overrun() {
+        let _serial = crate::test_helpers::serial();
+        let _lock = crate::test_helpers_provider::provider_test_lock();
+        let s = new_store();
+        let _h = renting_hub(&s);
+        released_rental(
+            &s,
+            "CR-001",
+            4,
+            "2026-09-06T05:30:00Z",
+            "2026-09-06T05:40:00Z",
+            "2026-09-06T09:55:00Z",
+        );
+        crate::util::event_at(
+            &s.conn().unwrap(),
+            "2026-09-06T09:41:00Z",
+            "daemon",
+            crate::compute::RELEASE_BEGAN_ACTION,
+            "CR-001",
+            serde_json::Value::Null,
+        );
+        let req = auto_compute(
+            &s,
+            "1 job(s) waited 31 min with every slot on this machine busy or held",
+            HANDS_WANTED_MINUTES,
+            TEST_NOW,
+            "daemon",
+        )
+        .expect("asked at once");
+        assert_eq!(req.hours, AUTO_COMPUTE_HOURS, "{req:?}");
+    }
+
     #[test]
     fn a_denied_request_ends_neither_the_pause_nor_the_run_of_failures() {
         let _serial = crate::test_helpers::serial();
@@ -4876,8 +5077,8 @@ mod tests {
             "{out}"
         );
         assert_eq!(questions(), 1, "{out}");
-        // Pre-authorised now, but the last request failed and the worker's
-        // checks would fail the next: no new question, and the log says why.
+        // Pre-authorised now, but no machine-hours a day (0 means none, as
+        // the worker reads it too): no new question, and the log says why.
         for (k, v) in [("compute.auto_approve", "1"), ("compute.max_vms", "1")] {
             fixed.set_setting(hive_store::HUMAN_AGENT, k, v).unwrap();
         }
@@ -4889,9 +5090,8 @@ mod tests {
         assert_eq!(questions(), 1, "{out}");
         assert!(
             out.contains(&format!(
-                "hands wanted: the daemon rents none ({} failed before a machine was ready and the next request would fail too: cap: 0 machine-hour(s) today against compute.max_hours_per_day=0)",
-                failed.id
-            )),
+                "hands wanted: the daemon rents none (compute.max_hours_per_day 0 would be passed (0 h today, {AUTO_COMPUTE_HOURS} h asked))"
+            )) && !out.contains(&failed.id),
             "{out}"
         );
     }
@@ -5126,6 +5326,7 @@ mod tests {
         crate::capacity::pin_per_project(&s, 4);
         let _calm = crate::daemon_load::pin_pressure(crate::daemon_load::CALM);
         let add = |title: &str, source: &str| {
+            crate::test_helpers::task_for_source(&s, "proj", source);
             crate::jobs::add_job(
                 &s,
                 "proj".into(),
@@ -5338,6 +5539,7 @@ mod tests {
         }
 
         fn add(&self, title: &str, source: &str) -> String {
+            crate::test_helpers::task_for_source(&self.s, "proj", source);
             crate::jobs::add_job(
                 &self.s,
                 "proj".into(),
@@ -5954,6 +6156,7 @@ mod tests {
         )
         .unwrap();
         let add_from = |title: &str, source: &str| {
+            crate::test_helpers::task_for_source(&s, "proj", source);
             crate::jobs::add_job(
                 &s,
                 "proj".into(),
@@ -7048,6 +7251,180 @@ mod tests {
             1,
             "the fleet's task started inside a window it does not fit:\n{out}"
         );
+    }
+
+    /// Resets the restart bound's minute to sixty when the test ends,
+    /// passed or not.
+    struct MaxMinuteSecs;
+
+    impl Drop for MaxMinuteSecs {
+        fn drop(&mut self) {
+            crate::restart::TEST_MAX_MINUTE_SECS.store(60, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn a_restart_comes_within_its_bound_while_the_owner_s_work_keeps_arriving() {
+        let _serial = crate::test_helpers::serial();
+        // On 2026-11-26 a restart armed at 05:42Z had not come by 12:07Z:
+        // every owner's run started while it was pending anchored the window
+        // again and the owner's queue never emptied. Here the drain is half
+        // an hour, no fleet kind fits it, and the owner's tasks are queued
+        // every quarter second for as long as the daemon lives; the bound
+        // (daemon.restart_max_minutes, one minute made a second here) still
+        // ends the handover, starting nothing more, the owner's work included.
+        let bound = Duration::from_secs(8);
+        let _minute = MaxMinuteSecs;
+        crate::restart::TEST_MAX_MINUTE_SECS.store(1, std::sync::atomic::Ordering::SeqCst);
+        hive_bus::reset_default();
+        let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
+        let s = new_store();
+        new_bare_repo(&s);
+        join(&s, "aurora");
+        join(&s, "borealis");
+        crate::capacity::pin_per_project(&s, 3);
+        for (key, value) in [
+            ("jobs_per_day", "none"),
+            ("capacity", "3"),
+            ("daemon.restart_drain_minutes", "30"),
+            ("daemon.restart_max_minutes", &bound.as_secs().to_string()),
+        ] {
+            s.set_setting(hive_store::HUMAN_AGENT, key, value).unwrap();
+        }
+        let add = |s: &hive_store::Store, title: &str, source: &str| {
+            crate::test_helpers::task_for_source(s, "proj", source);
+            crate::jobs::add_job(
+                s,
+                "proj".into(),
+                "task".into(),
+                title.into(),
+                "fake worker only".into(),
+                0,
+                100,
+                source.into(),
+                hive_store::HUMAN_AGENT.into(),
+                false,
+            )
+            .unwrap();
+        };
+        add(&s, "Slow run", "test");
+        let old_stamp = *BINARY_STAMP.read().unwrap();
+        TEST_RESTART_CHANGED.store(false, std::sync::atomic::Ordering::SeqCst);
+        set_binary_stamp(test_restart_stamp);
+        let out = OutBuf::new();
+        let (leased_tx, leased_rx) = crossbeam_channel::bounded(1);
+        let writer: DaemonOut = std::sync::Arc::new(std::sync::Mutex::new(SignalWriter {
+            out: out.clone(),
+            waiting: leased_tx,
+            needle: "leased job-".into(),
+            sent: false,
+        }));
+        let opts = DaemonOpts {
+            interval: 300,
+            out: Some(writer),
+            worker_cmd: "sh -c 'sleep 2; echo SUMMARY: ok'".into(),
+            restart_on_change: true,
+            ..Default::default()
+        };
+        let s_daemon = s.clone();
+        let cancel = hive_bus::CancellationToken::new();
+        let cancel_daemon = cancel.clone();
+        let (done_tx, done_rx) = crossbeam_channel::bounded(1);
+        std::thread::spawn(move || {
+            let _ = done_tx.send(daemon(&cancel_daemon, &s_daemon, opts));
+        });
+        let stop_feeding = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            leased_rx
+                .recv_timeout(test_wait(Duration::from_secs(60)))
+                .expect("the slow run was never leased");
+            TEST_RESTART_CHANGED.store(true, std::sync::atomic::Ordering::SeqCst);
+            hive_bus::emit(
+                &s,
+                "human",
+                "post.question",
+                "wake-restart",
+                serde_json::json!({"project": "proj"}),
+            )
+            .unwrap();
+            let waited = std::time::Instant::now();
+            while !out.string().contains("hive changed on disk") {
+                assert!(
+                    waited.elapsed() < test_wait(Duration::from_secs(60)),
+                    "the daemon never noticed the binary change:\n{}",
+                    out.string()
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            let armed = std::time::Instant::now();
+            // The owner's work keeps arriving until the daemon has gone.
+            let feeder = {
+                let s = s.clone();
+                let stop = stop_feeding.clone();
+                std::thread::spawn(move || {
+                    let mut n = 0;
+                    while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                        n += 1;
+                        add(&s, &format!("Owner's task {n}"), &format!("task:TASK-{n}"));
+                        let _ = hive_bus::emit(
+                            &s,
+                            "human",
+                            "post.question",
+                            "wake-owner",
+                            serde_json::json!({"project": "proj"}),
+                        );
+                        std::thread::sleep(Duration::from_millis(250));
+                    }
+                    n
+                })
+            };
+            let result = done_rx.recv_timeout(test_wait(bound + Duration::from_secs(60)));
+            let took = armed.elapsed();
+            stop_feeding.store(true, std::sync::atomic::Ordering::SeqCst);
+            let fed = feeder.join().unwrap();
+            let result = result.unwrap_or_else(|_| {
+                panic!(
+                    "the daemon did not leave within the bound while the owner's work kept arriving:\n{}",
+                    out.string()
+                )
+            });
+            (result, took, fed)
+        }));
+        stop_feeding.store(true, std::sync::atomic::Ordering::SeqCst);
+        cancel.cancel();
+        set_binary_stamp(old_stamp);
+        TEST_RESTART_CHANGED.store(false, std::sync::atomic::Ordering::SeqCst);
+        let (result, took, fed) = match result {
+            Ok(v) => v,
+            Err(panic) => panic!("{}\n{}", panic_message(&panic), out.string()),
+        };
+        let out = out.string();
+        assert_eq!(result, "restart", "{out}");
+        // The bound, then the owner's runs it let start (two seconds each)
+        // finishing; never the hours of a queue that does not empty.
+        assert!(
+            took < bound + test_wait(Duration::from_secs(20)),
+            "left {took:?} after the restart was armed:\n{out}"
+        );
+        let said = out
+            .find("(daemon.restart_max_minutes): nothing new starts, the owner's work included")
+            .unwrap_or_else(|| panic!("the bound never ended the handover:\n{out}"));
+        assert!(
+            !out[said..].contains("leased job-"),
+            "a run started after the bound was up:\n{out}"
+        );
+        // The owner's work did start inside the bound - it is the starting
+        // that kept the handover open - and more of it was queued than ran.
+        let owner_ran = count(
+            &s,
+            "SELECT COUNT(*) AS n FROM runs r JOIN jobs j ON j.id = r.job_id WHERE j.source LIKE 'task:TASK-%'",
+            &[],
+        );
+        assert!(
+            owner_ran >= 1,
+            "no owner's run started in the window:\n{out}"
+        );
+        assert!(fed > owner_ran, "fed {fed}, ran {owner_ran}:\n{out}");
     }
 
     impl Write for SignalWriter {
@@ -8598,7 +8975,11 @@ mod tests {
         assert!(requests().is_empty(), "{out}");
         // Pre-authorised within the caps: the machine is rented on the spot,
         // slots free or not, for the job that waited; the owner is not asked.
-        for (k, v) in [("compute.auto_approve", "1"), ("compute.max_vms", "1")] {
+        for (k, v) in [
+            ("compute.auto_approve", "1"),
+            ("compute.max_vms", "1"),
+            ("compute.max_hours_per_day", "24"),
+        ] {
             s.set_setting(hive_store::HUMAN_AGENT, k, v).unwrap();
         }
         let out = once_daemon(&s, opts());

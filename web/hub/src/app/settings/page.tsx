@@ -96,7 +96,7 @@ const COMPUTE_CLUSTERS: Cluster[] = [
   { title: "When a machine refuses to log in", keys: ["compute.self_heal", "compute.self_retire", "compute.retire_grace_hours"] },
 ];
 const DAEMON_CLUSTERS: Cluster[] = [
-  { title: "Updates", keys: ["daemon.self_update", "daemon.self_update_retry_minutes", "daemon.self_update_settle_minutes", "daemon.restart_drain_minutes", "update.latest_url"] },
+  { title: "Updates", keys: ["daemon.self_update", "daemon.self_update_retry_minutes", "daemon.self_update_settle_minutes", "daemon.restart_drain_minutes", "daemon.restart_max_minutes", "update.latest_url"] },
   { title: "Project code", keys: ["brain.code"] },
   { title: "Staying awake", keys: ["daemon.keep_awake"] },
   { title: "Reaching the console from anywhere", keys: ["hub.allow_remote", "hub.hosts"] },

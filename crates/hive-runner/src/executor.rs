@@ -559,7 +559,8 @@ pub(crate) const FETCH_OK_EVENT: &str = "executor.fetch-ok";
 
 /// Whether the brain has seen a fetch from `name` fail and nothing since
 /// says it is fixed: a later fetch from it that worked
-/// ([`FETCH_OK_EVENT`]), the owner activating it, or a re-pairing that
+/// ([`FETCH_OK_EVENT`]), the daemon lifting the mark once nothing is kept
+/// there ([`FETCH_RETRY_EVENT`]), the owner activating it, or a re-pairing that
 /// refreshed its hand. Such a machine takes no run that changes code - its
 /// commits could not come back (TASK-133; 34 runs on rented machines failed
 /// that way between 2026-11-01 and 2026-11-26).
@@ -572,10 +573,38 @@ pub(crate) fn fetch_broken(s: &hive_store::Store, name: &str) -> bool {
     };
     let last = must_one(
         &conn,
-        "SELECT action FROM events WHERE subject = ? AND action IN (?, ?, 'executor.active', 'executor.update') ORDER BY seq DESC LIMIT 1",
-        &[&name, &FETCH_FAILED_EVENT, &FETCH_OK_EVENT],
+        "SELECT action FROM events WHERE subject = ? AND action IN (?, ?, ?, 'executor.active', 'executor.update') ORDER BY seq DESC LIMIT 1",
+        &[
+            &name,
+            &FETCH_FAILED_EVENT,
+            &FETCH_OK_EVENT,
+            &FETCH_RETRY_EVENT,
+        ],
     );
     last.str("action") == FETCH_FAILED_EVENT
+}
+
+/// Whether the fetch mark on `name` came after the daemon already lifted one
+/// ([`FETCH_RETRY_EVENT`]) with no fetch working, no activation and no
+/// re-pairing in between: the run the lift let in failed to fetch the same
+/// way, so the fault is the machine's and lifting again would only strand
+/// one more run there (TASK-138, review of PR 283 item 1). Such a mark stays
+/// until a fetch from the machine works or the owner activates it.
+pub(crate) fn mark_follows_retry(s: &hive_store::Store, name: &str) -> bool {
+    if !fetch_broken(s, name) {
+        return false;
+    }
+    let Ok(conn) = s.conn() else {
+        return false;
+    };
+    // fetch_broken: the last of these events is a fetch-failed; the last
+    // event that ended an earlier mark says how that one ended.
+    let last = must_one(
+        &conn,
+        "SELECT action FROM events WHERE subject = ? AND action IN (?, ?, 'executor.active', 'executor.update') ORDER BY seq DESC LIMIT 1",
+        &[&name, &FETCH_OK_EVENT, &FETCH_RETRY_EVENT],
+    );
+    last.str("action") == FETCH_RETRY_EVENT
 }
 
 /// Writes down that a fetch from `name` worked, when it was marked broken.
@@ -595,22 +624,138 @@ pub(crate) fn note_fetch_ok(s: &hive_store::Store, name: &str, now: &str, job: &
     }
 }
 
-/// The jobs whose clones are kept on `name` because their commits could not
-/// be fetched, and whose job has not landed since: the probe's sweep and
-/// its stale-key check leave them be.
-pub(crate) fn kept_clones(s: &hive_store::Store, name: &str) -> BTreeSet<String> {
+/// The event that says a kept clone is gone from the machine (subject: the
+/// executor; detail: `job`, `why` - `fetched` when its commits came back to
+/// the brain, `closed` when its job was done or cancelled): the clone no
+/// longer holds work only the machine has (TASK-138).
+pub(crate) const KEPT_GONE_EVENT: &str = "executor.kept-gone";
+/// The event the daemon writes each time it tries to fetch the kept clones
+/// of a machine marked by [`FETCH_FAILED_EVENT`] (subject: the executor;
+/// detail: `ok`, `note`): the fetch probe that gives a flagged machine its
+/// way back without a hand (TASK-138 item 2).
+pub(crate) const FETCH_PROBE_EVENT: &str = "executor.fetch-probe";
+/// The event that lifts a fetch mark when the machine holds no kept clone
+/// any more (each was fetched, or removed with its closed job): there is
+/// nothing left to fetch as a probe, so the next run that changes code there
+/// is the test - if its fetch fails, its clone is kept and the machine marked
+/// again (TASK-138 item 2).
+pub(crate) const FETCH_RETRY_EVENT: &str = "executor.fetch-retry";
+/// How often the daemon tries the kept clones of one machine again.
+pub(crate) const KEPT_FETCH_MINUTES: i64 = 15;
+
+/// A clone kept on a machine because its run's commits could not be fetched.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct KeptClone {
+    pub(crate) job: String,
+    pub(crate) run: String,
+    /// When the fetch failed.
+    pub(crate) at: String,
+    /// The job's status now (empty when the job is gone from the store).
+    pub(crate) job_status: String,
+}
+
+/// Every clone on `name` whose commits could not be fetched and that is not
+/// gone from the machine yet ([`KEPT_GONE_EVENT`]), oldest first, one per
+/// job, whatever its job's status.
+pub(crate) fn kept_left(s: &hive_store::Store, name: &str) -> Vec<KeptClone> {
     let Ok(conn) = s.conn() else {
-        return BTreeSet::new();
+        return Vec::new();
     };
     must_rows(
         &conn,
-        "SELECT DISTINCT json_extract(e.detail, '$.job') AS job FROM events e WHERE e.action = ? AND e.subject = ? AND json_valid(e.detail) AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id = json_extract(e.detail, '$.job') AND j.status = 'done')",
-        &[&FETCH_FAILED_EVENT, &name],
+        "SELECT k.job, k.at, \
+                (SELECT json_extract(f.detail, '$.run') FROM events f WHERE f.seq = k.seq) AS run, \
+                COALESCE((SELECT j.status FROM jobs j WHERE j.id = k.job), '') AS job_status \
+         FROM (SELECT json_extract(e.detail, '$.job') AS job, MAX(e.seq) AS seq, MAX(e.at) AS at \
+               FROM events e WHERE e.action = ? AND e.subject = ? AND json_valid(e.detail) \
+               GROUP BY json_extract(e.detail, '$.job')) k \
+         WHERE k.job IS NOT NULL AND k.job != '' \
+           AND NOT EXISTS (SELECT 1 FROM events g WHERE g.action = ? AND g.subject = ? AND json_valid(g.detail) \
+                             AND json_extract(g.detail, '$.job') = k.job AND g.seq > k.seq) \
+         ORDER BY k.at, k.job",
+        &[&FETCH_FAILED_EVENT, &name, &KEPT_GONE_EVENT, &name],
     )
     .iter()
-    .map(|r| r.str("job"))
-    .filter(|j| !j.is_empty())
+    .map(|r| KeptClone {
+        job: r.str("job"),
+        run: r.str("run"),
+        at: r.str("at"),
+        job_status: r.str("job_status"),
+    })
     .collect()
+}
+
+/// The clones kept on `name` that hold work only the machine has: those of
+/// [`kept_left`] whose job has not landed since.
+pub(crate) fn kept_work(s: &hive_store::Store, name: &str) -> Vec<KeptClone> {
+    kept_left(s, name)
+        .into_iter()
+        .filter(|k| k.job_status != "done")
+        .collect()
+}
+
+/// The jobs whose clones are kept on `name` ([`kept_work`]): the probe's
+/// sweep and its stale-key check leave them be.
+pub(crate) fn kept_clones(s: &hive_store::Store, name: &str) -> BTreeSet<String> {
+    kept_work(s, name).into_iter().map(|k| k.job).collect()
+}
+
+/// When the daemon tried the kept clones of `name` last, and what it found
+/// (empty when it never did).
+pub(crate) fn last_fetch_probe(s: &hive_store::Store, name: &str) -> (String, String) {
+    let Ok(conn) = s.conn() else {
+        return (String::new(), String::new());
+    };
+    let r = must_one(
+        &conn,
+        "SELECT at, json_extract(detail, '$.note') AS note FROM events WHERE action = ? AND subject = ? AND json_valid(detail) ORDER BY seq DESC LIMIT 1",
+        &[&FETCH_PROBE_EVENT, &name],
+    );
+    (r.str("at"), r.str("note"))
+}
+
+/// The line `hive executor list` shows for a machine whose fetch failed:
+/// why it takes no code-changing run, what it still holds and when the
+/// daemon tries again (TASK-138 item 2: the list showed nothing and the idle
+/// reason read "no queued job"). Empty when the machine is not marked.
+pub(crate) fn fetch_broken_line(s: &hive_store::Store, name: &str) -> String {
+    if !fetch_broken(s, name) {
+        return String::new();
+    }
+    let Ok(conn) = s.conn() else {
+        return String::new();
+    };
+    let last = must_one(
+        &conn,
+        "SELECT at, json_extract(detail, '$.job') AS job FROM events WHERE action = ? AND subject = ? AND json_valid(detail) ORDER BY seq DESC LIMIT 1",
+        &[&FETCH_FAILED_EVENT, &name],
+    );
+    let kept = kept_work(s, name);
+    let mut line = format!(
+        "fetch FAILED at {} (job {}): it takes no run that changes code until a fetch from it works or `hive executor activate {name}`",
+        last.str("at"),
+        last.str("job")
+    );
+    if !kept.is_empty() {
+        line.push_str(&format!(
+            "; {} kept clone(s) hold commits only it has ({})",
+            kept.len(),
+            kept.iter()
+                .map(|k| k.job.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+        let (at, note) = last_fetch_probe(s, name);
+        if at.is_empty() {
+            line.push_str("; the daemon tries to fetch them on its next pass");
+        } else {
+            line.push_str(&format!(
+                "; last fetch try {at}: {note}; next after {}",
+                plus_minutes(&at, KEPT_FETCH_MINUTES as f64)
+            ));
+        }
+    }
+    line
 }
 
 #[allow(dead_code)]

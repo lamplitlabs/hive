@@ -1016,6 +1016,10 @@ export interface DaemonRestart {
     job: string;
     started_at: string;
   }[];
+  // When the handover's bound (daemon.restart_max_minutes) is up: from then
+  // nothing new starts, the owner's work included. Omitted without a bound
+  // and by older daemons.
+  until?: string;
 }
 
 // The keep-awake hold (daemon.keep_awake): whether the daemon holds this
@@ -2943,6 +2947,78 @@ export interface TaskActivity {
 
 export interface TasksPayload {
   tasks: Task[];
+}
+
+// Where work stands in the lifecycle of docs/sdlc.md (TASK-141). The phase
+// is derived from what the store holds (crates/hive-tasks/src/lifecycle.rs);
+// lib/lifecycle.ts turns it into lines.
+export type LifecyclePhase =
+  | "intake"
+  | "shape"
+  | "build"
+  | "verify"
+  | "review"
+  | "deliver"
+  | "done"
+  | "cancelled";
+export type LifecycleWaitsOn =
+  | "nobody"
+  | "owner"
+  | "lead"
+  | "agent"
+  | "reviewer"
+  | "runner"
+  | "github";
+export type LifecycleStepState = "passed" | "current" | "ahead" | "skipped";
+
+// One thing a phase left behind, every id a link: the task, where it came
+// from, the lead's sitting, a job, a branch, the pull request, the verdict,
+// the merge.
+export interface LifecycleMark {
+  kind: "task" | "origin" | "lead" | "job" | "branch" | "pr" | "verdict" | "merge" | string;
+  id: string;
+  note?: string;
+  at?: string;
+  url?: string;
+  session?: string; // a job's newest harness session, added by the hub
+}
+
+export interface LifecycleStep {
+  phase: LifecyclePhase;
+  state: LifecycleStepState;
+  at?: string;
+  left: LifecycleMark[];
+  gate: string;
+}
+
+export interface LifecyclePhaseInfo {
+  phase: LifecyclePhase;
+  label: string; // the heading docs/sdlc.md gives it
+  gate: string;
+}
+
+// GET /tasks/{id}/lifecycle
+export interface TaskLifecycle {
+  task: string;
+  phase: LifecyclePhase;
+  waits_on: LifecycleWaitsOn;
+  note: string;
+  rework: boolean;
+  steps: LifecycleStep[];
+  phases?: LifecyclePhaseInfo[];
+}
+
+// GET /tasks/lifecycle?project=P
+export interface ProjectLifecycle {
+  project: string;
+  phases: (LifecyclePhaseInfo & { tasks: string[] })[];
+  tasks: {
+    task: string;
+    phase: LifecyclePhase;
+    waits_on: LifecycleWaitsOn;
+    note: string;
+    rework: boolean;
+  }[];
 }
 
 export interface CodeDeliveryScope {

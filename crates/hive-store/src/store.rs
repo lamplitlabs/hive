@@ -29,6 +29,10 @@ pub const SCHEMA_VERSION: i64 = 3;
 pub const STORE_NAME: &str = "hive.sqlite";
 pub const HUMAN_AGENT: &str = "human";
 pub const EVOLUTION_STOP_SUMMARY: &str = "Evolution stopped; owner review needed";
+/// The start of the planner's question about one thread whose worker jobs
+/// keep changing no code. It is about its own thread: two stuck threads are
+/// two questions, never one handed back to both.
+pub const STUCK_THREAD_SUMMARY: &str = "Stuck thread:";
 /// The flat-fixture gate's pause question (hive-evolve flat_gate): the
 /// owner's, like the stop.
 pub const EVOLUTION_FLAT_SUMMARY: &str =

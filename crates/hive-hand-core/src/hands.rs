@@ -723,7 +723,7 @@ impl Hands {
             }
             None => None,
         };
-        let _key_file = if key.is_empty() {
+        let key_file = if key.is_empty() {
             None
         } else {
             let head_text = String::from_utf8_lossy(&key[..key.len().min(64)]).to_string();
@@ -760,19 +760,42 @@ impl Hands {
             Some(guard)
         };
         let lease = format!("--force-with-lease=refs/heads/{head}:");
-        let r = crate::util::git_timeout_env(
-            &clone,
-            Duration::from_secs(300),
-            &env,
-            &[
-                "push",
-                "-q",
-                &lease,
-                url,
-                &format!("{sha}:refs/heads/{head}"),
-            ],
-        );
+        let refspec = format!("{sha}:refs/heads/{head}");
+        let push_to = |to: &str| {
+            crate::util::git_timeout_env(
+                &clone,
+                Duration::from_secs(300),
+                &env,
+                &["push", "-q", &lease, to, &refspec],
+            )
+        };
+        let mut r = push_to(url);
+        // Git offers the leased key over ssh only: on GitHub's https url the
+        // push fails for want of a credential however good the key is. The
+        // daemon's own push follows the same rule (hive_gitenv::forge): when
+        // that is all git says, the push is made once more over the url's
+        // ssh form, with the key.
+        let mut https_said = String::new();
+        if !r.ok()
+            && key_file.is_some()
+            && let Some(ssh) = hive_gitenv::forge::ssh_retry_url(&clone, &env, url, &r.stderr)
+        {
+            https_said = r.stderr.trim().to_string();
+            r = push_to(&ssh);
+            if r.ok() {
+                writeln!(
+                    self.stdout,
+                    "pushed over ssh ({ssh}): https asked for a credential the key cannot give"
+                )?;
+            }
+        }
         if !r.ok() {
+            if !https_said.is_empty() {
+                writeln!(
+                    self.stderr,
+                    "failed over https ({https_said}), then over ssh with the leased key:"
+                )?;
+            }
             write!(
                 self.stderr,
                 "{}{}",
@@ -1637,6 +1660,127 @@ mod tests {
         .unwrap();
         let url = format!("file://{}", origin.display());
         assert!(h.push(job, &url, again.trim(), "hive/a/job").is_err());
+    }
+
+    /// A paired machine's push follows the daemon's rule for an https
+    /// upstream: git offers the leased key over ssh only, so when GitHub's
+    /// https url asks for a credential and that is all git says, the push
+    /// is made once more over the url's ssh form with the key. Without a
+    /// key, or on a url git is told to send elsewhere, nothing goes over
+    /// ssh.
+    #[test]
+    fn hands_push_reaches_an_https_github_url_over_ssh_with_the_leased_key() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        if !hive_testutil::githttp::available() {
+            return;
+        }
+        let job = "job-20261126T000000Z-push03";
+        let workdir = tempfile::tempdir().unwrap();
+        let clone = workdir.path().join(job).join("clone");
+        std::fs::create_dir_all(&clone).unwrap();
+        let run = |args: &[&str]| crate::test_helpers::run(&clone, args);
+        run(&["git", "init", "-q", "-b", "main"]);
+        run(&["git", "config", "user.name", "t"]);
+        run(&["git", "config", "user.email", "t@x"]);
+        run(&["git", "commit", "-q", "--allow-empty", "-m", "work"]);
+        let sha = crate::util::git(&clone.display().to_string(), &["rev-parse", "HEAD"])
+            .stdout
+            .trim()
+            .to_string();
+        // GitHub as seen from here: an https server that opens to nobody,
+        // and the same repository over ssh (a stand-in that records the
+        // key and runs git's command where the repository is served).
+        let served_root = workdir.path().join("served");
+        let served = served_root.join("owner").join("repo.git");
+        std::fs::create_dir_all(served.parent().unwrap()).unwrap();
+        crate::test_helpers::run(
+            workdir.path(),
+            &["git", "init", "-q", "--bare", served.to_str().unwrap()],
+        );
+        let srv = hive_testutil::githttp::Server::new(&served_root, "Basic nothing-has-this");
+        let seen = workdir.path().join("seen");
+        let fake = workdir.path().join("fake-ssh");
+        std::fs::write(
+            &fake,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nfor a in \"$@\"; do last=\"$a\"; done\ncd '{}' && exec sh -c \"$last\"\n",
+                seen.display(),
+                served_root.display()
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let _ssh = hive_testutil::setenv("HIVE_HANDS_SSH", &fake);
+        let _web = hive_testutil::setenv("HIVE_FORGE_WEB", srv.url());
+        let url = format!("{}/owner/repo.git", srv.url());
+        let key =
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nleased\n-----END OPENSSH PRIVATE KEY-----\n";
+        let wd = workdir.path().display().to_string();
+        let pushed = |branch: &str| {
+            crate::util::git(
+                &served.display().to_string(),
+                &[
+                    "rev-parse",
+                    "-q",
+                    "--verify",
+                    &format!("refs/heads/{branch}"),
+                ],
+            )
+            .stdout
+            .trim()
+            .to_string()
+        };
+
+        // Without a key there is nothing to take over ssh.
+        let mut h = make_hands(&wd, "");
+        assert!(h.push(job, &url, &sha, "hive/a/none").is_err());
+        assert!(!seen.exists(), "ssh was tried without a key");
+        assert_eq!(pushed("hive/a/none"), "");
+
+        // A url the clone's config sends elsewhere is left where it failed.
+        run(&[
+            "git",
+            "config",
+            &format!("url.{url}.insteadOf"),
+            "https://elsewhere.invalid/r.git",
+        ]);
+        let mut h = make_hands(&wd, key);
+        assert!(
+            h.push(job, "https://elsewhere.invalid/r.git", &sha, "hive/a/other")
+                .is_err()
+        );
+        assert!(!seen.exists(), "ssh was tried for a rewritten url");
+        run(&["git", "config", "--remove-section", &format!("url.{url}")]);
+
+        let mut h = make_hands(&wd, key);
+        h.push(job, &url, &sha, "hive/a/job").unwrap();
+        assert_eq!(pushed("hive/a/job"), sha);
+        let args = std::fs::read_to_string(&seen).unwrap();
+        assert!(
+            args.contains("-i\n") && args.contains("git@127.0.0.1\n"),
+            "{args}"
+        );
+        assert!(
+            srv.seen().iter().all(String::is_empty),
+            "no credential went over https: {:?}",
+            srv.seen()
+        );
+        let left: Vec<_> = std::fs::read_dir(workdir.path().join(job))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(left, vec!["clone".to_string()], "the key outlived the push");
+        let remotes = crate::util::git(&clone.display().to_string(), &["remote"]);
+        assert_eq!(
+            remotes.stdout.trim(),
+            "",
+            "nothing was written to the clone"
+        );
     }
 
     /// ADR-070 step 3: a lease that carries a GitHub App installation

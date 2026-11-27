@@ -163,13 +163,18 @@ pub(crate) fn redact_secrets(text: &str) -> String {
         })
         .to_string()
 }
+/// Records a request's machine. `now` stamps `created_at` only the first time: the row is saved
+/// again when the machine is ready and when the sweep releases it as a leftover, and its hours
+/// (the day's cap, `hive_tasks::compute::hours_today`; when its hours are up, `hours_up`) count
+/// from when the provider made it. Moving the stamp to the ready step dropped the spin-up, and
+/// moving it to the sweep made a leftover's run zero hours.
 pub(crate) fn save_machine(s: &hive_store::Store, request_id: &str, m: &Machine, now: &str) {
     let detail =
         hive_store::gojson::to_string(&json!({"tags": m.tags, "detail": m.detail})).unwrap();
     let conn = s.conn().unwrap();
     crate::util::exec1(
         &conn,
-        "INSERT INTO compute_machines (request_id, provider, name, executor, address, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(request_id) DO UPDATE SET provider = excluded.provider, name = excluded.name, executor = excluded.executor, address = excluded.address, detail = excluded.detail, created_at = excluded.created_at, released_at = '', attempts = 0, note = ''",
+        "INSERT INTO compute_machines (request_id, provider, name, executor, address, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(request_id) DO UPDATE SET provider = excluded.provider, name = excluded.name, executor = excluded.executor, address = excluded.address, detail = excluded.detail, created_at = CASE WHEN compute_machines.created_at = '' THEN excluded.created_at ELSE compute_machines.created_at END, released_at = '', attempts = 0, note = ''",
         &[
             &request_id,
             &m.provider,
@@ -614,10 +619,36 @@ impl ComputeWorker {
         if ready_at.is_empty() {
             return String::new();
         }
+        let kept = if executor.is_empty() {
+            Vec::new()
+        } else {
+            crate::executor::kept_work(&self.s, &executor)
+        };
         if hours_up(&req, &ready_at, now) {
+            // The approved hours bound what the machine costs; what it
+            // still holds goes with it, and the reason says so.
+            if !kept.is_empty() {
+                return format!(
+                    "its {} hour(s) are up; the clone(s) of {} kept on it go with it (their commits were never fetched)",
+                    req.hours,
+                    kept_jobs(&kept)
+                );
+            }
             return format!("its {} hour(s) are up", req.hours);
         }
-        let mut last = ready_at;
+        // A clone whose commits could not be fetched is the only copy of its
+        // run's work: an idle machine holding one stays until the daemon's
+        // fetch probe brings the commits back or its hours are up (TASK-138).
+        if !kept.is_empty() {
+            return String::new();
+        }
+        // Idle is counted from when the machine came up ready (the request's last change), not
+        // from when it was made: a spin-up longer than the idle minutes is not idleness.
+        let mut last = if req.updated_at > ready_at {
+            req.updated_at.clone()
+        } else {
+            ready_at
+        };
         if !executor.is_empty() {
             let conn = self.s.conn().unwrap();
             let r = crate::util::must_one(
@@ -637,10 +668,28 @@ impl ComputeWorker {
         String::new()
     }
     /// A rental past its hours that a run in flight keeps up: said once, in the daemon log and
-    /// on the request's card, since the machine stays and takes nothing from the queue.
+    /// on the request's card, since the machine stays and takes nothing from the queue. A
+    /// rental kept up inside its hours by clones whose commits were not fetched says that.
     fn say_past_hours(&self, req: &hive_tasks::ComputeRequest, now: &str) {
         let (executor, ready_at) = rented(&self.s, req);
         if !hours_up(req, &ready_at, now) {
+            let kept = if executor.is_empty() {
+                Vec::new()
+            } else {
+                crate::executor::kept_work(&self.s, &executor)
+            };
+            if kept.is_empty() {
+                return;
+            }
+            let note = format!(
+                "{executor} holds the clone(s) of {} whose commits could not be fetched: it is not released while idle, and the daemon tries the fetch again every {} minutes",
+                kept_jobs(&kept),
+                crate::executor::KEPT_FETCH_MINUTES
+            );
+            if req.note != note {
+                let _ = hive_tasks::note_compute(&self.s, &req.id, &note);
+                self.say_line(format!("compute {}: {note}", req.id));
+            }
             return;
         }
         let note = format!(
@@ -915,7 +964,8 @@ impl ComputeWorker {
     }
     fn release_orphan(&self, p: Arc<dyn Provider>, req: hive_tasks::ComputeRequest, m: Machine) {
         let now = self.s.now();
-        // remembered first, so a failed release is retried as a leftover and counted
+        // remembered first, so a failed release is retried as a leftover and counted; a row
+        // already there keeps the time its machine was made, so the hours it ran still count
         save_machine(&self.s, &req.id, &m, &now);
         let rctx = hive_bus::CancellationToken::new().with_timeout(COMPUTE_RELEASE_BUDGET);
         match p.release(&rctx, &m) {
@@ -1001,8 +1051,8 @@ impl Leftover {
         }
     }
 }
-/// The executor a ready request's machine runs as and when it became ready: the machine row's
-/// word, else the request's own.
+/// The executor a ready request's machine runs as and when it was made (its hours count from
+/// then): the machine row's word, else the request's own.
 fn rented(s: &hive_store::Store, req: &hive_tasks::ComputeRequest) -> (String, String) {
     let (m, mrow) = load_machine(s, &req.id);
     let mut ready_at = req.updated_at.clone();
@@ -1017,7 +1067,81 @@ fn rented(s: &hive_store::Store, req: &hive_tasks::ComputeRequest) -> (String, S
     }
     (executor, ready_at)
 }
-/// Whether the hours a ready request asked for are over, counted from when its machine was ready.
+/// The task a job was planned for: `TASK-7` from a `task:TASK-7` or
+/// `task:TASK-7:label` source; empty for any other job.
+pub(crate) fn task_of_source(source: &str) -> &str {
+    source
+        .strip_prefix("task:")
+        .and_then(|rest| rest.split(':').next())
+        .unwrap_or("")
+}
+
+/// Says on the task of each job in `kept` that its work went with the
+/// released machine `executor`: the commits were never fetched, so the
+/// branch and patch they would have been kept as do not exist and the work
+/// has to be done again. Before, the loss was named only on the compute card
+/// and in a finding, which whoever reads the task never saw (review of PR 283
+/// item 4). A cancelled job's work is wanted by nobody and is not said.
+/// Returns the daemon's lines.
+pub(crate) fn say_lost_work(
+    s: &hive_store::Store,
+    actor: &str,
+    executor: &str,
+    kept: &[crate::executor::KeptClone],
+    why: &str,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    let Ok(conn) = s.conn() else {
+        return lines;
+    };
+    for k in kept {
+        if k.job_status == "cancelled" {
+            continue;
+        }
+        let job = crate::util::must_one(
+            &conn,
+            "SELECT j.project, j.source, j.title, COALESCE(r.agent, j.lease_agent, '') AS agent FROM jobs j LEFT JOIN runs r ON r.id = ? WHERE j.id = ?",
+            &[&k.run, &k.job],
+        );
+        let source = job.str("source");
+        let task = task_of_source(&source);
+        if task.is_empty() {
+            continue;
+        }
+        let branch = crate::land::failed_work_branch(&job.str("agent"), &k.job);
+        let patch = std::path::Path::new(&s.home)
+            .join("patches")
+            .join(job.str("project"))
+            .join(format!("{}.patch", branch.replace('/', "__")));
+        let body = format!(
+            "The work of job {job_id} ({title}) is lost. Its run {run} committed on the rented machine {executor}, but neither the fetch nor the bundle brought the commits back, so its clone was kept there (since {at}). {executor} is released ({why}) and the clone went with it, so the branch {branch} and the patch {patch} were never made. Nothing of that run's work can be fetched any more; it has to be done again.",
+            job_id = k.job,
+            title = job.str("title"),
+            run = k.run,
+            at = k.at,
+            patch = patch.display(),
+        );
+        match hive_tasks::send_message(s, &job.str("project"), task, actor, &body) {
+            Ok(_) => lines.push(format!("the loss of {}'s work is said on {task}", k.job)),
+            Err(e) => lines.push(format!(
+                "the loss of {}'s work is not said on {task}: {}",
+                k.job,
+                crate::run::err_message(&e)
+            )),
+        }
+    }
+    lines
+}
+
+/// The jobs of kept clones, for a line: `job-a, job-b`.
+fn kept_jobs(kept: &[crate::executor::KeptClone]) -> String {
+    kept.iter()
+        .map(|k| k.job.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+/// Whether the hours a ready request asked for are over, counted from when its machine was made
+/// (`save_machine` keeps that stamp), as the day's cap counts them.
 fn hours_up(req: &hive_tasks::ComputeRequest, ready_at: &str, now: &str) -> bool {
     !ready_at.is_empty()
         && req.hours > 0
@@ -1069,8 +1193,8 @@ pub(crate) fn compute_finding(
 }
 pub(crate) fn caps_allow(
     caps: hive_tasks::Caps,
-    req: hive_tasks::ComputeRequest,
-    now: &str,
+    _req: hive_tasks::ComputeRequest,
+    _now: &str,
 ) -> String {
     if caps.max_vms <= 0 || caps.vms_now > caps.max_vms {
         return format!(
@@ -1078,10 +1202,9 @@ pub(crate) fn caps_allow(
             caps.vms_now, caps.max_vms
         );
     }
-    let mut used = caps.hours_today;
-    if req.at.len() >= 10 && now.len() >= 10 && req.at[..10] != now[..10] {
-        used += req.hours;
-    }
+    // `hours_today` already holds every open request's unrun hours, whatever day it was made
+    // (`hive_tasks::compute::hours_today`), this one's included.
+    let used = caps.hours_today;
     if caps.max_hours_per_day <= 0 || used > caps.max_hours_per_day {
         return format!(
             "cap: {} machine-hour(s) today against compute.max_hours_per_day={}",
@@ -1207,6 +1330,36 @@ pub(crate) fn forget_machine_ssh(hub_home: &str, m: &Machine) -> Vec<String> {
     }
     lines
 }
+/// The event that says when the release of a request's machine began, written once per request
+/// (before its first attempt). `released_at` is stamped after the provider's delete returns, up
+/// to `COMPUTE_RELEASE_BUDGET` later; whether a machine ran past its hours is measured to this
+/// (`daemon::ran_past_hours`), so a slow teardown is not an overrun.
+pub(crate) const RELEASE_BEGAN_ACTION: &str = "compute.releasing";
+fn release_began(
+    s: &hive_store::Store,
+    actor: &str,
+    req: &hive_tasks::ComputeRequest,
+    m: &Machine,
+) {
+    let conn = s.conn().unwrap();
+    let seen = crate::util::must_one(
+        &conn,
+        "SELECT COUNT(*) AS n FROM events WHERE action = ? AND subject = ?",
+        &[&RELEASE_BEGAN_ACTION, &req.id],
+    )
+    .int("n");
+    if seen > 0 {
+        return;
+    }
+    crate::util::event_at(
+        &conn,
+        &s.now(),
+        actor,
+        RELEASE_BEGAN_ACTION,
+        &req.id,
+        json!({"project": req.project, "provider": m.provider, "name": m.name}),
+    );
+}
 pub(crate) fn release_compute(
     s: &hive_store::Store,
     actor: &str,
@@ -1224,6 +1377,7 @@ pub(crate) fn release_compute(
     if !m.name.is_empty()
         && let Some(p) = provider_named(&m.provider)
     {
+        release_began(s, actor, &req, &m);
         let rctx = hive_bus::CancellationToken::new().with_timeout(COMPUTE_RELEASE_BUDGET);
         if let Err(e) = p.release(&rctx, &m) {
             let msg = crate::run::err_message(&e);
@@ -1256,6 +1410,13 @@ pub(crate) fn release_compute(
             return false;
         }
     }
+    // What the machine still holds goes with it: read before its executor
+    // is removed, said on the jobs' tasks once the release is written down.
+    let kept = if m.executor.is_empty() {
+        Vec::new()
+    } else {
+        crate::executor::kept_work(s, &m.executor)
+    };
     if !m.executor.is_empty()
         && !crate::executor::executor_row(s, &m.executor).0.is_empty()
         && let Err(e) = hive_board::remove_executor(s, &m.executor, actor, false)
@@ -1281,6 +1442,9 @@ pub(crate) fn release_compute(
         return false;
     }
     let _ = hive_tasks::note_compute(s, &req.id, why);
+    for line in say_lost_work(s, actor, &m.executor, &kept, why) {
+        say(&format!("compute {}: {line}", req.id));
+    }
     if let Err(e) = compute_finding(
         s,
         actor,

@@ -250,6 +250,7 @@ pub(crate) fn add_job_conn(
             "The runner takes Tier 0 and Tier 1 jobs only; Tier 2 needs an ADR and the human",
         ));
     }
+    check_task_source_of_project(conn, &input.project, &input.source)?;
     if !input.no_dedupe && !input.source.is_empty() {
         let id: Option<String> = conn
             .query_row("SELECT id FROM jobs WHERE source = ? AND status IN ('queued', 'leased', 'blocked')", [&input.source], |r| r.get(0))
@@ -284,6 +285,94 @@ pub(crate) fn add_job_conn(
         )?,
     )?;
     Ok((job_by_id_conn(conn, &id)?.expect("inserted job"), true))
+}
+
+/// The task a job's `task:` source names, with its project and status;
+/// `None` for a source that is not a task source or names no stored task.
+pub fn source_task_conn(
+    conn: &Connection,
+    source: &str,
+) -> Result<Option<(String, String, String)>> {
+    let Some(id) = hive_store::task_source_id(source) else {
+        return Ok(None);
+    };
+    Ok(conn
+        .query_row(
+            "SELECT id, project, status FROM tasks WHERE id = ?",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?)
+}
+
+/// Whether a task status is final: a done or cancelled task takes no more
+/// work, and delivery never opens a pull request for it.
+pub fn task_closed(status: &str) -> bool {
+    status == "done" || status == "cancelled"
+}
+
+/// A `task:` source must name an open task of the job's project (TASK-140).
+/// A task job is delivered only inside its task's pull request, so a job
+/// whose source names no task (`task:126:followups`) or a finished one is
+/// never delivered: it ran 65 minutes once and a person had to open its
+/// pull request. Work for a finished task is refused with the fix named -
+/// a new task - rather than reopening the finished one (the owner closed
+/// it, or its pull request merged) or delivering the branch on its own
+/// (it would skip the task's review and end-to-end check). `add_job` runs
+/// it for every caller; `hive job add` runs `check_task_source` first.
+fn check_task_source_of_project(conn: &Connection, project: &str, source: &str) -> Result<()> {
+    if !source.starts_with(hive_store::TASK_SOURCE_PREFIX) {
+        return Ok(());
+    }
+    let named = hive_store::task_source_id(source).unwrap_or_default();
+    let task = source_task_conn(conn, source)?;
+    let Some((id, _, status)) = task.filter(|t| t.1 == project) else {
+        return Err(refuse_fix(
+            2,
+            format!(
+                "Source {} names no task of project {project}",
+                py_repr(source)
+            ),
+            format!(
+                "a task job is delivered inside its task's pull request, so `task:{}` must be a task of {project}: task:TASK-NNN or task:TASK-NNN:<label>",
+                if named.is_empty() { "<id>" } else { named }
+            ),
+            format!("hive task list --project {project}, then hive job add --source task:<id>"),
+        ));
+    };
+    if task_closed(&status) {
+        return Err(refuse_fix(
+            2,
+            format!("{id} is {status}; a job for it would never be delivered"),
+            "a finished task takes no more jobs: its pull request is merged or closed and delivery skips it",
+            format!(
+                "file the follow-up as a new task: hive task new --project {project} --title '...' --brief 'Follow-up of {id}: ...', then queue its jobs under task:<the new id>"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Refuses to put a job of a closed task back in the queue (TASK-140): a
+/// blocked or failed job of a task the owner cancelled, or of a task that
+/// is done, would run work nobody delivers.
+fn refuse_closed_task_job(conn: &Connection, job: &Job, what: &str) -> Result<()> {
+    if let Some((id, project, status)) = source_task_conn(conn, &job.source)?
+        && task_closed(&status)
+    {
+        return Err(refuse_fix(
+            2,
+            format!(
+                "Job {} belongs to {id}, which is {status}; it is not {what}",
+                job.id
+            ),
+            "a closed task has no running jobs: its work is never delivered",
+            format!(
+                "hive task show {id}; for work still wanted, file a new task: hive task new --project {project} --title '...'"
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// Sets what kind of machine a queued job must run on (`hive job needs
@@ -421,6 +510,12 @@ pub(crate) fn finish_job_conn(
                 job.generation
             ),
         ));
+    }
+    // Unblocking (or requeueing a finished job) for a closed task is
+    // refused; a leased job whose run is given back may still go to the
+    // queue, where the lease cancels it (hive-runner lease_job).
+    if status == "queued" && !matches!(job.status.as_str(), "queued" | "leased") {
+        refuse_closed_task_job(conn, &job, "queued again")?;
     }
     let finished = if status == "queued" {
         String::new()
@@ -571,6 +666,7 @@ fn retry_job_conn(
             ));
         }
     }
+    refuse_closed_task_job(conn, &job, "retried")?;
     let active: i64 = conn.query_row(
         "SELECT COUNT(*) FROM runs WHERE job_id = ? AND status = 'running'",
         [&job.id],
@@ -1842,7 +1938,7 @@ mod tests {
     fn retry_job_in_place_queues_failed_job() {
         let _serial = crate::test_helpers::serial();
         let (_dir, s, p) = fixture();
-        let job = make_failed_job(&s, &p.slug, "task:one");
+        let job = make_failed_job(&s, &p.slug, "work:one");
 
         let result = retry_job(
             &s,
@@ -1893,7 +1989,7 @@ mod tests {
     fn retry_job_keeps_recover_root_and_increments() {
         let _serial = crate::test_helpers::serial();
         let (_dir, s, p) = fixture();
-        let job = make_failed_job(&s, &p.slug, "task:chain");
+        let job = make_failed_job(&s, &p.slug, "work:chain");
         event(
             &s,
             "daemon",
@@ -1929,7 +2025,7 @@ mod tests {
     fn retry_job_as_new_queues_one_corrected_copy() {
         let _serial = crate::test_helpers::serial();
         let (_dir, s, p) = fixture();
-        let job = make_failed_job(&s, &p.slug, "task:copy");
+        let job = make_failed_job(&s, &p.slug, "work:copy");
 
         let result = retry_job(
             &s,
@@ -2014,7 +2110,7 @@ mod tests {
                 ..test_context()
             }),
             &[
-                "job", "add", "--title", "Audit it", "--source", "task:9", "--run-as", "auditor",
+                "job", "add", "--title", "Audit it", "--source", "work:9", "--run-as", "auditor",
             ],
         );
         assert!(err.is_ok(), "{err:?}");
@@ -2054,7 +2150,7 @@ mod tests {
             )),
             "No job 'missing'"
         );
-        let done = make_failed_job(&s, &p.slug, "task:done");
+        let done = make_failed_job(&s, &p.slug, "work:done");
         finish_job(&s, &done.id, "human", "done", "ok", "", None).unwrap();
         assert!(
             err_what(retry_job(
@@ -2120,7 +2216,7 @@ mod tests {
             ))
             .contains("already running")
         );
-        let cancelled = make_failed_job(&s, &p.slug, "task:cancelled");
+        let cancelled = make_failed_job(&s, &p.slug, "work:cancelled");
         finish_job(&s, &cancelled.id, "human", "cancelled", "stopped", "", None).unwrap();
         let got = retry_job(
             &s,
@@ -3395,7 +3491,7 @@ mod tests {
                 "--title",
                 "Do a thing",
                 "--source",
-                "task:1",
+                "work:1",
                 "--priority",
                 "5",
             ],
@@ -3414,7 +3510,7 @@ mod tests {
                 project: "demo".into(),
                 ..test_context()
             }),
-            &["job", "add", "--title", "Do a thing", "--source", "task:1"],
+            &["job", "add", "--title", "Do a thing", "--source", "work:1"],
         );
         assert!(
             err.is_ok() && out.trim() == format!("already queued: {id}"),
@@ -3892,5 +3988,150 @@ mod tests {
             .unwrap();
         assert_eq!(code(Some(&err)), 2);
         assert!(what_any(&err).contains("only a queued or blocked job"));
+    }
+
+    fn insert_task(s: &hive_store::Store, id: &str, project: &str, status: &str) {
+        s.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO tasks (id, project, title, status, created_by, created_at, updated_at) VALUES (?, ?, 'T', ?, 'human', ?, ?)",
+                params![id, project, status, TEST_NOW, TEST_NOW],
+            )
+            .unwrap();
+    }
+
+    fn task_job(s: &hive_store::Store, project: &str, source: &str) -> Result<(Job, bool)> {
+        add_job(
+            s,
+            JobInput {
+                project: project.into(),
+                kind: "task".into(),
+                title: "Work".into(),
+                tier: 1,
+                source: source.into(),
+                created_by: "demo-lead".into(),
+                ..Default::default()
+            },
+        )
+    }
+
+    /// TASK-140: a `task:` source names an open task of the job's project,
+    /// or the job is refused when it is added, with the fix named.
+    #[test]
+    fn a_task_source_must_name_an_open_task_of_the_project() {
+        let _serial = crate::test_helpers::serial();
+        let (_dir, s, p) = fixture();
+        insert_task(&s, "TASK-126", &p.slug, "in_progress");
+        insert_task(&s, "TASK-128", &p.slug, "done");
+        insert_task(&s, "TASK-129", &p.slug, "cancelled");
+        insert_task(&s, "TASK-130", "other", "open");
+        // The lead once wrote task:126:followups: the job ran 65 minutes
+        // and nothing delivered it.
+        for source in ["task:126:followups", "task:", "task::x", "task:TASK-999"] {
+            let err = task_job(&s, &p.slug, source).unwrap_err();
+            assert_eq!(code(Some(&err)), 2, "{source}");
+            assert!(
+                what_any(&err).contains("names no task of project demo"),
+                "{source}: {}",
+                what_any(&err)
+            );
+        }
+        let err = task_job(&s, &p.slug, "task:TASK-130").unwrap_err();
+        assert!(what_any(&err).contains("names no task of project demo"));
+        // Work queued under a finished task is refused with the fix named.
+        for (source, status) in [
+            ("task:TASK-128:followups", "done"),
+            ("task:TASK-129", "cancelled"),
+        ] {
+            let err = task_job(&s, &p.slug, source).unwrap_err();
+            let text = format!("{err:#}");
+            assert!(
+                what_any(&err).contains(&format!(
+                    "is {status}; a job for it would never be delivered"
+                )),
+                "{text}"
+            );
+            let hive_err = err.downcast_ref::<hive_cli::Error>().unwrap();
+            assert!(
+                hive_err.fix.contains("hive task new --project demo"),
+                "{}",
+                hive_err.fix
+            );
+        }
+        let (job, created) = task_job(&s, &p.slug, "task:TASK-126:followups").unwrap();
+        assert!(created);
+        assert_eq!(job.source, "task:TASK-126:followups");
+        assert!(task_job(&s, &p.slug, "task:TASK-126").unwrap().1);
+        // Other sources are not tasks and are not checked.
+        assert!(task_job(&s, &p.slug, "taskish:1").unwrap().1);
+    }
+
+    /// TASK-140: a blocked or failed job of a closed task is not put back
+    /// in the queue - not by `hive job finish ... queued`, not by a retry.
+    #[test]
+    fn a_closed_tasks_job_is_not_unblocked_or_retried() {
+        let _serial = crate::test_helpers::serial();
+        let (_dir, s, p) = fixture();
+        insert_task(&s, "TASK-120", &p.slug, "in_progress");
+        let (blocked, _) = task_job(&s, &p.slug, "task:TASK-120").unwrap();
+        finish_job(
+            &s,
+            &blocked.id,
+            "human",
+            "blocked",
+            "held for the owner",
+            "",
+            None,
+        )
+        .unwrap();
+        let (failed, _) = task_job(&s, &p.slug, "task:TASK-120:b").unwrap();
+        finish_job(&s, &failed.id, "human", "failed", "x", "", None).unwrap();
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE tasks SET status = 'cancelled' WHERE id = 'TASK-120'",
+                [],
+            )
+            .unwrap();
+        let err = finish_job(&s, &blocked.id, "human", "queued", "", "", None).unwrap_err();
+        assert!(
+            what_any(&err)
+                .contains("belongs to TASK-120, which is cancelled; it is not queued again"),
+            "{}",
+            what_any(&err)
+        );
+        assert_eq!(
+            job_by_id(&s, &blocked.id).unwrap().unwrap().status,
+            "blocked"
+        );
+        for as_new in [false, true] {
+            let err = retry_job(
+                &s,
+                RetryInput {
+                    job_id: failed.id.clone(),
+                    as_new,
+                    actor: "human".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+            assert!(
+                what_any(&err).contains("it is not retried"),
+                "{}",
+                what_any(&err)
+            );
+        }
+        assert_eq!(job_by_id(&s, &failed.id).unwrap().unwrap().status, "failed");
+        // Ending the blocked job is still allowed.
+        finish_job(
+            &s,
+            &blocked.id,
+            "human",
+            "cancelled",
+            "task closed",
+            "",
+            None,
+        )
+        .unwrap();
     }
 }

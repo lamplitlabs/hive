@@ -602,13 +602,14 @@ impl Copilot {
             HeaderName::from_static("x-initiator"),
             HeaderValue::from_str(&initiator(req)).expect("initiator is a valid header"),
         );
-        let res = self
-            .http
-            .post(url)
-            .headers(headers)
-            .body(body.to_vec())
-            .send()
-            .map_err(|err| provider_error_new(0, "network", &err.to_string(), true))?;
+        // The caller's deadline bounds the call itself, as it does the
+        // model-list and token requests: a stalled answer is cut when the
+        // caller stops waiting, not at the client's own (longer) timeout.
+        let mut post = self.http.post(url).headers(headers).body(body.to_vec());
+        if let Some(left) = request_timeout(cancel) {
+            post = post.timeout(left);
+        }
+        let res = post.send().map_err(|err| send_error(cancel, &err))?;
         if !res.status().is_success() {
             return Err(self.http_provider_error(res, false).into());
         }
@@ -2835,6 +2836,66 @@ mod tests {
         drop(srv);
         release.send(()).unwrap();
         hold.join().unwrap();
+    }
+
+    /// TASK-148 item 6: the chat call itself takes the caller's deadline,
+    /// as the model-list and token requests do. Before, a stalled
+    /// /chat/completions waited for the client's own timeout (5s here) and
+    /// the decide role's pass could only walk away from the thread.
+    #[test]
+    fn chat_stops_at_the_callers_deadline_when_the_api_stalls() {
+        let _serial = test_serial();
+        let (stalled_url, release, hold) = stalled_listener();
+        let api = stalled_url.clone();
+        let srv = Server::new(move |req| match req.path() {
+            "/copilot_internal/v2/token" => HttpResponse::json(
+                200,
+                &json!({
+                    "token": "tid=stall;exp=999;",
+                    "expires_at": (Utc::now() + ChronoDuration::hours(1)).timestamp(),
+                    "endpoints": {"api": api}
+                }),
+            ),
+            path => panic!("unexpected path {path}"),
+        });
+        let cleanup = reset_globals(&srv.url(), &srv.url(), &srv.url());
+        let p = new_test_provider(
+            tempfile::tempdir()
+                .unwrap()
+                .path()
+                .to_string_lossy()
+                .as_ref(),
+            Some(env_token()),
+        );
+        let started = std::time::Instant::now();
+        let err = p
+            .chat(
+                &cancel().with_timeout(Duration::from_secs(2)),
+                Request {
+                    model: "gpt-4.1".to_string(),
+                    messages: vec![Message {
+                        role: Role::User,
+                        content: "hi".to_string(),
+                        ..Message::default()
+                    }],
+                    ..Request::default()
+                },
+            )
+            .expect_err("a stalled chat must not produce an answer");
+        let took = started.elapsed();
+        cleanup();
+        drop(srv);
+        release.send(()).unwrap();
+        hold.join().unwrap();
+        assert!(
+            took < Duration::from_millis(4000),
+            "chat waited {took:?} past a 2s deadline: {err:#}"
+        );
+        assert!(
+            err.downcast_ref::<hive_provider::CancelledError>()
+                .is_some(),
+            "a missed deadline reads as cancelled, not a network fault: {err:#}"
+        );
     }
 
     /// A listener that accepts connections and never answers, held until

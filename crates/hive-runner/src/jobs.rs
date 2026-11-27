@@ -559,6 +559,11 @@ pub(crate) fn job_wait_seconds(q: &Querier, job: &Row, now: &str) -> i64 {
         .unwrap_or(0)
 }
 
+/// The queued jobs whose `task:` source names a done or cancelled task,
+/// with the task's id and status: [`lease_job`] cancels them instead of
+/// leasing them. Task ids are `TASK-NNN`, so the LIKE needs no escape.
+pub(crate) const CLOSED_TASK_QUEUED_SQL: &str = "SELECT j.id, t.id AS task, t.status AS task_status FROM jobs j JOIN tasks t ON (j.source = 'task:' || t.id OR j.source LIKE 'task:' || t.id || ':%') WHERE j.status = 'queued' AND j.source LIKE 'task:%' AND t.status IN ('done', 'cancelled') ORDER BY j.created_at, j.id";
+
 pub(crate) fn lease_job(
     s: &hive_store::Store,
     agent: String,
@@ -596,6 +601,31 @@ pub(crate) fn lease_job(
                 "job.requeue",
                 &r.str("id"),
                 Value::String("lease expired".into()),
+            );
+        }
+        // A job of a closed task is never leased (TASK-140): its work would
+        // not be delivered - delivery skips done and cancelled tasks, and a
+        // task job is not delivered on its own. It ends cancelled here with
+        // the reason, wherever it came from (a store from before the add
+        // check, a requeue by hand).
+        for r in query_rows_dyn(q, CLOSED_TASK_QUEUED_SQL, &[])? {
+            let why = format!(
+                "{} is {}: a closed task takes no more runs; file a new task for work still wanted",
+                r.str("task"),
+                r.str("task_status")
+            );
+            crate::util::exec1(
+                q,
+                "UPDATE jobs SET status = 'cancelled', result = ?, finished_at = ?, lease_agent = '', lease_until = '' WHERE id = ? AND status = 'queued'",
+                &[&why, &now, &r.str("id")],
+            );
+            crate::util::event_at(
+                q,
+                &now,
+                "lease",
+                "job.cancelled",
+                &r.str("id"),
+                Value::String(why),
             );
         }
         // The plain per-project count (the project's share of the fleet)
@@ -934,6 +964,7 @@ mod tests {
         let s = crate::test_helpers::new_store();
         crate::test_helpers::new_bare_repo(&s);
         let add = |kind: &str, source: &str| {
+            crate::test_helpers::task_for_source(&s, "proj", source);
             crate::jobs::add_job(
                 &s,
                 "proj".into(),
@@ -988,6 +1019,65 @@ mod tests {
         by_row.sort();
         assert_eq!(by_sql, by_row);
         assert_eq!(by_row.len(), 9, "{by_row:?}");
+    }
+
+    /// TASK-140: a queued job of a closed task is never leased; the lease
+    /// ends it cancelled with the reason and takes the next job.
+    #[test]
+    fn lease_cancels_a_closed_tasks_job_instead_of_running_it() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        join(&s, "aurora");
+        let done = hive_tasks::new(&s, "proj", "Done work", "", 0, "human").unwrap();
+        let open = hive_tasks::new(&s, "proj", "Open work", "", 0, "human").unwrap();
+        let add = |source: String, priority: i32| {
+            crate::jobs::add_job(
+                &s,
+                "proj".into(),
+                "task".into(),
+                source.clone(),
+                "brief".into(),
+                1,
+                priority,
+                source,
+                hive_store::HUMAN_AGENT.into(),
+                false,
+            )
+            .unwrap()
+            .0
+        };
+        let late = add(format!("task:{}:followups", done.id), 90);
+        let wanted = add(format!("task:{}", open.id), 10);
+        // The task closed after its follow-up was queued (or the job came
+        // back to the queue by hand).
+        crate::util::exec1(
+            &*s.conn().unwrap(),
+            "UPDATE tasks SET status = 'done' WHERE id = ?",
+            &[&done.id],
+        );
+        let now = crate::util::plus_minutes(&late.str("created_at"), 1.0);
+        let leased = super::lease_job(
+            &s,
+            "aurora".into(),
+            now,
+            super::LeaseOpts {
+                any_proj: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(leased.str("id"), wanted.str("id"));
+        let late = super::job_row(&*s.conn().unwrap(), late.str("id"));
+        assert_eq!(late.str("status"), "cancelled", "{late:?}");
+        assert_eq!(late.int("attempts"), 0, "it never ran: {late:?}");
+        assert!(
+            late.str("result").starts_with(&format!(
+                "{} is done: a closed task takes no more runs",
+                done.id
+            )),
+            "{late:?}"
+        );
     }
 
     #[test]
@@ -1898,6 +1988,7 @@ mod tests {
         source: &str,
         priority: i32,
     ) -> String {
+        crate::test_helpers::task_for_source(s, project, source);
         let (job, _) = crate::jobs::add_job(
             s,
             project.into(),
@@ -4970,6 +5061,25 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         refuse_bundle: bool,
         check: impl FnOnce(&hive_store::Store, &crate::util::Row, &crate::util::Row, &std::path::Path),
     ) {
+        committing_run_on_a_hand_whose_fetch_fails_checked(refuse_bundle, "", check);
+    }
+    /// [`committing_run_on_a_hand_whose_fetch_fails`] with the project's
+    /// check set to `verify_cmd` (empty: none).
+    fn committing_run_on_a_hand_whose_fetch_fails_checked(
+        refuse_bundle: bool,
+        verify_cmd: &str,
+        check: impl FnOnce(&hive_store::Store, &crate::util::Row, &crate::util::Row, &std::path::Path),
+    ) {
+        let refuse = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(refuse_bundle));
+        committing_run_on_a_hand_whose_fetch_fails_switched(refuse, verify_cmd, check);
+    }
+    /// The same with the bundle's refusal behind a switch the test may flip
+    /// after the run: the machine's bundle verb answers again.
+    fn committing_run_on_a_hand_whose_fetch_fails_switched(
+        refuse: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        verify_cmd: &str,
+        check: impl FnOnce(&hive_store::Store, &crate::util::Row, &crate::util::Row, &std::path::Path),
+    ) {
         let _serial = crate::test_helpers::serial();
         let _guard = hive_testutil::env_lock();
         if which::which("ssh-keygen").is_err() {
@@ -4979,6 +5089,13 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         let _stage = crate::test_helpers_staged_hive::stage_local_hive(&bin);
         let s = crate::test_helpers::new_store();
         let (_proj, _root) = crate::test_helpers::new_bare_repo(&s);
+        if !verify_cmd.is_empty() {
+            crate::util::exec1(
+                &s.conn().unwrap(),
+                "UPDATE projects SET verify_cmd = ? WHERE slug = 'proj'",
+                &[&verify_cmd],
+            );
+        }
         crate::test_helpers::join(&s, "aurora");
         s.set_setting(crate::util::HUMAN_AGENT, "minutes_per_job", "1")
             .unwrap();
@@ -5023,7 +5140,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
                 })
                 .map(|raw| String::from_utf8_lossy(&raw).to_string())
                 .unwrap_or_default();
-            if refuse_bundle && verb.starts_with("bundle\u{0}") {
+            if refuse.load(std::sync::atomic::Ordering::SeqCst) && verb.starts_with("bundle\u{0}") {
                 return Ok((1, String::new(), "bundle: refused".into()));
             }
             runner(c, a, i, t)
@@ -5178,6 +5295,222 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             .unwrap();
             assert!(!crate::executor::fetch_broken(s, "hands"));
             assert_eq!(lease("aurora").str("id"), next.str("id"));
+        });
+    }
+
+    /// TASK-138 item 4: a run whose check failed on a base that was already
+    /// red, with neither the fetch nor the bundle bringing its commits back,
+    /// still says how to get them. Before, the red base verdict rewrote the
+    /// summary and added back only the (empty) kept-branch clause, so the
+    /// clone sat on the machine with no word of where or how.
+    #[test]
+    fn a_red_base_keeps_the_how_to_of_work_left_on_the_machine() {
+        committing_run_on_a_hand_whose_fetch_fails_checked(
+            true,
+            "false",
+            |s, run, job, workdir| {
+                assert_eq!(run.str("status"), "failed", "run {run:?}");
+                let summary = run.str("summary");
+                assert!(
+                    summary.contains("was already red before this job"),
+                    "the base verdict is not in the summary: {summary}"
+                );
+                assert!(
+                    summary.contains("its commits could not be fetched")
+                        && summary.contains("the clone stays on hands at")
+                        && summary.contains("git -C ")
+                        && summary
+                            .contains(&crate::land::failed_work_branch("aurora", &job.str("id"))),
+                    "the red base dropped how to get the work: {summary}"
+                );
+                assert!(
+                    workdir
+                        .join(job.str("id"))
+                        .join("clone")
+                        .join("note.txt")
+                        .exists(),
+                    "the machine's clone was cleaned"
+                );
+                assert!(crate::executor::fetch_broken(s, "hands"));
+            },
+        );
+    }
+
+    /// TASK-138 item 2: a machine marked after one failed fetch finds its
+    /// way back without a hand. `hive executor list` says why it takes no
+    /// code work; the daemon's fetch probe tries the kept clone again on its
+    /// pass, says when it fails, and once the machine answers brings the
+    /// commits to the failed-work branch, removes the clone (item 3) and
+    /// clears the mark. Before, the mark stayed until the owner activated
+    /// the machine, and the list showed nothing.
+    #[test]
+    fn a_machine_whose_fetch_failed_is_fetched_again_by_the_daemon() {
+        let refuse = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let switch = refuse.clone();
+        committing_run_on_a_hand_whose_fetch_fails_switched(refuse, "", |s, run, job, workdir| {
+            assert_eq!(run.str("status"), "failed", "run {run:?}");
+            assert!(crate::executor::fetch_broken(s, "hands"));
+            let clone = workdir.join(job.str("id")).join("clone");
+            assert!(clone.join("note.txt").exists());
+            let now = s.now();
+            let list = crate::commands::executors_text(s, &now);
+            assert!(
+                list.contains("fetch FAILED at")
+                    && list.contains(&format!(
+                        "1 kept clone(s) hold commits only it has ({})",
+                        job.str("id")
+                    ))
+                    && list.contains("hive executor activate hands"),
+                "the executor list does not say why the machine is idle: {list}"
+            );
+            let cancel = hive_bus::CancellationToken::new();
+            // The machine still does not answer: the probe says so, the
+            // mark and the clone stay.
+            let lines = crate::kept_work::tend_kept_work(s, &cancel, &now, "daemon");
+            assert!(
+                lines
+                    .iter()
+                    .any(|l| l.starts_with("fetch probe of hands failed")),
+                "{lines:?}"
+            );
+            assert!(crate::executor::fetch_broken(s, "hands"));
+            assert!(clone.join("note.txt").exists());
+            let list = crate::commands::executors_text(s, &now);
+            assert!(list.contains("last fetch try "), "{list}");
+            // Not again inside the probe's spacing.
+            assert_eq!(
+                crate::kept_work::tend_kept_work(s, &cancel, &now, "daemon"),
+                Vec::<String>::new()
+            );
+            // The machine answers again: the next due probe fetches the work.
+            switch.store(false, std::sync::atomic::Ordering::SeqCst);
+            let later =
+                crate::util::plus_minutes(&now, (crate::executor::KEPT_FETCH_MINUTES + 1) as f64);
+            let lines = crate::kept_work::tend_kept_work(s, &cancel, &later, "daemon");
+            assert!(
+                lines.iter().any(|l| l.starts_with(&format!(
+                    "kept work of {} fetched from hands",
+                    job.str("id")
+                ))),
+                "{lines:?}"
+            );
+            let root = crate::util::project_row(s, "proj").str("path");
+            let branch = crate::land::failed_work_branch("aurora", &job.str("id"));
+            assert_eq!(
+                crate::test_helpers::run(
+                    std::path::Path::new(&root),
+                    &["git", "log", "-1", "--format=%s", &branch]
+                )
+                .trim(),
+                "note",
+                "the kept commit is not on {branch}"
+            );
+            assert!(!clone.exists(), "the fetched clone stays on the machine");
+            assert!(
+                !crate::executor::fetch_broken(s, "hands"),
+                "the mark stays after the fetch"
+            );
+            assert!(crate::executor::kept_work(s, "hands").is_empty());
+            assert!(!crate::commands::executors_text(s, &later).contains("fetch FAILED"));
+        });
+    }
+
+    /// Review of PR 283 item 2: a kept clone that is gone from the machine
+    /// (re-imaged, removed by a hand) is recognised. The machine says so in
+    /// the bundle verb's answer, which only the run log held, and in the ssh
+    /// fetch's text before git's own closing lines; the probe read the last
+    /// line alone, so the clone's record never cleared while its job was
+    /// open, the list showed git's general line, and the probe stopped there
+    /// without trying the machine's later clones.
+    #[test]
+    fn a_kept_clone_gone_from_the_machine_clears_and_the_next_is_tried() {
+        let refuse = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let switch = refuse.clone();
+        committing_run_on_a_hand_whose_fetch_fails_switched(refuse, "", |s, run, job, workdir| {
+            assert_eq!(run.str("status"), "failed", "run {run:?}");
+            let clone = workdir.join(job.str("id")).join("clone");
+            assert!(clone.join("note.txt").exists());
+            // A second run kept its clone there later; it is gone as well.
+            crate::test_helpers_daemon::queued_job(s, "job-later", "proj", "task", "owner");
+            crate::util::exec1(
+                &s.conn().unwrap(),
+                "UPDATE jobs SET status = 'failed' WHERE id = 'job-later'",
+                &[],
+            );
+            crate::util::exec1(
+                &s.conn().unwrap(),
+                "INSERT INTO runs (id, job_id, agent, project, started_at, finished_at, status, base, executor) VALUES ('run-later', 'job-later', 'aurora', 'proj', ?, ?, 'failed', ?, 'hands')",
+                &[&s.now(), &s.now(), &run.str("base")],
+            );
+            crate::util::event_at(
+                &s.conn().unwrap(),
+                &crate::util::plus_minutes(&s.now(), 1.0),
+                "runner",
+                crate::executor::FETCH_FAILED_EVENT,
+                "hands",
+                serde_json::json!({"job": "job-later", "run": "run-later", "clone": workdir.join("job-later").join("clone").display().to_string()}),
+            );
+            assert_eq!(crate::executor::kept_work(s, "hands").len(), 2);
+            // The machine answers, but the first clone was removed there.
+            std::fs::remove_dir_all(&clone).unwrap();
+            switch.store(false, std::sync::atomic::Ordering::SeqCst);
+            let cancel = hive_bus::CancellationToken::new();
+            let now = crate::util::plus_minutes(&s.now(), 2.0);
+            let lines = crate::kept_work::tend_kept_work(s, &cancel, &now, "daemon");
+            for j in [job.str("id"), "job-later".to_string()] {
+                assert!(
+                    lines.iter().any(|l| l.starts_with(&format!(
+                        "kept clone of {j} is gone from hands; its commits are lost"
+                    )) && l.contains("no clone for job")),
+                    "{j}: {lines:?}"
+                );
+            }
+            assert!(
+                crate::executor::kept_work(s, "hands").is_empty(),
+                "the records of the missing clones stay: {lines:?}"
+            );
+            let (_, note) = crate::executor::last_fetch_probe(s, "hands");
+            assert!(note.contains("no clone for job"), "{note}");
+        });
+    }
+
+    /// TASK-138 item 3: a clone kept on a machine goes once its job is
+    /// closed, and a machine left with nothing kept has its mark lifted, so
+    /// the next code run tests the fetch. Before, the clone, its run key and
+    /// whatever the worker left stayed on the machine for good.
+    #[test]
+    fn a_kept_clone_is_removed_once_its_job_is_closed() {
+        committing_run_on_a_hand_whose_fetch_fails(true, |s, run, job, workdir| {
+            assert_eq!(run.str("status"), "failed", "run {run:?}");
+            let clone = workdir.join(job.str("id")).join("clone");
+            assert!(clone.join("note.txt").exists());
+            crate::util::exec1(
+                &s.conn().unwrap(),
+                "UPDATE jobs SET status = 'cancelled' WHERE id = ?",
+                &[&job.str("id")],
+            );
+            let cancel = hive_bus::CancellationToken::new();
+            let lines = crate::kept_work::tend_kept_work(s, &cancel, &s.now(), "daemon");
+            assert!(
+                lines.iter().any(|l| l
+                    == &format!(
+                        "kept clone of {} removed from hands: its job is cancelled",
+                        job.str("id")
+                    )),
+                "{lines:?}"
+            );
+            assert!(
+                !workdir.join(job.str("id")).exists(),
+                "the closed job's clone stays"
+            );
+            assert!(crate::executor::kept_left(s, "hands").is_empty());
+            assert!(
+                lines
+                    .iter()
+                    .any(|l| l.starts_with("fetch mark lifted on hands")),
+                "{lines:?}"
+            );
+            assert!(!crate::executor::fetch_broken(s, "hands"));
         });
     }
 
@@ -7551,7 +7884,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         for (k, v) in [
             ("compute.provider", "azure"),
             ("compute.max_vms", "1"),
-            ("compute.max_hours_per_day", "1"),
+            ("compute.max_hours_per_day", "4"),
             ("compute.azure.vm_size", "Standard_B2ms"),
         ] {
             s.set_setting(crate::util::HUMAN_AGENT, k, v).unwrap();
@@ -7559,6 +7892,9 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         let req = hive_tasks::request_compute(&s, "proj", "aurora", "Standard_B2ms", 4, "long run")
             .unwrap();
         hive_tasks::approve(&s, &req.id, "fine", crate::util::HUMAN_AGENT).unwrap();
+        // The owner lowers the cap after approving: the worker checks it again.
+        s.set_setting(crate::util::HUMAN_AGENT, "compute.max_hours_per_day", "1")
+            .unwrap();
         let w = crate::compute::new_compute_worker(
             &hive_bus::CancellationToken::new(),
             &s,
@@ -8090,7 +8426,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             "do self".into(),
             1,
             0,
-            "task:self".into(),
+            "work:self".into(),
             "human".into(),
             false,
         )
@@ -8103,7 +8439,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             "do other".into(),
             1,
             0,
-            "task:other".into(),
+            "work:other".into(),
             "human".into(),
             false,
         )
@@ -8178,7 +8514,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             "do self".into(),
             1,
             0,
-            "task:self".into(),
+            "work:self".into(),
             "human".into(),
             false,
         )
@@ -8213,7 +8549,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             "do it".into(),
             1,
             0,
-            "task:disk".into(),
+            "work:disk".into(),
             "human".into(),
             false,
         )
@@ -8302,7 +8638,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             "do self".into(),
             1,
             0,
-            "task:self".into(),
+            "work:self".into(),
             "human".into(),
             false,
         )
@@ -8336,7 +8672,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             "do it".into(),
             1,
             0,
-            "task:one".into(),
+            "work:one".into(),
             "human".into(),
             false,
         )
@@ -8508,7 +8844,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             "do self".into(),
             1,
             0,
-            "task:self".into(),
+            "work:self".into(),
             "human".into(),
             false,
         )

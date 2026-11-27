@@ -283,13 +283,22 @@ rule says, and records `review.merged` with `by: owner`; the line reads
 forge's own gate is not bypassed: a failing or still running check, a
 draft, a merge GitHub blocks or a head that moved since the hub showed it
 is refused (the daemon log says *could not be merged for the owner:
-<reason>*), and the ask stands - each pass tries again until the pull
-request is ready or settled on GitHub. The ask is for the head the hub
-showed when you pressed it: once Hive records a newer head (a push, a head
-found moved while a merge waited, a review queued at it), the ask lapses -
-the daemon log says *not merged for the owner: Merge was pressed at <sha>,
-the pull request is at <sha> now* once - and the new head is reviewed on
-its own; press Merge again to take it. The same
+<reason>*), and the ask stands while the head stays the same - each pass
+tries again until a running check finishes or the pull request is settled
+on GitHub. The ask is for the head the hub showed when you pressed it, and
+it stores that commit (`review.ask`'s `sha`): once Hive holds another head
+- a push, a fix job's commits, the base merged in to cure a conflict, a
+head found moved while a merge waited, a review queued at it - the ask
+lapses, even when the new head was recorded a moment before the press
+reached the daemon. So a pull request that needs a cure first (a conflict,
+a red check fixed by a new commit) is never merged by the press that came
+before the cure: the new head is reviewed on its own, and handed to you
+again if it is still yours; press Merge again to take it. You are told
+once, where you pressed - a message on the task's conversation, or a note
+in the chat's transcript for a chat's pull request: *Pull request #n was
+not merged: your Merge was for commit <sha>, and <why it moved> - it is at
+<sha> now.* The daemon log says *not merged for the owner: Merge was
+pressed at <sha>, the pull request is at <sha> now (<why>)* once. The same
 hand-over is a question on the project's board, marked for you, on the
 `review` thread - *Merge pull request #n: <title>?* with the reasons, the
 review and the ways to merge it - and a message on the task's conversation
@@ -408,7 +417,11 @@ the `runner/review` thread that mentions it and quotes that answer. A forge
 wait that is already past its hours when a pass reaches it (the machine
 slept, the daemon was down) but has tries left makes one last try first,
 as a checks wait at its bound merges when its checks passed: merged when
-the forge takes it, handed to you as above when it fails again. A pull
+the forge takes it, handed to you as above when it fails again. That try is
+the merge's: when reading the pull request fails for a passing reason on
+that pass, the failure is counted and the last try waits for the next step
+of the back-off (`review.merge-wait` with `last: true`) instead of ending
+the wait with no merge tried - unless that failure used up the tries. A pull
 request stacked on the one that waited still waits below it, and is
 reviewed when the one below merges.
 

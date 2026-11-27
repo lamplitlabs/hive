@@ -1,7 +1,7 @@
 "use client";
 
 import { CoffeeIcon, TriangleAlertIcon } from "lucide-react";
-import { daemonUpdateText, pendingUpdate } from "@/components/hive/daemon-control-state";
+import { daemonUpdateText, pendingUpdate, updatePendingText } from "@/components/hive/daemon-control-state";
 import { DaemonControls } from "@/components/hive/daemon-controls";
 import { awakeText, sleptText, useAwake } from "@/components/shell/awake";
 import { Disclosure, Kv } from "@/components/hive/panel";
@@ -97,6 +97,7 @@ function WhichHiveRuns() {
       <span key="u" className="grid gap-1.5">
         <span className="leading-relaxed">
           {update ? daemonUpdateText(update) + "." : ""}
+          {update && updatePendingText(update) ? <span className="text-muted-foreground" title={update.since ? "Pending since " + fmtDate(update.since) + (update.until ? "; nothing new starts after " + fmtDate(update.until) : "") : undefined}> {updatePendingText(update)}.</span> : null}
           {d.hub.restart_pending ? (update ? " " : "") + "This console has a newer build and waits for the sessions working." : ""}
         </span>
         <RestartNow ask={d.restart_ask} inflight={update?.inflight} />

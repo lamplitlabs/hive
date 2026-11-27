@@ -196,9 +196,15 @@ pub fn normalize_thread(thread: &str) -> String {
 /// question is one per suggestion thread by design: hive-evolve keys it by
 /// (thread, on_post) and reads its body for the gate kind, and the owner's
 /// decision on it clears exactly that thread; the hub inbox already folds the
-/// card-needed and resolved ones away.
+/// card-needed and resolved ones away. The planner's stuck-thread question is
+/// about its own thread too: its summary reads the same for every stuck
+/// thread, and collapsing it handed one thread's open question back to every
+/// other, so none of them got a question of its own.
 pub fn owner_question_dedupe_key(summary: &str) -> Option<String> {
-    if summary.trim() == hive_store::EVOLUTION_STOP_SUMMARY {
+    let summary = summary.trim();
+    if summary == hive_store::EVOLUTION_STOP_SUMMARY
+        || summary.starts_with(hive_store::STUCK_THREAD_SUMMARY)
+    {
         return None;
     }
     Some(normalize_owner_question_summary(summary))
@@ -911,20 +917,20 @@ mod tests {
         );
     }
 
-    /// A caller that asks on every tick, as the planner does for a thread it
-    /// found stuck, gets the open question back each time. The event log
-    /// takes one `question.deduped` event a day for it, not one per ask.
+    /// A caller that asks on every tick gets the open question back each
+    /// time. The event log takes one `question.deduped` event a day for it,
+    /// not one per ask.
     #[test]
     fn owner_question_dedupe_records_an_askers_repeats_once_a_day() {
         let _serial = crate::test_helpers::serial();
         let (_home_dir, _, s, _project, _repo) = fixture();
         let recorded = || count_rows(&s, "events", "action = 'question.deduped'", &[]);
-        let first = owner_question(&s, "demo", "Stuck thread: 3 jobs in a row changed no code");
+        let first = owner_question(&s, "demo", "Login expired: 3 runs in a row could not start");
         for jobs in [4, 5, 4, 5] {
             let again = owner_question(
                 &s,
                 "demo",
-                &format!("Stuck thread: {jobs} jobs in a row changed no code"),
+                &format!("Login expired: {jobs} runs in a row could not start"),
             );
             assert_eq!(again.id, first.id);
             assert!(again.deduped, "every repeat is still deduped");
@@ -936,7 +942,7 @@ mod tests {
             &s,
             "bob",
             "demo",
-            "Stuck thread: 6 jobs in a row changed no code",
+            "Login expired: 6 runs in a row could not start",
         );
         assert_eq!(other.id, first.id);
         assert!(other.deduped);
@@ -953,7 +959,7 @@ mod tests {
             let again = owner_question(
                 &next_day,
                 "demo",
-                &format!("Stuck thread: {jobs} jobs in a row changed no code"),
+                &format!("Login expired: {jobs} runs in a row could not start"),
             );
             assert!(again.deduped);
         }
@@ -1064,6 +1070,47 @@ mod tests {
             count_rows(&s, "events", "action = 'question.deduped'", &[]),
             0,
             "no dedupe event for a stop question"
+        );
+    }
+
+    /// The planner's stuck-thread question is about its own thread. Two
+    /// threads stuck at once are two questions: the second is not handed
+    /// the first one back.
+    #[test]
+    fn owner_question_dedupe_leaves_stuck_thread_questions_to_their_threads() {
+        let _serial = crate::test_helpers::serial();
+        let (_home_dir, _, s, _project, _repo) = fixture();
+        let summary = format!(
+            "{} 3 worker jobs in a row changed no code; lead decision needed",
+            hive_store::STUCK_THREAD_SUMMARY
+        );
+        assert_eq!(owner_question_dedupe_key(&summary), None);
+        let stuck = |thread: &str| {
+            create_post(
+                &s,
+                PostInput {
+                    kind: "question".into(),
+                    project: "demo".into(),
+                    area: "serve".into(),
+                    thread: thread.into(),
+                    summary: summary.clone(),
+                    body: format!("The planner seeded 3 jobs from thread serve/{thread}."),
+                    agent: "alice".into(),
+                    for_owner: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        let tutor = stuck("tutor");
+        let admin = stuck("admin");
+        assert_ne!(admin.id, tutor.id, "one stuck question per thread");
+        assert!(!admin.deduped);
+        assert_eq!(admin.thread, "admin");
+        assert_eq!(
+            count_rows(&s, "events", "action = 'question.deduped'", &[]),
+            0,
+            "no dedupe event for a stuck-thread question"
         );
     }
 

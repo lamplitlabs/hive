@@ -148,6 +148,7 @@ const LABELS: Record<string, string> = {
   "daemon.self_update_retry_minutes": "Try a failed update again after (minutes)",
   "daemon.self_update_settle_minutes": "Wait before updating after a change (minutes, 0 = at once)",
   "daemon.restart_drain_minutes": "Let runs finish before a restart (minutes)",
+  "daemon.restart_max_minutes": "Longest a restart may wait before nothing new starts (minutes, 0 = no limit)",
   "daemon.restart_hold": "Hold runs still going when the restart drain ends",
   "daemon.hold_seconds": "Give runs time to hold on Restart now before stopping them (seconds)",
   "daemon.planner_cache_ttl_seconds": "Reuse a planning snapshot for (seconds)",

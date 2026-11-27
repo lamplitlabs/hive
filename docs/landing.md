@@ -113,6 +113,34 @@ forces nothing ([When delivery fails](#when-delivery-fails)). A pass opens at mo
 tries at most three held deliveries again, the oldest hold first ([When
 delivery fails](#when-delivery-fails)), and reads every open one.
 
+### Work for a closed task
+
+A task that is `done` or `cancelled` gets no pull request, and a job whose
+source is `task:…` is never delivered on its own. So such work is stopped
+before it runs, not after (TASK-140):
+
+- `hive job add --source task:<id>` (and every internal queue) refuses a
+  source that names no task of the job's project - `task:126:followups`
+  once ran 65 minutes and nothing delivered it - and a source whose task is
+  `done` or `cancelled`. The refusal names the fix: file the follow-up as a
+  new task and queue its jobs under that task's id. Of the three paths -
+  reopen the finished task, deliver the branch on its own, or refuse - Hive
+  refuses: a `done` task's pull request merged, and reopening it would turn
+  the owner's closed record back into open work behind their back; a
+  `cancelled` task was declined by the owner; and a branch delivered on its
+  own would skip the task's end-to-end check and the reviewer's view of the
+  whole. A new task is visible to the owner, is planned like any other, and
+  gets its own pull request.
+- A queued job of a closed task is not leased: the lease ends it `cancelled`
+  with `TASK-NNN is done: a closed task takes no more runs; ...` (a
+  `job.cancelled` event by `lease`).
+- `hive job finish JOB queued` and `hive job retry` refuse a blocked, failed
+  or cancelled job of a closed task.
+- `hive task cancel` cancels the task's queued and blocked jobs and asks the
+  run of a leased one to stop, as the owner's **Cancel run** does; the run's
+  watch also stops a run whose task is cancelled before its harness session
+  exists. The run ends `cancelled by the owner`.
+
 The measured share: of the 260 landings on one machine in the seven days
 before this flow, 22 (8%) were task work and 238 were everything else -
 suggestion jobs 120, security updates 39, lead idle work 21, role leads 17,
@@ -1739,11 +1767,32 @@ with one sentence on what to do:
 | the same without `push.credential` | *the forge refused this machine's ssh keys: give the daemon a key of its own with hive cred set* |
 | `Host key verification failed` | *ssh does not know the forge's host key: connect to the forge over ssh once by hand, as the user the daemon runs as, and accept it* |
 
-After a retry over ssh the sentence follows what ssh said. To name another
-key while a project's upstream is an https url, run `hive cred set REF
---no-probe`. The probe of `hive cred set` makes a dry-run push to each
-project's remote, by the remote's own url, with the key alone. An https url
-ignores the key, so the probe fails there and nothing is saved.
+After a retry over ssh the sentence follows what ssh said.
+
+Two more pushes hold an ssh key and follow the same rule, read by the same
+code (`hive_gitenv::forge`: the url's ssh form, GitHub's question, and
+whether the repository's config sends the url elsewhere, asked with the
+push's own environment and given up after 10 seconds), so the three cannot
+drift apart:
+
+- the probe of `hive cred set` makes a dry-run push to each project's
+  remote with the key alone. On a GitHub https url it is made once more
+  over the url's ssh form when GitHub asking for a credential is all git
+  says, and that answer decides whether the key is saved; a refusal there
+  names both answers (`failed over https (...), then over ssh (...)`).
+  The test is
+  `hive-cred-setup` `the_probe_reaches_an_https_github_remote_over_ssh_with_the_key`;
+- a paired machine's own push with the key the brain leased it
+  ([Machines](machines.md)): the hand pushes to the url, and when GitHub
+  asks for a credential it pushes once more over the url's ssh form, with
+  the key. Its output says `pushed over ssh (git@github.com:OWNER/REPO.git)`;
+  a push that fails both ways says what https said, then what ssh said.
+  The test is `hive-hand-core`
+  `hands_push_reaches_an_https_github_url_over_ssh_with_the_leased_key`.
+
+Neither writes to the repository's config. A hand and the probe read urls
+against `https://github.com` (`HIVE_FORGE_WEB` names another, for a test's
+git server); the daemon reads them against its GitHub App endpoint.
 
 ### One git login for every machine: a GitHub App (ADR-070 step 3)
 
