@@ -7546,6 +7546,13 @@ mod tests {
         }
     }
 
+    /// What the daemon says when a handover's bound is up: the handover's
+    /// tend, or the slots' hold when the bound falls due between them.
+    const BOUND_LINES: [&str; 2] = [
+        "(daemon.restart_max_minutes): nothing new starts, the owner's work included",
+        "(daemon.restart_max_minutes), so no new runs start",
+    ];
+
     #[test]
     fn a_restart_comes_within_its_bound_while_the_owner_s_work_keeps_arriving() {
         let _serial = crate::test_helpers::serial();
@@ -7602,10 +7609,21 @@ mod tests {
             needle: "leased job-".into(),
             sent: false,
         }));
+        // The first run (the slow one) stays in flight until the bound has
+        // been said: the owner's runs of two seconds each, started in one
+        // tick on a loaded machine, can otherwise all end before the next
+        // tick, and the daemon then restarts with nothing in flight before
+        // the bound - right, but not what this test is about.
+        let gate = std::path::Path::new(&s.home).join("restart-bound-said");
+        let slow = std::path::Path::new(&s.home).join("slow-run-taken");
         let opts = DaemonOpts {
             interval: 300,
             out: Some(writer),
-            worker_cmd: "sh -c 'sleep 2; echo SUMMARY: ok'".into(),
+            worker_cmd: format!(
+                "sh -c 'if mkdir {slow} 2>/dev/null; then i=0; while [ ! -f {gate} ] && [ $i -lt 600 ]; do sleep 0.1; i=$((i+1)); done; else sleep 2; fi; echo SUMMARY: ok'",
+                slow = slow.display(),
+                gate = gate.display()
+            ),
             restart_on_change: true,
             ..Default::default()
         };
@@ -7644,9 +7662,14 @@ mod tests {
             let feeder = {
                 let s = s.clone();
                 let stop = stop_feeding.clone();
+                let out = out.clone();
+                let gate = gate.clone();
                 std::thread::spawn(move || {
                     let mut n = 0;
                     while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                        if BOUND_LINES.iter().any(|l| out.string().contains(l)) {
+                            let _ = std::fs::write(&gate, "");
+                        }
                         n += 1;
                         add(&s, &format!("Owner's task {n}"), &format!("task:TASK-{n}"));
                         let _ = hive_bus::emit(
@@ -7689,8 +7712,16 @@ mod tests {
             took < bound + test_wait(Duration::from_secs(20)),
             "left {took:?} after the restart was armed:\n{out}"
         );
-        let said = out
-            .find("(daemon.restart_max_minutes): nothing new starts, the owner's work included")
+        // The bound is said by whichever comes to it first: the handover's
+        // tend (and the daemon leaves with runs in flight), or, when it
+        // falls due between the tend and the slots of the same tick, the
+        // slots' hold, after which the runs in flight may all end before
+        // the next tend and the daemon leaves with nothing in flight. Four
+        // checks side by side on eight cores took the second path.
+        let said = BOUND_LINES
+            .iter()
+            .filter_map(|line| out.find(line))
+            .min()
             .unwrap_or_else(|| panic!("the bound never ended the handover:\n{out}"));
         assert!(
             !out[said..].contains("leased job-"),
