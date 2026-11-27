@@ -137,6 +137,272 @@ pub fn list_compute(
         .collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+/// A limit setting that says "no limit" (`none`, `off`, `unlimited`) reads as this in [`Caps`]:
+/// nothing is counted against it. `0` is a limit of nothing - Hive rents nothing by itself.
+pub const NO_LIMIT: i32 = -1;
+
+/// One of the two rental limits as [`Caps`] carries it: the setting's number, or [`NO_LIMIT`].
+fn limit_setting(s: &hive_store::Store, key: &str) -> i32 {
+    let raw = s.setting(key, "");
+    if hive_store::NONE_WORDS.contains(&raw.trim().to_ascii_lowercase().as_str()) {
+        return NO_LIMIT;
+    }
+    i32::try_from(s.setting_int(key)).unwrap_or(i32::MAX)
+}
+
+/// A limit as the CLI prints it: its number, or `none` for [`NO_LIMIT`].
+pub fn limit_words(limit: i32) -> String {
+    if limit == NO_LIMIT {
+        "none".into()
+    } else {
+        limit.to_string()
+    }
+}
+
+/// Whether a request is the owner's own call (TASK-165): the owner asked for it (the console's
+/// Extra machine, `hive compute request` typed by the owner) or approved it by hand
+/// (`hive compute approve`, Approve on the Machines page). The rental limits bound what agents
+/// and the daemon do by themselves; they never refuse the owner's own request.
+pub fn owners_call(req: &ComputeRequest) -> bool {
+    hive_store::human_actor(&req.requested_by) || hive_store::human_actor(&req.decided_by)
+}
+
+/// A rental limit a request would pass: which setting, its value, what is counted against it
+/// without this request, what the request adds, and the value that would let it through.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct LimitHit {
+    pub setting: String,
+    pub limit: i32,
+    pub used: i32,
+    pub asks: i32,
+    pub raise_to: i32,
+}
+
+impl LimitHit {
+    /// The request's line on the Machines page: "Not rented: ..." in plain words, never "Failed".
+    pub fn words(&self) -> String {
+        let hours = |n: i32| {
+            if n == 1 {
+                "1 hour".to_string()
+            } else {
+                format!("{n} hours")
+            }
+        };
+        if self.setting == "compute.max_vms" {
+            if self.limit <= 0 {
+                return "Not rented: the limit of extra machines at once is 0 - Hive rents nothing by itself".into();
+            }
+            let machines = if self.limit == 1 {
+                "1 machine".to_string()
+            } else {
+                format!("{} machines", self.limit)
+            };
+            return format!(
+                "Not rented: the limit of {machines} at once is reached ({} in use, this asks 1 more)",
+                self.used
+            );
+        }
+        if self.limit <= 0 {
+            return format!(
+                "Not rented: the limit of machine hours per day is 0 - Hive rents nothing by itself (this asks {})",
+                self.asks
+            );
+        }
+        format!(
+            "Not rented: today's limit of {} is used ({} used, this asks {})",
+            hours(self.limit),
+            self.used,
+            self.asks
+        )
+    }
+}
+
+impl Caps {
+    /// The first rental limit one more machine for `hours` would pass, counted as a request not
+    /// yet filed; `None` when both let it through ([`NO_LIMIT`] lets everything through).
+    pub fn limit_hit(&self, hours: i32) -> Option<LimitHit> {
+        self.hit_with(self.vms_now, self.hours_today, hours)
+    }
+
+    /// [`Caps::limit_hit`] for a request already counted in `vms_now` and `hours_today` (an
+    /// approved one the worker is about to provision): its own machine and hours come off first.
+    pub fn limit_hit_counted(&self, hours: i32) -> Option<LimitHit> {
+        self.hit_with(
+            (self.vms_now - 1).max(0),
+            self.hours_today.saturating_sub(hours).max(0),
+            hours,
+        )
+    }
+
+    fn hit_with(&self, vms: i32, used: i32, hours: i32) -> Option<LimitHit> {
+        if self.max_vms != NO_LIMIT && vms.saturating_add(1) > self.max_vms {
+            return Some(LimitHit {
+                setting: "compute.max_vms".into(),
+                limit: self.max_vms,
+                used: vms,
+                asks: 1,
+                raise_to: vms.saturating_add(1),
+            });
+        }
+        if self.max_hours_per_day != NO_LIMIT && used.saturating_add(hours) > self.max_hours_per_day
+        {
+            return Some(LimitHit {
+                setting: "compute.max_hours_per_day".into(),
+                limit: self.max_hours_per_day,
+                used,
+                asks: hours,
+                raise_to: used.saturating_add(hours),
+            });
+        }
+        None
+    }
+}
+
+/// The event a request refused by a limit carries, with the [`LimitHit`] as its detail: the
+/// Machines page reads it back for the row's buttons (Rent it anyway / Rent it and raise the
+/// limit to N / Do not rent).
+pub const NOT_RENTED_EVENT: &str = "compute.not-rented";
+/// The owner's answer on a request refused by a limit: `compute.refiled` (rented after all, as
+/// a new request) or `compute.kept-off` (Do not rent). Either ends the row's buttons.
+pub const REFILED_EVENT: &str = "compute.refiled";
+pub const KEPT_OFF_EVENT: &str = "compute.kept-off";
+
+/// Marks a request the worker refused for a limit: status `failed`, the "Not rented: ..." note,
+/// and the [`NOT_RENTED_EVENT`] with what was counted.
+pub fn not_rented(s: &hive_store::Store, id: &str, hit: &LimitHit, actor: &str) -> Result<()> {
+    set_compute_status(s, id, "failed", "", actor)?;
+    note_compute(s, id, &hit.words())?;
+    let tx = s.begin()?;
+    tx.event(
+        actor,
+        NOT_RENTED_EVENT,
+        id,
+        hive_store::Detail::json(json!(hit))?,
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// The limit a request was refused for, while the owner has not answered it: `None` for any
+/// other request, and once it was rented again or kept off.
+pub fn open_limit_hit(s: &hive_store::Store, id: &str) -> Result<Option<LimitHit>> {
+    let conn = s.conn()?;
+    let answered: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM events WHERE subject = ? AND action IN (?, ?)",
+        params![id, REFILED_EVENT, KEPT_OFF_EVENT],
+        |r| r.get(0),
+    )?;
+    if answered > 0 {
+        return Ok(None);
+    }
+    let detail: Option<String> = conn
+        .query_row(
+            "SELECT detail FROM events WHERE subject = ? AND action = ? ORDER BY seq DESC LIMIT 1",
+            params![id, NOT_RENTED_EVENT],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(detail.and_then(|d| serde_json::from_str(&d).ok()))
+}
+
+/// The requests a limit refused on the UTC day of `now` that the owner has not answered yet,
+/// newest first: what a limit change offers to file again.
+pub fn refused_today(s: &hive_store::Store) -> Result<Vec<(ComputeRequest, LimitHit)>> {
+    let now = s.now();
+    let today = now.get(..10).unwrap_or(&now).to_string();
+    let mut out = Vec::new();
+    for r in list_compute(s, "", "failed")? {
+        if r.updated_at.get(..10) != Some(today.as_str()) {
+            continue;
+        }
+        if let Some(hit) = open_limit_hit(s, &r.id)? {
+            out.push((r, hit));
+        }
+    }
+    Ok(out)
+}
+
+/// The owner's Rent it anyway on a request a limit refused (or one of today's, offered again
+/// after a limit change): a new request with the same project, size, hours and reason, filed
+/// by the owner and approved on the spot, so no limit refuses it. With `raise`, the limit it
+/// hit is set to what lets it through first. The old request keeps its row and gets
+/// [`REFILED_EVENT`] naming the new one.
+pub fn refile(s: &hive_store::Store, id: &str, raise: bool, actor: &str) -> Result<ComputeRequest> {
+    let actor = if actor.is_empty() {
+        hive_store::HUMAN_AGENT
+    } else {
+        actor
+    };
+    let cur = get_compute(s, id)?;
+    let Some(hit) = open_limit_hit(s, id)? else {
+        return Err(input(
+            2,
+            format!("{id} was not refused by a limit, or was answered already"),
+            "only a request a rental limit refused can be filed again this way",
+            "hive compute list",
+        ));
+    };
+    if raise {
+        raise_limit(s, &hit, actor)?;
+    }
+    let reason = if cur.reason.starts_with("again: ") {
+        cur.reason.clone()
+    } else {
+        format!("again: {} ({})", cur.reason, cur.id)
+    };
+    let new = request_compute(s, &cur.project, actor, &cur.size, cur.hours, &reason)?;
+    let new = if new.status == "pending" {
+        approve(
+            s,
+            &new.id,
+            &format!("rented anyway after {}", cur.id),
+            actor,
+        )?
+    } else {
+        new
+    };
+    let tx = s.begin()?;
+    tx.event(
+        actor,
+        REFILED_EVENT,
+        id,
+        hive_store::Detail::json(
+            json!({"request": new.id, "raise": raise, "setting": hit.setting, "to": hit.raise_to}),
+        )?,
+    )?;
+    tx.commit()?;
+    Ok(new)
+}
+
+/// The owner's Do not rent on a request a limit refused: it stays not rented, and its row
+/// asks no more.
+pub fn keep_off(s: &hive_store::Store, id: &str, actor: &str) -> Result<()> {
+    get_compute(s, id)?;
+    let tx = s.begin()?;
+    tx.event(
+        if actor.is_empty() {
+            hive_store::HUMAN_AGENT
+        } else {
+            actor
+        },
+        KEPT_OFF_EVENT,
+        id,
+        hive_store::Detail::json(json!({}))?,
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Sets the limit `hit` names to its `raise_to`, as the owner (Rent it and raise the limit to N).
+/// A limit already at or past that value, or no limit, is left alone.
+pub fn raise_limit(s: &hive_store::Store, hit: &LimitHit, actor: &str) -> Result<()> {
+    let now = limit_setting(s, &hit.setting);
+    if now == NO_LIMIT || now >= hit.raise_to {
+        return Ok(());
+    }
+    s.set_setting(actor, &hit.setting, &hit.raise_to.to_string())
+}
+
 pub type LoginSourceCheckFn = fn(&hive_store::Store) -> bool;
 pub static LOGIN_SOURCE_CHECK: RwLock<Option<LoginSourceCheckFn>> = RwLock::new(None);
 
@@ -149,8 +415,8 @@ pub fn get_caps(s: &hive_store::Store) -> Result<Caps> {
         .is_none_or(|f| f(s));
     let mut c = Caps {
         provider: s.setting("compute.provider", ""),
-        max_vms: s.setting_int("compute.max_vms") as i32,
-        max_hours_per_day: s.setting_int("compute.max_hours_per_day") as i32,
+        max_vms: limit_setting(s, "compute.max_vms"),
+        max_hours_per_day: limit_setting(s, "compute.max_hours_per_day"),
         auto_approve: s.setting("compute.auto_approve", "") == "1",
         budget_credits: s.setting_int("compute.budget_credits") as i32,
         login_source,
@@ -307,7 +573,14 @@ pub fn request_compute(
             "hive compute request --hours 4 ...",
         ));
     }
-    let most = max_request_hours(s.setting_int("compute.max_hours_per_day") as i32);
+    // The owner's own request is never refused by a limit (TASK-165): it may ask a whole day
+    // whatever compute.max_hours_per_day says.
+    let owner = hive_store::human_actor(agent);
+    let most = if owner {
+        max_request_hours(NO_LIMIT)
+    } else {
+        max_request_hours(limit_setting(s, "compute.max_hours_per_day"))
+    };
     if hours > most {
         return Err(input(
             2,
@@ -330,11 +603,9 @@ pub fn request_compute(
     }
     check_project(s, project)?;
     let caps = get_caps(s)?;
-    let auto = caps.auto_approve
-        && caps.vms_now < caps.max_vms
-        && caps.max_hours_per_day > 0
-        && caps.hours_today.saturating_add(hours) <= caps.max_hours_per_day
-        && caps.login_source;
+    // compute.auto_approve lets the owner's own request through whatever the limits say; an
+    // agent's only under them.
+    let auto = caps.auto_approve && (owner || caps.limit_hit(hours).is_none()) && caps.login_source;
     let landing = machine_landing_line(s)?;
     let now = s.now();
     let tx = s.begin()?;
@@ -367,7 +638,9 @@ pub fn request_compute(
         };
         let mut body = format!(
             "{agent} asks for one {size} machine for {hours} hours.{serves}\n\nReason: {reason}\n\nCaps: {} of {} machines in use, auto_approve={}.\n\nApprove with `hive compute approve {id} --words '...'` or deny with `hive compute deny {id} --words '...'` (or from the hub's Compute page).\n",
-            caps.vms_now, caps.max_vms, caps.auto_approve
+            caps.vms_now,
+            limit_words(caps.max_vms),
+            caps.auto_approve
         );
         if !landing.is_empty() {
             body.push('\n');

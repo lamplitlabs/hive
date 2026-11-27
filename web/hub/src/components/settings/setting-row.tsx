@@ -167,7 +167,7 @@ type SettingLabels = { on?: string; off?: string; choices?: Record<string, strin
 const INVALIDATES = (p: string) => p.startsWith("settings") || p.startsWith("runner") || p.startsWith("compute") || p.startsWith("events") || p.startsWith("org");
 const SAVED_NOTE = "Hive saves it right away and records that you changed it. The runner uses the new value from its next pass.";
 
-export function SettingRow({ s, canEdit, labels, title, warn }: { s: Setting; canEdit: boolean; labels?: SettingLabels; title?: React.ReactNode; warn?: (value: string) => string }) {
+export function SettingRow({ s, canEdit, labels, title, warn, note }: { s: Setting; canEdit: boolean; labels?: SettingLabels; title?: React.ReactNode; warn?: (value: string) => string; note?: (value: string) => string }) {
   const [draftState, setDraftState] = useState({ name: s.name, value: s.value, draft: s.value });
   const [pending, setPending] = useState<string | null>(null);
   let draft = draftState.draft;
@@ -193,6 +193,10 @@ export function SettingRow({ s, canEdit, labels, title, warn }: { s: Setting; ca
   // says so under the editor - for the draft while the owner types, for the
   // saved value otherwise - and again in the confirm dialog.
   const warning = warn ? warn(dirty ? draft : s.value) : "";
+  // What the value means, beside the field at all times (TASK-165: "0 - Hive rents nothing").
+  const meaning = note ? note(dirty ? draft : s.value) : "";
+  // A limit that may be lifted offers "No limit" as its own choice, not a word to know.
+  const lifted = kind === "count-or-none" && /^(none|off|unlimited)$/i.test(s.value.trim());
   const pendingWarning = warn && pending !== null ? warn(pending) : "";
   return (
     <div className="grid gap-3 px-4 py-3 sm:px-5 md:grid-cols-[minmax(0,1fr)_auto] md:items-start md:gap-x-8">
@@ -244,6 +248,11 @@ export function SettingRow({ s, canEdit, labels, title, warn }: { s: Setting; ca
               <Button size="sm" className="h-9" variant={dirty ? "default" : "outline"} disabled={!canEdit || !dirty} onClick={() => setPending(draft)}>
                 Save
               </Button>
+              {kind === "count-or-none" ? (
+                <Button size="sm" className="h-9" variant={lifted ? "secondary" : "outline"} aria-pressed={lifted} disabled={!canEdit || lifted} onClick={() => setPending("none")}>
+                  No limit
+                </Button>
+              ) : null}
               {dirty ? (
                 <Button size="sm" className="h-9" variant="ghost" onClick={() => setDraft(s.value)} aria-label={"Undo the change to " + named}>
                   <RotateCcwIcon /> Undo
@@ -258,6 +267,7 @@ export function SettingRow({ s, canEdit, labels, title, warn }: { s: Setting; ca
           )}
         </div>
         {h && (dirty || secret) ? <p className="text-xs leading-snug text-muted-foreground anywhere md:text-right">{h}</p> : null}
+        {meaning ? <p className="text-xs leading-snug text-muted-foreground anywhere md:text-right">{meaning}</p> : null}
         {warning ? (
           <p role="status" className="text-xs leading-snug text-warn anywhere md:text-right">
             {warning}

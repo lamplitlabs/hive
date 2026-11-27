@@ -20,7 +20,7 @@ import { errorText, writes, type AddMachineInput, type Compute, type ComputeCaps
 import { rel } from "@/lib/format";
 import { invalidate, useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
-import { ANY_PROJECT, ANY_PROJECT_WORD, requestProject, requestProjectHint } from "./compute-state";
+import { ANY_PROJECT, ANY_PROJECT_WORD, choiceLabel, fitChoices, limitChoices, requestProject, requestProjectHint, type RentalPreview, type RentChoice } from "./compute-state";
 import { TUNNEL_LOGIN, joinTunnelLines, parseJoinAddress } from "./join-address";
 
 // Adding a machine from the console, as a few short steps instead of a
@@ -175,6 +175,10 @@ function MachineWizard({ caps, close, lockRef }: { caps?: ComputeCaps; close: ()
   const [hours, setHours] = useState("4");
   const [reason, setReason] = useState("");
   const [approve, setApprove] = useState(true);
+  // TASK-165: the owner's answers before a rental - to "no waiting job can run on it" and to a
+  // limit an agent's request would hit. Nothing is filed until both are answered.
+  const [fitAnswer, setFitAnswer] = useState<RentChoice["id"] | "">("");
+  const [limitAnswer, setLimitAnswer] = useState<RentChoice["id"] | "">("");
   // The dry run and the real run of a pairing, by their start time.
   const [check, setCheck] = useState<{ started: string; name: string } | null>(null);
   const [run, setRun] = useState<{ started: string; name: string } | null>(null);
@@ -211,8 +215,17 @@ function MachineWizard({ caps, close, lockRef }: { caps?: ComputeCaps; close: ()
   const hoursOk = Number.isInteger(hoursN) && hoursN >= 1 && hoursN <= 72;
   const sizes = SIZES[provider];
   const sizeValue = exact.trim() || (size && sizes ? sizes[size] : "");
-  const full = caps ? caps.vms_now >= caps.max_vms : false;
+  const full = caps ? caps.max_vms >= 0 && caps.vms_now >= caps.max_vms : false;
   const providerName = PROVIDER_NAME[provider] ?? provider;
+
+  const previewQ = useApi<RentalPreview>(mode === "request" && step === "review" && chosenProject && hoursOk ? "compute/preview?project=" + encodeURIComponent(chosenProject) + "&hours=" + hoursN : null);
+  const preview = previewQ.data;
+  const fitAsk = preview ? fitChoices(preview) : null;
+  const limitAsk = preview?.limit ? limitChoices(preview.limit) : null;
+  // The limit question comes once the machine is wanted: not after Do not rent.
+  const askLimit = !!limitAsk && (!fitAsk || (fitAnswer !== "" && fitAnswer !== "keep-off"));
+  const keptOff = (fitAsk && fitAnswer === "keep-off") || (askLimit && limitAnswer === "keep-off");
+  const unanswered = mode === "request" && ((!!fitAsk && !fitAnswer) || (askLimit && !limitAnswer));
 
   const steps = STEPS[mode];
   const go = (s: Step) => {
@@ -275,7 +288,13 @@ function MachineWizard({ caps, close, lockRef }: { caps?: ComputeCaps; close: ()
         const r = (await writes.addMachine({ mode: "register", ssh: address.trim(), probe, ...common() } as AddMachineInput)) as MachineAdded;
         setDone({ kind: "register", r });
       } else {
-        const r = (await writes.addMachine({ mode: "request", project: chosenProject, size: sizeValue, hours: hoursN, reason: reason.trim(), approve })) as { request: ComputeRequest };
+        if (keptOff) {
+          close();
+          return;
+        }
+        if (fitAnswer === "linux") await writes.letProjectRunOnLinux(chosenProject);
+        const raise = askLimit && limitAnswer === "raise";
+        const r = (await writes.addMachine({ mode: "request", project: chosenProject, size: sizeValue, hours: hoursN, reason: reason.trim(), approve, ...(raise ? { raise: true } : {}) })) as { request: ComputeRequest };
         setDone({ kind: "request", r: r.request });
         invalidate((p) => p.startsWith("events"));
       }
@@ -369,7 +388,14 @@ function MachineWizard({ caps, close, lockRef }: { caps?: ComputeCaps; close: ()
   } else if (step === "use") {
     why = !workdirOk ? "The folder must be an absolute path." : !workersOk ? "Jobs at once: 1 to 64." : onlySome && !projects.length ? "Pick at least one project." : "";
     next = (
-      <Button onClick={() => go("review")} disabled={!!why}>
+      <Button
+        onClick={() => {
+          setFitAnswer("");
+          setLimitAnswer("");
+          go("review");
+        }}
+        disabled={!!why}
+      >
         Continue <ArrowRightIcon />
       </Button>
     );
@@ -382,9 +408,9 @@ function MachineWizard({ caps, close, lockRef }: { caps?: ComputeCaps; close: ()
     );
   } else if (step === "review")
     next = (
-      <Button onClick={() => void submit()} disabled={busy}>
+      <Button onClick={() => void submit()} disabled={busy || unanswered}>
         {busy ? <Loader2Icon className="animate-spin" /> : mode === "request" ? <CloudIcon /> : mode === "pair" ? <KeyRoundIcon /> : <ServerIcon />}
-        {mode === "pair" ? "Set it up" : mode === "register" ? "Add it" : approve ? "Start a machine" : "Ask for a machine"}
+        {mode === "pair" ? "Set it up" : mode === "register" ? "Add it" : keptOff ? "Close, rent nothing" : approve ? "Start a machine" : "Ask for a machine"}
       </Button>
     );
   else next = <Button onClick={close}>{running?.status === "running" ? "Close, it keeps going" : "Done"}</Button>;
@@ -671,6 +697,15 @@ function MachineWizard({ caps, close, lockRef }: { caps?: ComputeCaps; close: ()
                 </span>
               </label>
             ) : (
+              <>
+              {preview ? <p className="text-sm font-medium">{preview.fit_words}</p> : previewQ.error ? null : <p className={hint}>Looking at the waiting jobs...</p>}
+              {fitAsk ? <RentQuestion label="No waiting job can run on it" choices={fitAsk} value={fitAnswer} onChange={setFitAnswer} /> : null}
+              {askLimit && limitAsk ? (
+                <>
+                  <p className="text-sm">{preview!.limit_words.replace(/^Not rented: /, "Over a limit: ")}. Limits bound what agents and the daemon rent; your own request goes through.</p>
+                  <RentQuestion label="Over a limit" choices={limitAsk} value={limitAnswer} onChange={setLimitAnswer} />
+                </>
+              ) : null}
               <label className="flex items-start gap-3 rounded-xl border px-3 py-2.5 text-sm">
                 <Switch checked={approve} onCheckedChange={setApprove} aria-label="Start it right away" className="mt-0.5" />
                 <span className="min-w-0">
@@ -678,6 +713,7 @@ function MachineWizard({ caps, close, lockRef }: { caps?: ComputeCaps; close: ()
                   <span className={cn("block", hint)}>Approve the request as you make it. Off, it waits for you under Waiting for you.</span>
                 </span>
               </label>
+              </>
             )}
             {mode !== "request" ? (
               <Disclosure summary="Prefer the terminal?">
@@ -967,5 +1003,27 @@ export function PairingRow({ p }: { p: Pairing }) {
         ) : null}
       </div>
     </li>
+  );
+}
+
+// One question of the rent dialog (TASK-165): fixed answers to tap, the recommended one marked,
+// no free text.
+export function RentQuestion({ label, choices, value, onChange }: { label: string; choices: RentChoice[]; value: string; onChange: (id: RentChoice["id"]) => void }) {
+  return (
+    <div role="radiogroup" aria-label={label} className="grid gap-2">
+      {choices.map((c) => (
+        <button
+          key={c.id}
+          type="button"
+          role="radio"
+          aria-checked={value === c.id}
+          onClick={() => onChange(c.id)}
+          className={cn("grid gap-0.5 rounded-xl border px-3 py-2.5 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", value === c.id ? "border-primary bg-primary/10" : "bg-card hover:bg-muted/60")}
+        >
+          <span className="font-medium">{choiceLabel(c)}</span>
+          {c.detail ? <span className={hint}>{c.detail}</span> : null}
+        </button>
+      ))}
+    </div>
   );
 }

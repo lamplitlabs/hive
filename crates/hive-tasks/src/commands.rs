@@ -1753,9 +1753,9 @@ pub fn run_compute(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()>
                 format_args!(
                     "caps: provider {}  max_vms {} (in use {})  max_hours_per_day {} (today {})  auto_approve {}  budget_credits {}\n",
                     caps.provider,
-                    caps.max_vms,
+                    crate::compute::limit_words(caps.max_vms),
                     caps.vms_now,
-                    caps.max_hours_per_day,
+                    crate::compute::limit_words(caps.max_hours_per_day),
                     caps.hours_today,
                     caps.auto_approve,
                     caps.budget_credits

@@ -481,6 +481,30 @@ impl ComputeWorker {
         );
         self.say_line(format!("compute {} failed: {}", req.id, why));
     }
+    /// A request a rental limit refused: not rented, said as such on its row ("Not rented:
+    /// today's limit of 24 hours is used (12 used, this asks 12)") and in one finding, with the
+    /// owner's answers on the Machines page - Rent it anyway, Rent it and raise the limit to N,
+    /// Do not rent.
+    pub(crate) fn not_rented(&self, req: hive_tasks::ComputeRequest, hit: &hive_tasks::LimitHit) {
+        let words = hit.words();
+        if let Err(e) = hive_tasks::not_rented(&self.s, &req.id, hit, &self.o.actor) {
+            self.say_line(format!(
+                "compute {}: {}",
+                req.id,
+                crate::run::err_message(&e)
+            ));
+        }
+        let lower = words.trim_start_matches("Not rented: ");
+        self.finding(
+            req.clone(),
+            &format!("compute {} not rented: {lower}", req.id),
+            &format!(
+                "The request by {} for one {} machine for {} hour(s) ({}) was not rented: {lower}. The limits bound what agents and the daemon rent by themselves.\n\nOn the Machines page the request offers Rent it anyway, Rent it and raise the limit to {} (`{}`), or Do not rent. A machine you ask for yourself is never refused by a limit.\n",
+                req.requested_by, req.size, req.hours, req.reason, hit.raise_to, hit.setting
+            ),
+        );
+        self.say_line(format!("compute {} not rented: {lower}", req.id));
+    }
     pub(crate) fn no_source_finding(&self, req: hive_tasks::ComputeRequest, now: &str) {
         let day = now.get(..10).unwrap_or(now);
         if *self.no_source_day.lock().unwrap() == day {
@@ -523,6 +547,14 @@ impl ComputeWorker {
             return;
         };
         if cur.status != "approved" {
+            return;
+        }
+        // A limit refuses an agent's or the daemon's request in plain words, with the owner's
+        // buttons on its row; the owner's own call never gets here (`caps_hit`).
+        if let Ok(caps) = hive_tasks::get_caps(&self.s)
+            && let Some(hit) = caps_hit(&caps, &cur)
+        {
+            self.not_rented(cur, &hit);
             return;
         }
         let p = match checks_before_provider(&self.s, &req, &self.s.now()) {
@@ -663,7 +695,9 @@ impl ComputeWorker {
         if crate::util::must_iso(now) - crate::util::must_iso(&last)
             >= chrono::Duration::minutes(COMPUTE_IDLE_MINUTES as i64)
         {
-            return format!("the executor sat idle for {} minutes", COMPUTE_IDLE_MINUTES);
+            // Why it sat idle, in the words its row shows (TASK-165 item 4).
+            return rental_fit(&self.s, &req.project, &offered_caps(&self.s, &executor))
+                .idle_release_words();
         }
         String::new()
     }
@@ -1237,29 +1271,254 @@ pub(crate) fn compute_finding(
 }
 pub(crate) fn caps_allow(
     caps: hive_tasks::Caps,
-    _req: hive_tasks::ComputeRequest,
+    req: hive_tasks::ComputeRequest,
     _now: &str,
 ) -> String {
-    if caps.max_vms <= 0 || caps.vms_now > caps.max_vms {
-        return format!(
-            "cap: {} machine(s) approved, provisioning or ready against compute.max_vms={}",
-            caps.vms_now, caps.max_vms
-        );
-    }
-    // `hours_today` already holds every open request's unrun hours, whatever day it was made
-    // (`hive_tasks::compute::hours_today`), this one's included.
-    let used = caps.hours_today;
-    if caps.max_hours_per_day <= 0 || used > caps.max_hours_per_day {
-        return format!(
-            "cap: {} machine-hour(s) today against compute.max_hours_per_day={}",
-            used, caps.max_hours_per_day
-        );
+    if let Some(hit) = caps_hit(&caps, &req) {
+        return hit.words();
     }
     if !caps.login_source {
         return hive_tasks::NO_LOGIN_SOURCE.into();
     }
     String::new()
 }
+/// The rental limit a request passes when the worker is about to provision it (TASK-165): none
+/// for the owner's own call - asked or approved by the owner - which no limit refuses; for an
+/// agent's or the daemon's, `compute.max_vms` and `compute.max_hours_per_day` with the request
+/// already counted in both (`hive_tasks::compute::hours_today` holds every open request's
+/// unrun hours, this one's included).
+pub(crate) fn caps_hit(
+    caps: &hive_tasks::Caps,
+    req: &hive_tasks::ComputeRequest,
+) -> Option<hive_tasks::LimitHit> {
+    if hive_tasks::owners_call(req) {
+        return None;
+    }
+    caps.limit_hit_counted(req.hours)
+}
+/// What the jobs waiting now would make of one machine (TASK-165 items 3 and 4): how many it
+/// could run, how many wait in all, and per project the words a waiting job needs that the
+/// machine lacks (`brain` -> `macos`). Counts queued improve and task jobs of active projects
+/// that are not held on this machine, as the starved queue's rental does (`rentable_jobs`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct RentalFit {
+    pub fits: usize,
+    pub waiting: usize,
+    pub blocked: Vec<BlockedProject>,
+}
+
+/// A project whose waiting jobs a machine cannot run, and what they need that it lacks.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct BlockedProject {
+    pub project: String,
+    pub jobs: usize,
+    pub missing: Vec<String>,
+}
+
+impl RentalFit {
+    /// "brain needs macos; ios needs macos, xcode": what keeps the waiting jobs off the machine.
+    pub fn needs_words(&self) -> String {
+        self.blocked
+            .iter()
+            .map(|b| format!("{} needs {}", b.project, b.missing.join(", ")))
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+
+    /// The line the owner reads before renting: "2 waiting job(s) can run on it", or "No
+    /// waiting job can run on this machine: brain needs macos", or "No job is waiting now".
+    pub fn words(&self) -> String {
+        if self.fits > 0 {
+            return format!("{} waiting job(s) can run on it", self.fits);
+        }
+        if self.blocked.is_empty() {
+            return "No job is waiting now".into();
+        }
+        format!(
+            "No waiting job can run on this machine: {}",
+            self.needs_words()
+        )
+    }
+
+    /// Why a rented machine sat idle, for its release (item 4): "Released after 30 idle
+    /// minutes: no waiting job could run there (brain needs macos)".
+    pub fn idle_release_words(&self) -> String {
+        let lead = format!("Released after {COMPUTE_IDLE_MINUTES} idle minutes");
+        if self.fits > 0 {
+            return format!(
+                "{lead}: {} waiting job(s) could run there but none started",
+                self.fits
+            );
+        }
+        if self.blocked.is_empty() {
+            return format!("{lead}: no job was waiting");
+        }
+        format!(
+            "{lead}: no waiting job could run there ({})",
+            self.needs_words()
+        )
+    }
+}
+
+/// [`RentalFit`] for a machine offering `caps` that serves `project` (every project for
+/// `hive_tasks::ANY_PROJECT` or an empty one).
+pub(crate) fn rental_fit(
+    s: &hive_store::Store,
+    project: &str,
+    caps: &std::collections::BTreeSet<String>,
+) -> RentalFit {
+    let Ok(conn) = s.conn() else {
+        return RentalFit::default();
+    };
+    let any = project.is_empty() || project == hive_tasks::ANY_PROJECT;
+    let rows = crate::util::must_rows(
+        &conn,
+        &format!(
+            "SELECT j.project, j.needs FROM jobs j JOIN projects p ON p.slug = j.project WHERE j.status = 'queued' AND p.status = 'active' AND j.kind IN ({}) AND (? OR j.project = ?) AND NOT EXISTS (SELECT 1 FROM harness_sessions h JOIN runs r ON r.id = h.run_id WHERE h.job_id = j.id AND h.status = 'held' AND r.executor = '{}') ORDER BY j.created_at",
+            crate::jobs::work_kinds_sql(),
+            crate::executor::LOCAL_EXECUTOR
+        ),
+        &[&any, &project],
+    );
+    let mut fit = RentalFit {
+        waiting: rows.len(),
+        ..Default::default()
+    };
+    for r in rows {
+        let missing = hive_store::needs::missing(&r.str("needs"), caps);
+        if missing.is_empty() {
+            fit.fits += 1;
+            continue;
+        }
+        let project = r.str("project");
+        let i = match fit.blocked.iter().position(|b| b.project == project) {
+            Some(i) => i,
+            None => {
+                fit.blocked.push(BlockedProject {
+                    project,
+                    ..Default::default()
+                });
+                fit.blocked.len() - 1
+            }
+        };
+        let b = &mut fit.blocked[i];
+        b.jobs += 1;
+        for w in missing {
+            if !b.missing.contains(&w) {
+                b.missing.push(w);
+            }
+        }
+    }
+    fit
+}
+
+/// What a machine `executor` offers, from its row; the class the daemon rents when the row is
+/// gone or says nothing.
+pub(crate) fn offered_caps(
+    s: &hive_store::Store,
+    executor: &str,
+) -> std::collections::BTreeSet<String> {
+    let row = if executor.is_empty() {
+        Row::default()
+    } else {
+        crate::executor::executor_row(s, executor)
+    };
+    if row.0.is_empty() {
+        return crate::daemon::rented_caps(s);
+    }
+    crate::executor::caps(&row)
+}
+
+/// The owner's rental preview (TASK-165 items 1 and 3), before a machine is filed from the
+/// console: what the waiting jobs make of a rented machine for `project`, and the limit the
+/// request would pass if an agent asked for it - which the owner's own request does not obey,
+/// but is told about with the choice to raise it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct RentalPreview {
+    pub fit: RentalFit,
+    pub fit_words: String,
+    pub limit: Option<hive_tasks::LimitHit>,
+    pub limit_words: String,
+    /// The OS words the project's own needs carry (`macos`) that a rented Linux machine lacks:
+    /// what "Let project jobs run on Linux" would drop.
+    pub os_needs: Vec<String>,
+    pub linux_risk: String,
+}
+
+pub fn rental_preview(s: &hive_store::Store, project: &str, hours: i32) -> RentalPreview {
+    let caps = crate::daemon::rented_caps(s);
+    let fit = rental_fit(s, project, &caps);
+    let limit = hive_tasks::get_caps(s)
+        .ok()
+        .and_then(|c| c.limit_hit(hours));
+    let needs = if project.is_empty() || project == hive_tasks::ANY_PROJECT {
+        String::new()
+    } else {
+        s.conn()
+            .ok()
+            .and_then(|c| {
+                c.query_row(
+                    "SELECT needs FROM projects WHERE slug = ?",
+                    [project],
+                    |r| r.get::<_, String>(0),
+                )
+                .ok()
+            })
+            .unwrap_or_default()
+    };
+    let os_needs: Vec<String> = hive_store::needs::stored(&needs)
+        .into_iter()
+        .filter(|w| hive_store::needs::OS_WORDS.contains(&w.as_str()) && !caps.contains(w))
+        .collect();
+    let linux_risk = if os_needs.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "{project}'s jobs then run on Linux machines too: work that only builds or passes its check on {} fails there and lands nothing, and a project file that says `needs: {}` sets it back when it changes",
+            os_needs.join(", "),
+            os_needs.join(", ")
+        )
+    };
+    RentalPreview {
+        fit_words: fit.words(),
+        fit,
+        limit_words: limit.as_ref().map(|h| h.words()).unwrap_or_default(),
+        limit,
+        os_needs,
+        linux_risk,
+    }
+}
+
+/// "Let project jobs run on Linux": drops the OS words a rented Linux machine lacks from the
+/// project's needs (its queued jobs follow, `hive_board::set_project_needs`), as the owner.
+/// Returns the needs left.
+pub fn let_project_run_on_linux(
+    s: &hive_store::Store,
+    project: &str,
+    actor: &str,
+) -> Result<String> {
+    let preview = rental_preview(s, project, 1);
+    if preview.os_needs.is_empty() {
+        return Ok(String::new());
+    }
+    let conn = s.conn()?;
+    let needs: String = conn.query_row(
+        "SELECT needs FROM projects WHERE slug = ?",
+        [project],
+        |r| r.get(0),
+    )?;
+    let kept: Vec<String> = hive_store::needs::stored(&needs)
+        .into_iter()
+        .filter(|w| !preview.os_needs.contains(w))
+        .collect();
+    let set = if kept.is_empty() {
+        "-".to_string()
+    } else {
+        kept.join(",")
+    };
+    hive_board::set_project_needs(s, project, &set, actor)
+}
+
 /// What the worker checks before it asks the provider for anything, in its order: the caps, that
 /// the provider is built in, and that the binary the machine would be paired with can be
 /// resolved. `Err` is the reason the request fails with, or `NO_LOGIN_SOURCE`, which holds it
