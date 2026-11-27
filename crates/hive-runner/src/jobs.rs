@@ -5581,6 +5581,129 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         check(&s, &run, &job, &workdir);
     }
 
+    /// TASK-170: a worker on a hand ended by an outside SIGTERM is not
+    /// judged either. The hand reports the worker's exit 143, the brain
+    /// requeues the job without using an attempt, fetches the commit from
+    /// the hand onto the job's `-failed` branch and names the hand in the
+    /// `job.signalled` event.
+    #[test]
+    fn a_worker_on_a_hand_ended_from_outside_is_requeued_with_its_commit_kept() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = hive_testutil::env_lock();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let bin = crate::test_helpers::build_hive();
+        let _stage = crate::test_helpers_staged_hive::stage_local_hive(&bin);
+        let s = crate::test_helpers::new_store();
+        let (_proj, root) = crate::test_helpers::new_bare_repo(&s);
+        crate::test_helpers::join(&s, "aurora");
+        s.set_setting(crate::util::HUMAN_AGENT, "minutes_per_job", "1")
+            .unwrap();
+        let workroot = tempfile::tempdir().unwrap();
+        let workdir = workroot.path().join("srv");
+        let hands_home = tempfile::tempdir().unwrap();
+        let fake_path = crate::test_helpers::fake_hands_path(&[]);
+        let fake_path = fake_path.trim_start_matches("PATH=").to_string();
+        let hand = crate::test_helpers_hands::hive_hand_binary();
+        let old_ssh = crate::executor::set_run_ssh(|_, _, _, _| unreachable!());
+        let _ssh = crate::test_helpers_hands::RunSshGuard::new(old_ssh);
+        let runner = crate::executor::local_hand_runner(
+            hand,
+            vec![
+                ("HIVE_HANDS_WORKDIR".into(), workdir.display().to_string()),
+                ("HOME".into(), hands_home.path().display().to_string()),
+                ("HIVE_HANDS_ALLOW_ANY_WORKER".into(), "1".into()),
+                ("HIVE_HANDS_KEYS_OK".into(), "yes".into()),
+                ("PATH".into(), fake_path),
+            ],
+        );
+        crate::executor::set_run_ssh(move |c, a, i, t| runner(c, a, i, t));
+        crate::executor::add_executor(
+            &s,
+            crate::test_helpers::TEST_NOW,
+            "hands",
+            "hive@hands",
+            workdir.to_str().unwrap(),
+            1,
+            "*",
+            crate::util::HUMAN_AGENT,
+        )
+        .unwrap();
+        let (ok, note) = crate::executor::probe_executor(
+            &s,
+            "hands",
+            crate::util::HUMAN_AGENT,
+            crate::test_helpers::TEST_NOW,
+        )
+        .unwrap();
+        assert!(ok, "probe: {note:?}");
+        let job = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "remote".into(),
+            "note it remotely".into(),
+            1,
+            0,
+            "test".into(),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap()
+        .0;
+        let job_id = job.str("id");
+        // The worker commits, then something on the machine sends it
+        // SIGTERM: no hold, cancel or timeout is on record for its run.
+        let (run, reason) = crate::run::work_once(
+            &s,
+            "aurora",
+            "",
+            "",
+            crate::test_helpers::TEST_NOW,
+            crate::run::RunOpts {
+                executor: "hands".into(),
+                worker_cmd: "sh -c 'echo hi > note.txt && git add note.txt && git commit -q -m note && kill -TERM $$'".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(reason.is_empty(), "{reason}");
+        assert_eq!(run.str("executor"), "hands", "run {run:?}");
+        assert_eq!(run.int("exit_code"), 143, "run {run:?}");
+        assert_eq!(run.str("status"), "held", "run {run:?}");
+        assert!(
+            run.str("summary")
+                .starts_with("ended by an outside SIGTERM (exit 143)"),
+            "run {run:?}"
+        );
+        let after = crate::jobs::job_row(&s.conn().unwrap(), job_id.clone());
+        assert_eq!(after.str("status"), "queued", "job {after:?}");
+        assert_eq!(
+            after.int("attempts"),
+            0,
+            "the lease's attempt is given back: {after:?}"
+        );
+        let kept = crate::land::failed_work_branch("aurora", &job_id);
+        let log = crate::test_helpers::run(&root, &["git", "log", "--format=%s", "-1", &kept]);
+        assert_eq!(log.trim(), "note", "kept branch {kept}");
+        let ev = crate::util::must_one(
+            &s.conn().unwrap(),
+            "SELECT detail FROM events WHERE action = 'job.signalled' AND subject = ?",
+            &[&job_id],
+        );
+        let d = crate::util::json_map(&ev.str("detail"));
+        assert_eq!(d.get("executor").and_then(|v| v.as_str()), Some("hands"));
+        assert_eq!(
+            d.get("commits").and_then(serde_json::Value::as_i64),
+            Some(1)
+        );
+        assert_eq!(
+            d.get("branch").and_then(|v| v.as_str()),
+            Some(kept.as_str())
+        );
+    }
+
     /// TASK-133 part 2: a machine whose `git-upload-pack` does not answer
     /// (every hand before the fix) still sends its commits: the brain asks
     /// for the `bundle` verb and fetches from that, and the run lands.
@@ -6541,6 +6664,106 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         assert!(
             ok && !note.contains("warning"),
             "path-reporting hands must not warn: ok={ok} note={note:?}"
+        );
+    }
+
+    /// TASK-170: hands that run a hive from before pull request 299 (their
+    /// probe answers no `trailers=2`) are said once on the board, not on
+    /// every probe; current hands forget it, so a machine that goes back to
+    /// an older hive is said again.
+    #[test]
+    fn hands_on_an_older_hive_are_said_once() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_repo(&s);
+        crate::executor::add_executor(
+            &s,
+            crate::test_helpers::TEST_NOW,
+            "hands",
+            "hive@hands",
+            "/srv/hive",
+            1,
+            "*",
+            crate::util::HUMAN_AGENT,
+        )
+        .unwrap();
+        let base = "hands=ok user=hive workdir=/srv/hive git=2.40 harness=yes hive=/usr/local/bin/hive remotes=0 keys_ok=yes disk_free_mb=20480 jobs=- keys=- heartbeat=1 steps=1 recipe=1 push=1";
+        let current = format!(
+            "{base} trailers={}\n",
+            hive_hand_core::provenance::HOOK_VERSION
+        );
+        let said = |s: &hive_store::Store| {
+            crate::util::must_one(
+                &s.conn().unwrap(),
+                "SELECT COUNT(*) AS n FROM posts WHERE kind = 'finding' AND thread = ?",
+                &[&crate::executor::OLDER_HANDS_THREAD],
+            )
+            .int("n")
+        };
+        // (what the hands answer, findings on the board after the probe)
+        for (reply, posts) in [
+            (current.clone(), 0),
+            (format!("{base}\n"), 1),
+            (format!("{base} trailers=1\n"), 1),
+            (format!("{base}\n"), 1),
+            (current.clone(), 1),
+            (format!("{base}\n"), 2),
+        ] {
+            let old = crate::executor::run_ssh_hook();
+            crate::executor::set_run_ssh(fake_probe_ssh);
+            *PROBE_REPLY.write().unwrap() = reply.clone();
+            let (ok, note) = crate::executor::probe_executor(
+                &s,
+                "hands",
+                crate::util::HUMAN_AGENT,
+                crate::test_helpers::TEST_NOW,
+            )
+            .unwrap();
+            crate::executor::restore_run_ssh(old);
+            assert!(ok, "older hands still run jobs: {note}");
+            assert_eq!(said(&s), posts, "after {reply:?}");
+        }
+        let p = crate::util::must_one(
+            &s.conn().unwrap(),
+            "SELECT * FROM posts WHERE kind = 'finding' AND thread = ? ORDER BY rowid LIMIT 1",
+            &[&crate::executor::OLDER_HANDS_THREAD],
+        );
+        assert_eq!(
+            p.str("summary"),
+            "hands on hands run an older hive (before pull request 299)"
+        );
+        assert!(
+            p.str("body")
+                .contains("hive pair <admin@host> --name hands"),
+            "{p:?}"
+        );
+        // What this build's hands answer is current.
+        let reply = {
+            let workdir = tempfile::tempdir().unwrap();
+            let out = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+            struct Shared(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+            impl std::io::Write for Shared {
+                fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                    self.0.lock().unwrap().extend_from_slice(b);
+                    Ok(b.len())
+                }
+                fn flush(&mut self) -> std::io::Result<()> {
+                    Ok(())
+                }
+            }
+            let (mut h, _env) = crate::test_helpers::new_test_hands(
+                &workdir.path().display().to_string(),
+                Some(Box::new(Shared(out.clone()))),
+                None,
+            );
+            h.probe().unwrap();
+            String::from_utf8(out.lock().unwrap().clone()).unwrap()
+        };
+        let fields = hive_hand_core::transport::parse_probe(&reply);
+        assert_eq!(
+            crate::executor::older_hands_warning("hands", &fields),
+            None,
+            "{reply}"
         );
     }
 

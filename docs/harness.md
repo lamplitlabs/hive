@@ -156,6 +156,11 @@ with a person at the keyboard too: `pkill`, `killall`, and a `kill` whose
 pids come from `pgrep`, `pidof`, `lsof` or `ps` (in `$(...)`, backticks or
 through `xargs`) get one line back - stop only what you started, by its pid
 - and exit 126 without running (`crates/hive-harness/src/killguard.rs`).
+The shell's own words do not hide them: `if`, `then`, `else`, `while`,
+`do`, `!` and `{` before the command are read past, so `if true; then
+pkill node; fi` is refused, and so is a `kill` of a variable filled from a
+pid lister (`pid=$(pgrep node); kill $pid`, `for p in $(pgrep node); do
+kill $p; done`, `pgrep node | while read p; do kill $p; done`).
 One agent's `pkill -f "mock/server.mjs" -U $(id -u) -f` once matched every
 process of the user and ended every agent's worker and some of the owner's
 programs. `kill <pid>`, `kill $!`, `kill %1` and `kill $(cat server.pid)`
