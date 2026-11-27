@@ -224,6 +224,27 @@ project kept an improve job queued for a day while fairness saw each project
 served; a kept slot still takes the meta kinds when no work is queued.
 Configured concurrency, daily limits and lead priority remain unchanged.
 
+A queued pull request review goes before all of that work, on every slot,
+work-first ones too: after the job its agent holds and with the owner's work,
+it comes ahead of the jobs that need a kind of machine, the work class and
+the fairness (`lease_job`'s ORDER BY). Nothing a work job makes lands until
+the pull requests ahead of it are reviewed, and a work job that conflicts with
+the stack only adds a join or rebase job (priority 80) in front of the review
+(priority 60) that would shrink it. One review per project is queued at a
+time, so it cannot crowd the work out. On 2026-11-27 the review of pull
+request 307 waited 40 minutes while six task jobs of its project leased
+before it, with nine pull requests stacked behind it (TASK-186).
+
+A review also passes the load line: it is the owner's work
+(`OWNER_DRIVEN_SQL`), so the one express slot the load governor keeps open
+over a soft hold, or one past a cap full of the fleet's work, may take it, and
+with the order above it takes the review before the owner's task jobs. It
+waited "load 25 > 24" for 24 minutes on pull request 304 because those task
+jobs went first. Critical memory pressure, a free-memory floor breach and a
+load over twice the line still close that slot to every run. The last free
+local slot, kept back from the owner's work past its share (`keep_slot`),
+never refuses a review: it is kept for a lead's sitting, an answer or a review.
+
 When one of the owner's jobs (a lead's sitting, an answer, a job planned from
 an owner task, a security update) has waited in the queue for ten minutes
 (`hive_tasks::OWNER_WAIT_MINUTES`), the daemon writes one `job.owner-wait`
@@ -240,6 +261,13 @@ gets its own event. On 2026-11-03 the owner's TASK-055 waited from 04:40 to
 15:18 behind full lanes, a load of 26-30 over the line 24 and a restart
 window, and only the daemon's deduped idle log said so
 (crates/hive-runner/src/owner_wait.rs).
+
+A waiting review also names what went before it: `disk headroom` when a
+local slot waited for disk room, and `leased first: job-a (task), job-b (lead
+sitting, kept slot), job-c (improve) and 2 more` for the jobs leased on this
+machine while it waited (a review runs here alone, so a lease on a hand is
+not ahead of it), `kept slot` marking a lease on the last free local slot.
+The event of the review of pull request 307 had an empty reasons list.
 
 The slot count and the memory floor in those holds are not settings any more.
 `daemon.max_jobs` (local runs at once) and `daemon.min_free_mem_mb` (the
