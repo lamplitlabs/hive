@@ -4553,6 +4553,29 @@ impl Agent {
             title: title.to_string(),
             ..Step::default()
         });
+        // Stopping processes by name or pattern is refused in every mode,
+        // with a person at the keyboard too: one `pkill -f` ended every
+        // agent's worker and the owner's programs (TASK-151).
+        if let Some(reason) = crate::killguard::kill_refusal(command) {
+            let obs = Observation {
+                output: reason,
+                exit_code: 126,
+                ..Observation::default()
+            };
+            self.emit(Step {
+                kind: StepKind::Error,
+                content: obs.output.clone(),
+                command: command.to_string(),
+                ..Step::default()
+            });
+            self.emit_observation(command, &obs);
+            return (
+                format_observation(&obs, self.cfg.output_limit),
+                obs,
+                false,
+                String::new(),
+            );
+        }
         if let Some(rule) = self.denied(command) {
             let description = rule.description.clone();
             if self.ui.is_none() || self.locked_down() {
@@ -10011,6 +10034,29 @@ mod tests {
         assert_eq!(got.exit_status, EXIT_SUBMITTED);
         assert!(env.lock().unwrap().commands.is_empty());
         assert!(h.messages()[3].content.contains("refused by policy"));
+    }
+
+    #[test]
+    fn pattern_kill_is_refused_and_kill_of_a_pid_runs() {
+        let _serial = crate::test_helpers::serial();
+        // The command that stopped every worker on the machine (TASK-151).
+        let pkill = r#"pkill -f "mock/server.mjs" -U $(id -u) -f"#;
+        let p = Arc::new(FakeProvider::new(vec![
+            resp(tool(pkill)),
+            resp(tool("kill 4242")),
+            resp(msg("SUMMARY: done")),
+        ]));
+        let env = Arc::new(Mutex::new(FakeEnv::default()));
+        let (h, got) = run_agent(p, env.clone(), base_config()).unwrap();
+        assert_eq!(got.exit_status, EXIT_SUBMITTED);
+        assert_eq!(env.lock().unwrap().commands, vec!["kill 4242".to_string()]);
+        let refusal = h
+            .messages()
+            .iter()
+            .find(|m| m.content.contains("stop only what you started"))
+            .map(|m| m.content.clone())
+            .expect("the pkill observation carries the refusal");
+        assert!(refusal.contains("kill <pid>"), "{refusal}");
     }
 
     #[test]

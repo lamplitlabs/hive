@@ -205,6 +205,16 @@ fn report_turn(
         false,
         t.spec,
     );
+    let cmd = match crate::exec::brief_off_argv(&*ex, &session, &message, cmd) {
+        Ok(cmd) => cmd,
+        Err(e) => {
+            log.add(format!(
+                "report turn could not run: {}; the landing waits for the report",
+                err_message(&e)
+            ));
+            return;
+        }
+    };
     let mut cmd = crate::exec::with_resume(cmd, &trajectory);
     cmd.extend(["--session".to_string(), session.clone()]);
     if !t.pins.is_empty() {
@@ -1626,6 +1636,16 @@ pub(crate) fn run_job(
                 agent_spec.as_ref(),
             ),
         };
+        // The brief goes to the worker in a file, never on its command
+        // line: another agent's `pkill -f <pattern>` matched workers by the
+        // words of their briefs and stopped them all (TASK-151).
+        if !custom_worker {
+            let opening = match &resume {
+                Some(r) => continuation_message(&run_id, r, &clone),
+                None => brief_text.clone(),
+            };
+            cmd = crate::exec::brief_off_argv(&*ex, &run_id, &opening, cmd)?;
+        }
         // The owner's work job starts past its project's narrowed lanes and
         // share (jobs.rs lease_job), up to the lock's bound, so on this
         // machine its gated commit may wait for every other check in the

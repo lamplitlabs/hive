@@ -151,6 +151,20 @@ cannot be covered by the snapshot they restore. In a session `/procs`
 lists them, `/procs ID [LINES]` shows the tail of one, `/procs stop ID|all`
 ends them ([Chatting with the harness](#chatting-with-the-harness), below).
 
+Stopping processes by name or pattern is refused in every run and session,
+with a person at the keyboard too: `pkill`, `killall`, and a `kill` whose
+pids come from `pgrep`, `pidof`, `lsof` or `ps` (in `$(...)`, backticks or
+through `xargs`) get one line back - stop only what you started, by its pid
+- and exit 126 without running (`crates/hive-harness/src/killguard.rs`).
+One agent's `pkill -f "mock/server.mjs" -U $(id -u) -f` once matched every
+process of the user and ended every agent's worker and some of the owner's
+programs. `kill <pid>`, `kill $!`, `kill %1` and `kill $(cat server.pid)`
+run as before, and so does the `process` tool's `stop`. For the same reason
+the runner hands a worker its brief in a file (`--task-file`, written in
+the run's TMPDIR or by the hand's `brief` verb beside the clone), never on
+its command line, so no pattern another program matches against command
+lines finds a worker by the words of its brief.
+
 ## What a run brings with it
 
 ### Memory
