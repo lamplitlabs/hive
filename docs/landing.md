@@ -169,7 +169,14 @@ upstream default branch.
 The commits are the runner's: each carries its `Hive-Agent`, `Hive-Job` and
 `Hive-Executor` trailers and the run key's signature, and `hive verify
 <ref>` checks that they match the run that made it (ADR-022; `hive signers`
-lists the trusted keys). The `land.pr` event names the pull request (`number`,
+lists the trusted keys). The trailers come from a `prepare-commit-msg` hook
+the runner writes into the job's clone (on a hand, its `key` verb): it adds
+them with `git interpret-trailers --no-divider --if-exists addIfDifferent`,
+so neither a last paragraph of `Word: text` lines nor a `---` line in the
+message hides them, reads them back, and refuses the commit with one sentence
+when one is still missing. A commit that reaches the landing without them is
+refused, and its work is kept on `hive/<agent>/<job>-failed` and in a patch.
+The `land.pr` event names the pull request (`number`,
 `url`, `title`), the branches (`head`, `base`, `remote`), the commits (`from`,
 the merge base with the default branch; `to`, the head pushed; `commits`, how
 many between them), the `jobs` it delivers, whether the pass `opened` the pull

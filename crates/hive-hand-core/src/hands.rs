@@ -395,10 +395,11 @@ impl Hands {
         };
         writeln!(
             self.stdout,
-            "hands=ok user={user} workdir={} git={gitv} harness={harness} hive={hivev}{lookup} remotes={remotes} keys_ok={keys_ok} disk_free_mb={free} jobs={} keys={} heartbeat=1 steps=1 recipe=1 push=1 os={} arch={} found={} cores={} mem_mb={}",
+            "hands=ok user={user} workdir={} git={gitv} harness={harness} hive={hivev}{lookup} remotes={remotes} keys_ok={keys_ok} disk_free_mb={free} jobs={} keys={} heartbeat=1 steps=1 recipe=1 push=1 trailers={} os={} arch={} found={} cores={} mem_mb={}",
             self.workdir,
             dash(jobs),
             dash(keys),
+            crate::provenance::HOOK_VERSION,
             crate::needs::this_os(),
             crate::needs::this_arch(),
             dash(crate::machine::found_labels().to_vec()),

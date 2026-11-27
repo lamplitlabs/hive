@@ -566,6 +566,14 @@ cargo build -p hive-hand --release    # target/release/hive-hand, about 2 MB
 HIVE_HANDS_WORKDIR=/srv/hive target/release/hive-hand probe
 ```
 
+The probe answers `trailers=2` when the hand writes the commit hook of
+pull request 299 and later (`addIfDifferent`, read back, `--no-divider`).
+Hands that answer less run an older hive: their hook can let a commit out
+without its trailers and their harness does not refuse `pkill`. Jobs keep
+running there; the brain posts one finding per machine on the
+`runner/older-hands` thread, said again only after a probe found the hands
+current and a later one finds them older again.
+
 **What it links.** The executor pieces live in `crates/hive-hand-core`,
 which `hive-runner` (the brain) and `hive-hand` both build from - the
 hands protocol (`hands.rs`), process groups and budgets (`proc.rs`,

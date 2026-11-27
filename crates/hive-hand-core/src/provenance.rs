@@ -4,6 +4,13 @@
 /// The trailer keys, in the order the hook writes them.
 pub static PROVENANCE_TRAILERS: &[&str] = &["Hive-Agent", "Hive-Job", "Hive-Executor"];
 
+/// Which hook a machine's hands write, as their probe answers `trailers=N`:
+/// 2 adds the trailers with `addIfDifferent`, reads them back and refuses a
+/// commit that would go out without one (pull request 299, TASK-151), past
+/// a `---` line (`--no-divider`, TASK-170). Hands that answer less, or
+/// nothing, run an older hive: the brain says so once (`executor.rs`).
+pub const HOOK_VERSION: u32 = 2;
+
 /// The words the hook's refusal opens with when a commit would go out
 /// without one of its trailers (the trailer follows, quoted).
 pub const MISSING_TRAILER_SENTENCE: &str = "this commit would not carry its trailer";
