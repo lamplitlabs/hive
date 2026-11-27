@@ -2330,6 +2330,9 @@ pub(crate) fn run_job(
                     // retry can start from them instead of from the run record.
                     let kept_branch = crate::land::failed_work_branch(agent, &job.str("id"));
                     let mut fetch_failed = false;
+                    // How to get commits that stayed on the machine; a red
+                    // base verdict below rewrites the summary and keeps it.
+                    let mut how_clause = String::new();
                     let kept = crate::land::keep_failed_work(
                         &root,
                         |dst| {
@@ -2354,7 +2357,8 @@ pub(crate) fn run_job(
                         let how = ex.fetch_by_hand(&root, &kept_branch);
                         if !how.is_empty() {
                             work_not_fetched = true;
-                            summary.push_str(&format!("; its commits could not be fetched: {how}"));
+                            how_clause = format!("its commits could not be fetched: {how}");
+                            summary.push_str(&format!("; {how_clause}"));
                         }
                     }
                     // A check that did not run (the disk under the floor, the
@@ -2387,6 +2391,9 @@ pub(crate) fn run_job(
                         );
                         if !kept.is_empty() {
                             summary.push_str(&format!("; {kept}"));
+                        }
+                        if !how_clause.is_empty() {
+                            summary.push_str(&format!("; {how_clause}"));
                         }
                     }
                 } else if !lease_ok(5) {

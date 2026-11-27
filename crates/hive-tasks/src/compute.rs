@@ -365,18 +365,28 @@ pub fn request_compute(
 /// How many of the last runs with commits on rented or paired machines came
 /// back to land (TASK-133): the runs counted are the most recent
 /// [`MACHINE_RUNS_SEEN`] finished runs with commits on any executor but this
-/// machine, and a run came back when it ended `done` - its commits were
-/// fetched to the brain and handed to the landing. A request for a machine
-/// says it, so nobody rents a machine whose work cannot come back. Empty
-/// when no machine has run work with commits yet.
+/// machine whose outcome says something about the machine. A run came back
+/// when it ended `done` - its commits were fetched to the brain and handed
+/// to the landing - and did not when its commits could not be fetched (an
+/// `executor.fetch-failed` event names the run, or, before that event, its
+/// summary begins "could not land the branch"). A failed check, an identity
+/// refusal or a stale lease would have ended the same on this machine, so
+/// they are not counted against the machines (TASK-138 item 5). A request
+/// for a machine says it, so nobody rents a machine whose work cannot come
+/// back. Empty when no machine has run work with commits yet.
 pub fn machine_landing_line(s: &hive_store::Store) -> Result<String> {
     let conn = s.conn()?;
     let (seen, landed, last): (i64, i64, String) = conn.query_row(
         "SELECT COUNT(*), COALESCE(SUM(status = 'done'), 0), COALESCE(MAX(CASE WHEN status = 'done' THEN finished_at END), '')
-         FROM (SELECT status, finished_at FROM runs
-               WHERE executor NOT IN ('', 'local') AND commits > 0 AND finished_at != ''
-                 AND status != 'running'
-               ORDER BY finished_at DESC, id DESC LIMIT ?)",
+         FROM (SELECT r.status, r.finished_at FROM runs r
+               WHERE r.executor NOT IN ('', 'local') AND r.commits > 0 AND r.finished_at != ''
+                 AND r.status != 'running'
+                 AND (r.status = 'done'
+                      OR r.summary LIKE 'could not land the branch%'
+                      OR EXISTS (SELECT 1 FROM events e
+                                 WHERE e.action = 'executor.fetch-failed' AND e.subject = r.executor
+                                   AND json_valid(e.detail) AND json_extract(e.detail, '$.run') = r.id))
+               ORDER BY r.finished_at DESC, r.id DESC LIMIT ?)",
         [MACHINE_RUNS_SEEN],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )?;

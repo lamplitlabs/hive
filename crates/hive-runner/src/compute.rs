@@ -619,8 +619,28 @@ impl ComputeWorker {
         if ready_at.is_empty() {
             return String::new();
         }
+        let kept = if executor.is_empty() {
+            Vec::new()
+        } else {
+            crate::executor::kept_work(&self.s, &executor)
+        };
         if hours_up(&req, &ready_at, now) {
+            // The approved hours bound what the machine costs; what it
+            // still holds goes with it, and the reason says so.
+            if !kept.is_empty() {
+                return format!(
+                    "its {} hour(s) are up; the clone(s) of {} kept on it go with it (their commits were never fetched)",
+                    req.hours,
+                    kept_jobs(&kept)
+                );
+            }
             return format!("its {} hour(s) are up", req.hours);
+        }
+        // A clone whose commits could not be fetched is the only copy of its
+        // run's work: an idle machine holding one stays until the daemon's
+        // fetch probe brings the commits back or its hours are up (TASK-138).
+        if !kept.is_empty() {
+            return String::new();
         }
         // Idle is counted from when the machine came up ready (the request's last change), not
         // from when it was made: a spin-up longer than the idle minutes is not idleness.
@@ -648,10 +668,28 @@ impl ComputeWorker {
         String::new()
     }
     /// A rental past its hours that a run in flight keeps up: said once, in the daemon log and
-    /// on the request's card, since the machine stays and takes nothing from the queue.
+    /// on the request's card, since the machine stays and takes nothing from the queue. A
+    /// rental kept up inside its hours by clones whose commits were not fetched says that.
     fn say_past_hours(&self, req: &hive_tasks::ComputeRequest, now: &str) {
         let (executor, ready_at) = rented(&self.s, req);
         if !hours_up(req, &ready_at, now) {
+            let kept = if executor.is_empty() {
+                Vec::new()
+            } else {
+                crate::executor::kept_work(&self.s, &executor)
+            };
+            if kept.is_empty() {
+                return;
+            }
+            let note = format!(
+                "{executor} holds the clone(s) of {} whose commits could not be fetched: it is not released while idle, and the daemon tries the fetch again every {} minutes",
+                kept_jobs(&kept),
+                crate::executor::KEPT_FETCH_MINUTES
+            );
+            if req.note != note {
+                let _ = hive_tasks::note_compute(&self.s, &req.id, &note);
+                self.say_line(format!("compute {}: {note}", req.id));
+            }
             return;
         }
         let note = format!(
@@ -1028,6 +1066,13 @@ fn rented(s: &hive_store::Store, req: &hive_tasks::ComputeRequest) -> (String, S
         executor = m.executor.clone();
     }
     (executor, ready_at)
+}
+/// The jobs of kept clones, for a line: `job-a, job-b`.
+fn kept_jobs(kept: &[crate::executor::KeptClone]) -> String {
+    kept.iter()
+        .map(|k| k.job.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 /// Whether the hours a ready request asked for are over, counted from when its machine was made
 /// (`save_machine` keeps that stamp), as the day's cap counts them.
