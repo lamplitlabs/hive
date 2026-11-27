@@ -105,6 +105,7 @@ pub mod selfupdate;
 pub mod service;
 pub mod setup_repair;
 pub mod sign;
+pub(crate) mod signal_stop;
 pub(crate) mod stage_budget;
 pub mod steps_mirror;
 pub mod suggestions;

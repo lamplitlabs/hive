@@ -403,6 +403,17 @@ impl DaemonMaintenance {
                                 lines
                             }));
                         }
+                        if !cancel.is_cancelled() {
+                            // TASK-151 item 3: one finding per burst of
+                            // workers ended from outside, naming them all.
+                            lines.extend(b.once("outside signal", || {
+                                crate::signal_stop::tend_outside_signal_findings(
+                                    &s,
+                                    &s.now(),
+                                    &actor,
+                                )
+                            }));
+                        }
                         if !cancel.is_cancelled() && crate::run::runner_stopped(&s).is_empty() {
                             lines.extend(b.once("landing outcomes", || {
                                 crate::landing_outcome::tend_landing_outcomes(
