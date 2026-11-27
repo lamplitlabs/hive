@@ -1782,15 +1782,28 @@ pub(crate) fn daemon(
     // ADR-038: the framework's records travel in the binary; a store that lacks them gets them here.
     match hive_records::ensure_framework(s, &actor) {
         Err(err) => say(&o, format!("framework records: {err:#}")),
-        Ok(seeded) if !seeded.written.is_empty() => say(
-            &o,
-            format!(
-                "seeded {} framework record(s) from {}",
-                seeded.written.len(),
-                seeded.from
-            ),
-        ),
-        Ok(_) => {}
+        Ok(seeded) => {
+            if !seeded.written.is_empty() {
+                say(
+                    &o,
+                    format!(
+                        "seeded {} framework record(s) from {}",
+                        seeded.written.len(),
+                        seeded.from
+                    ),
+                );
+            }
+            if !seeded.revised.is_empty() {
+                say(
+                    &o,
+                    format!(
+                        "revised framework record(s) {} to the text of {}",
+                        seeded.revised.join(", "),
+                        seeded.from
+                    ),
+                );
+            }
+        }
     }
     for line in crate::selfupdate::check_restored(s, self_env.clone()) {
         say(&o, line);
