@@ -1275,7 +1275,23 @@ narrowed lanes; a lead's commit and the landing's own check take the same lock
 and are not counted, the step's grace covers them. The fleet's work keeps the narrowed
 lanes, and a fleet run in the owner's way is still asked to hold, so the lanes
 return to their count and its own commit is not killed waiting on the owner's
-check. The owner's work fits every restart window too (the window names the
+check.
+
+These counts are per machine (TASK-156). The verify lock is a file under each
+machine's own home, so a commit waits only for the checks on its machine, and
+a lease counts a project's jobs in flight on the machine it leases for - the
+run's executor, or the machine named in the `job.lease` event (`executor`)
+until the run starts. The share there is that machine's slots over the
+projects with work it could take - a job it could run: the machine serves the
+project, offers every word the job needs, and is not kept for other work -
+never below the fleet's share; the owner's bound is that share plus one. On
+2026-11-27 the brain had three runs on the Mac and three Mac-only research
+jobs of other projects queued: the fleet-wide count left a rented 8-core Linux
+machine one or two of the brain's nine waiting jobs. Counted per machine, the
+three on the Mac do not fill the hand's count and the Mac-only jobs do not
+divide its eight slots.
+
+The owner's work fits every restart window too (the window names the
 kinds expected to end before the runs in flight, a task on the brain never was
 one, and the same tasks waited through seven windows in a day; see
 [runner.md](runner.md)).
