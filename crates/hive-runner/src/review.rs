@@ -736,14 +736,16 @@ pub(crate) fn review_brief(
         "2. `hive review checkout {n}` - puts this clone on `{}`, the pull request's head. When it cannot, it records this review's verdict itself (`review.again`: a fresh review is queued, the owner is not asked); finish the job with what it said and give no other verdict.",
         review_branch(n)
     ));
-    b.push("3. Run the project's check. A red check is never merged.".into());
+    b.push(format!(
+        "3. `hive review check {n}` - runs the project's check here, on the pull request's head, and records the head, the exit and the log. Do not run the check by hand instead: `hive review merge {n}` refuses without a green check of this head recorded for this review. A red check is never merged; when its failing tests pass re-run alone they are flaky, and the command queues their fix as your verdict."
+    ));
     b.push(format!(
         "4. `hive review diff {n}` and read the whole diff as a reviewer: does it do what the title and body say, is it correct, is it tested, does it touch anything the body does not explain (secrets, deletions, paths outside its scope), does it break a convention the README or an ADR states."
     ));
     b.push("5. Exactly ONE verdict command:".into());
     if reasons.is_empty() {
         b.push(format!(
-            "   - `hive review merge {n}` - correct, safe, in scope, check green: it merges on GitHub and records review.merged. The command reads the pull request on GitHub first and refuses, without a verdict, a head that moved since this review was queued, a draft, a failing or still running check, or a merge GitHub blocks; a refusal is not a failure, so read the reason and finish the job with it. Checks still running, or GitHub refusing the merge with a 5xx or an internal error, keep your verdict: the command says the merge waits, and the daemon merges once the checks pass or GitHub answers - finish the job, do not review again."
+            "   - `hive review merge {n}` - correct, safe, in scope, check green: it merges on GitHub and records review.merged. The command reads the pull request on GitHub first and refuses, without a verdict, a head with no green `hive review check {n}` recorded (it names the check and its log), a head that moved since this review was queued, a draft, a failing or still running check, or a merge GitHub blocks; a refusal is not a failure, so read the reason and finish the job with it. Checks still running, or GitHub refusing the merge with a 5xx or an internal error, keep your verdict: the command says the merge waits, and the daemon merges once the checks pass or GitHub answers - finish the job, do not review again."
         ));
         b.push(format!(
             "   - `hive review changes {n} --note \"<the exact fixes>\"` - fixable: GitHub gets the request, and one follow-up job makes the fixes on the pull request's head; your note is its brief, so name files and what to change."

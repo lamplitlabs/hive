@@ -96,6 +96,7 @@ pub mod retention;
 pub mod retire;
 pub(crate) mod revert_scan;
 pub(crate) mod review;
+pub(crate) mod review_check;
 pub(crate) mod review_cli;
 pub mod run;
 pub mod runners;

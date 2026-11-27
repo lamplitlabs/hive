@@ -1292,12 +1292,12 @@ Flags:
 
 ### review
 
-Review the pull requests Hive opened: list and read them, check one out in the job's clone, then merge it, ask for changes, or hand it to the owner.
+Review the pull requests Hive opened: list and read them, check one out in the job's clone and run its check there, then merge it, ask for changes, or hand it to the owner.
 
 ```text
-hive review  review the pull requests Hive opened: list and read them, check one out in the job's clone, then merge it, ask for changes, or hand it to the owner
+hive review  review the pull requests Hive opened: list and read them, check one out in the job's clone and run its check there, then merge it, ask for changes, or hand it to the owner
 
-Usage: hive review list [--project SLUG] | show N | diff N | checkout N | merge N [--by owner] | changes N --note TEXT | owner N --note TEXT
+Usage: hive review list [--project SLUG] | show N | diff N | checkout N | check N | merge N [--by owner] | changes N --note TEXT | owner N --note TEXT
 
 Flags:
   -by owner
