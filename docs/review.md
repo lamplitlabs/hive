@@ -81,8 +81,9 @@ for the title, body, files and reasons; `hive review checkout <n>`, which
 puts the clone on `review/pr-<n>` at the pull request's head - fetched from
 the project's local repository, which holds every branch Hive pushed, or
 from the upstream's `refs/pull/<n>/head` when the local branch is not at the
-head GitHub has (a branch moved on the forge); run the project's check, since
-a red check is never merged; `hive review diff <n>` and read the whole diff
+head GitHub has (a branch moved on the forge); `hive review check <n>`,
+which runs the project's check there and records it, since a red check is
+never merged ([The check](#the-check)); `hive review diff <n>` and read the whole diff
 as a reviewer - does it do what the title and body say, is it correct, is it
 tested, does it touch anything the body does not explain, does it break a
 convention the README or an ADR states; exactly one verdict command; and
@@ -104,7 +105,8 @@ Where no reason holds, the verdict is one of three:
   the check passes on the branch, the change is safe and in scope. The
   command reads the pull request on GitHub first (`gh pr view`) and refuses
   to merge - without a verdict, so the job ends with the reason - a head
-  that moved since the review was queued (*the pull request moved since it
+  with no green `hive review check` of it recorded for this review ([The
+  check](#the-check)), a head that moved since the review was queued (*the pull request moved since it
   was reviewed: reviewed X, now Y; it is reviewed again*), a draft, a
   failing check (*has failing checks*) or one still running (*has checks
   pending*), and a merge GitHub would block (`mergeStateStatus` `DIRTY`,
@@ -141,6 +143,59 @@ request goes to you with the reviewer's findings, and the reviewer merges
 nothing. A verdict is refused when the pull request is no longer open on the
 forge (you merged or closed it while the review ran) or already has a
 verdict since its last push: a review gives exactly one.
+
+## The check
+
+The brief always said a red check is never merged, but until TASK-147 only
+the brief said it: `hive review merge` refused the checks GitHub reported
+failing and nothing else, so on a repository whose forge runs no check the
+reviewer's word was the only gate, and pull request 296 was merged red. The
+check now goes through the runner, and the merge reads what it recorded.
+
+`hive review check <n>`, run in the review's clone after `hive review
+checkout <n>`, runs the project's check (the verify command `hive env show`
+names, under `verify.lock` as a landing runs it, bounded by
+`minutes_per_job`) and records `review.check` with the head it ran on, the
+exit, the command and the log, kept whole under
+`<HIVE_HOME>/logs/review/<slug>-pr<n>-<head>-<time>.log`. It refuses, and
+records nothing, when the clone is not at the pull request's head (*run
+`hive review checkout <n>` first*), when tracked files differ from that head,
+or when the project has no check recorded - then no reviewer merge can be
+proved green, and the pull request is the owner's. It prints one line:
+`Check of #<n> green at <sha> (<cmd>); log <path>`, or `red at <sha> (exit
+N); failed: <tests>; log <path>`.
+
+`hive review merge <n>` then refuses unless the newest check recorded since
+this review was queued is green and ran on the head GitHub would merge. The
+refusal names the check and its log: *no check of #7 is recorded for this
+review*, *check of #7 red at abc123 (exit 1); failed: a::b; log …; a red
+check is never merged*, or *the newest check ran on 0ld0ld, but the head of
+#7 is abc123 now*. A check recorded for an earlier review of the same pull
+request does not count. `--by owner` keeps its meaning: your merge, from the
+hub's **Merge** button or a terminal, needs no recorded check.
+
+A red check is not merged even when its failures are flaky, so that one
+flaky test does not teach the reviewer that red is fine:
+
+- When a check fails, each failing test it names (libtest's `test NAME ...
+  FAILED` lines and `scripts/verify-check.sh`'s `failing tests:` list, at
+  most five) is re-run alone with `review.rerun_cmd`, the check's leading
+  `env NAME=value` words in front so it builds where the check built. When
+  every one passes alone, the check records them as `flaky` and `hive review
+  check` gives the verdict itself: a *changes* request on the pull request
+  whose note names the tests and asks for them to be made deterministic,
+  with every assertion kept ([The follow-up after
+  changes](#the-follow-up-after-changes)). The follow-up's new push is
+  reviewed and checked afresh.
+- A check that was red on a head and green on the same head afterwards (the
+  reviewer ran it again) is the same thing seen from the other side:
+  `hive review merge` does not merge it but hands the pull request to you
+  with the failing tests' names and both runs (`review.owner`), and prints
+  `Not merged: … handed to the owner with the flaky tests (…)`.
+
+A check that did not run - a full disk, a verify lock still held after
+`minutes_per_job` - says nothing about the tree; it is recorded with
+`did_not_run` and is not green either, so run it again.
 
 ## The complexity rule
 
@@ -223,8 +278,9 @@ number (`7` or `#7`); `--json` gives the same as data.
 | `hive review list [--project S]` | the pull requests Hive opened that wait for a verdict, every project's when no project is given: `<project> #<n>  <title>  [task T\|job J\|experiment\|proposed]  waiting\|queued\|running\|failed (<job>)  for the owner: <reasons>` and the url on the next line; `No open Hive pull requests.` when there are none |
 | `hive review show <n>` | one pull request from the forge: title and url, `<head> -> <base>  by <author>  <state>  +<added> -<deleted>`, `Kind: Hive task T` (or job, experiment, proposed; `not a Hive pull request` for one Hive did not open), either `May be merged by the reviewer when correct, safe, in scope and green.` (followed by `Read with extra care: …` for a large or mostly-deleting change) or `For the owner (do not merge):` with the reasons, the files with their counts, and the body |
 | `hive review diff <n>` | the diff against the base, from the forge |
+| `hive review check <n>` | inside a job clone, on the pull request's head: runs the project's check, keeps its log and records `review.check` (head, exit, log, failing tests); re-runs the failing tests alone and, when they all pass, queues their fix as the review's *changes* verdict ([The check](#the-check)) |
 | `hive review checkout <n>` | inside a job clone: fetches the pull request's head onto `review/pr-<n>` from the project's local repository, or from the upstream's `refs/pull/<n>/head` when the local branch is not at the head GitHub has, checks it out and prints `review/pr-<n> at <sha> (<head>)`; refused in the project's own checkout |
-| `hive review merge <n> [--by owner]` | merges on the forge (`gh pr merge --merge --delete-branch`; the branch is kept while another open pull request is based on it) as the account that works for the repository and prints `Merged #<n> (<url>) as <by>`; refuses, whoever asks, a head that moved since the review was queued, a draft, a failing or pending check and a merge GitHub blocks (`mergeStateStatus` `DIRTY`, `BLOCKED`, `BEHIND`), with the reason and no `review.failed`; refuses when reasons exist unless `--by owner` (`--by` takes no other value), which is what the hub's **Merge** button comes to. `--by owner` is the answer to a hand-off, so it is accepted after `review.owner` and after `review.changes` as well as before any verdict; a merged pull request takes no second one. Records `review.merged`, or `review.failed` when `gh` could not merge; the reviewer's merge (not `--by owner`) that meets only running checks, or a 5xx, internal error, rate limit or dropped connection from GitHub (on the merge or on the read before it), keeps the verdict as `review.merge-wait` and the daemon merges it later ([When an approved merge waits](#when-an-approved-merge-waits)) |
+| `hive review merge <n> [--by owner]` | merges on the forge (`gh pr merge --merge --delete-branch`; the branch is kept while another open pull request is based on it) as the account that works for the repository and prints `Merged #<n> (<url>) as <by>`; refuses the reviewer (not `--by owner`) unless the newest `review.check` of this review is green and of the head GitHub would merge, naming that check and its log, and hands a pull request whose check was red and then green on one head to you instead ([The check](#the-check)); refuses, whoever asks, a head that moved since the review was queued, a draft, a failing or pending check and a merge GitHub blocks (`mergeStateStatus` `DIRTY`, `BLOCKED`, `BEHIND`), with the reason and no `review.failed`; refuses when reasons exist unless `--by owner` (`--by` takes no other value), which is what the hub's **Merge** button comes to. `--by owner` is the answer to a hand-off, so it is accepted after `review.owner` and after `review.changes` as well as before any verdict; a merged pull request takes no second one. Records `review.merged`, or `review.failed` when `gh` could not merge; the reviewer's merge (not `--by owner`) that meets only running checks, or a 5xx, internal error, rate limit or dropped connection from GitHub (on the merge or on the read before it), keeps the verdict as `review.merge-wait` and the daemon merges it later ([When an approved merge waits](#when-an-approved-merge-waits)) |
 | `hive review changes <n> --note "…"` | asks for the changes on GitHub, queues the follow-up job and records `review.changes`; `--note` is required, since it becomes the follow-up's brief |
 | `hive review owner <n> --note "…"` | comments the findings on the pull request and hands it to you: `review.owner`, a question on the project's board, a message on the task; `--note` is required |
 
@@ -449,6 +505,7 @@ lists them at `GET /api/v1/events?project=X&action=review.*`.
 | --- | --- | --- |
 | `review.queued` | a review job is queued for a pull request | `project`, `number`, `url`, `job`, `kind` (`task`, `job`, `experiment`, `proposed`), `reasons`, `sha` (the head reviewed), `task` for a task's |
 | `review.merged` | the pull request was merged by `hive review merge` or for a Merge you pressed | `project`, `number`, `url`, `by` (the reviewing agent, or `owner`), `job` when a job ran the command, `head_sha` (the head merged), `checks` (how many reported), `no_checks` with a `note` when none did although the project has workflows |
+| `review.check` | `hive review check` ran the project's check on the pull request's head | `project`, `number`, `url`, `head_sha` (the head checked), `exit` (null when stopped at its time bound), `green`, `cmd`, `log` (the whole output), `failures` (the failing tests), `flaky` (the failing tests that all passed re-run alone), `did_not_run` when the check said nothing about the tree, `note` (the one line shown), `job` when a job ran it |
 | `review.changes` | the reviewer asked for changes | `project`, `number`, `url`, `note`, `follow_up` (the job queued) |
 | `review.owner` | the pull request was handed to you | `project`, `number`, `url`, `reasons`, `note` |
 | `review.failed` | a review job ended without a verdict, or a `gh` call of a verdict failed for a reason that does not pass | `project`, `number`, `url`, `error`, `job` when it was the job's ending |
@@ -477,6 +534,7 @@ reasons), `review.owner` at *needs your review*, `review.ask` at *merging*,
 | `review.max_lines` | `600` | the same for a pull request adding and deleting more lines than this together; generated paths are not counted |
 | `review.merge_wait_tries` | `5` | how many times the forge may fail a reviewer's approved merge (refuse it, or not be read, for a passing reason) before the wait ends and the pull request goes to you ([When an approved merge waits](#when-an-approved-merge-waits)) |
 | `review.merge_wait_hours` | `6` | how many hours an approved merge may wait, for its checks or for the forge, before the wait ends the same way |
+| `review.rerun_cmd` | `cargo test --workspace -- --exact {test}` | the command that re-runs one failing test of a red review check alone, `{test}` standing for its name; when every failing test passes this way they are flaky and the fix is queued instead of a merge ([The check](#the-check)); empty never re-runs |
 
 `hive settings set review.merge ask` sets one; the rest of the settings are in
 [self-improvement.md](self-improvement.md#evolution-runner-caps). An evolve

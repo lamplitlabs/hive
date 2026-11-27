@@ -11,6 +11,7 @@ use serde::Serialize;
 use std::io::Write;
 
 use crate::review::{self, OpenPr, PrView};
+use crate::review_check;
 use crate::util::Row;
 
 pub(crate) fn review_flags(fs: &mut FlagSet) {
@@ -235,6 +236,7 @@ pub(crate) fn cmd_review(c: &mut Context, fs: &FlagSet, args: &[String]) -> Resu
         "show" => show(c, number_arg(rest)?),
         "diff" => diff(c, number_arg(rest)?),
         "checkout" => checkout(c, number_arg(rest)?),
+        "check" => check(c, number_arg(rest)?),
         "merge" => merge(c, fs, number_arg(rest)?),
         "changes" => changes(c, fs, number_arg(rest)?),
         "owner" => owner(c, fs, number_arg(rest)?),
@@ -493,6 +495,15 @@ fn merge(c: &mut Context, fs: &FlagSet, number: i64) -> Result<()> {
             .into());
         }
     }
+    // The reviewer's merge needs a green check of the head the forge would
+    // merge, run through the runner (`hive review check N`) for this
+    // review; the owner's `--by owner` is the owner's call and skips it.
+    if by != "owner"
+        && let Some(said) = refuse_without_green(s, &project, &view, &actor, &now)?
+    {
+        writeln!(c.out, "{said}")?;
+        return Ok(());
+    }
     let by = if by == "owner" {
         "owner".to_string()
     } else {
@@ -533,6 +544,156 @@ fn merge(c: &mut Context, fs: &FlagSet, number: i64) -> Result<()> {
         } else {
             format!(" ({url})")
         }
+    )?;
+    Ok(())
+}
+
+/// Refuses a reviewer's merge without a green check of `view`'s head
+/// recorded for this review; `None` when the merge may go on. A check that
+/// was red on that head and green again is flaky: the pull request is
+/// handed to the owner with the tests' names instead, and the words to
+/// print come back (the verdict is given), so a flaky test never teaches
+/// the reviewer that red is fine.
+fn refuse_without_green(
+    s: &hive_store::Store,
+    project: &Row,
+    view: &PrView,
+    actor: &str,
+    now: &str,
+) -> Result<Option<String>> {
+    let number = view.number;
+    let slug = project.str("slug");
+    let conn = s.conn()?;
+    let why = match review_check::merge_gate(&conn, &slug, number, &view.head_sha) {
+        Ok(_) => return Ok(None),
+        Err(why) => why,
+    };
+    drop(conn);
+    let checks = s
+        .conn()
+        .map(|conn| review_check::recorded(&conn, &slug, number))
+        .unwrap_or_default();
+    let newest_green_here = checks
+        .last()
+        .is_some_and(|n| n.green && n.head_sha == view.head_sha);
+    let red_here = checks
+        .iter()
+        .rev()
+        .find(|r| r.head_sha == view.head_sha && r.red());
+    if let (true, Some(red)) = (newest_green_here, red_here) {
+        let pr = known_pr(s, &slug, number, view);
+        let tests = if red.failures.is_empty() {
+            "the check".to_string()
+        } else {
+            red.failures.join(", ")
+        };
+        let reasons = vec![format!(
+            "the check of {} was red and then green on the same head: {tests} failed once and passed again (flaky); the reviewer does not merge a red check, even a flaky one",
+            &view.head_sha[..view.head_sha.len().min(12)]
+        )];
+        let note = format!("{}\n\nRed run: {}", why, red.line(number));
+        let post = review::escalate(s, project, &pr, &reasons, &note, actor, now).map_err(|e| {
+            hive_cli::errorf(
+                1,
+                &format!("Could not hand #{number} to the owner"),
+                &e,
+                "the failure is recorded (review.failed)",
+            )
+        })?;
+        return Ok(Some(format!(
+            "Not merged: {why}. #{number} handed to the owner with the flaky tests ({tests}){} - finish the job.",
+            if post.is_empty() {
+                String::new()
+            } else {
+                format!(", question {post}")
+            }
+        )));
+    }
+    Err(hive_cli::errorf(
+        2,
+        &format!("Pull request #{number} has no green check of its head"),
+        &why,
+        &format!(
+            "hive review check {number} runs the project's check here and records it; a red one is a `hive review changes {number}` or `hive review owner {number}` verdict, never a merge"
+        ),
+    )
+    .into())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The clone `hive review check` runs in, for a test: the process's
+    /// working directory is shared by every test thread.
+    static TEST_CLONE: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+/// The job's clone: the working directory the command was run in.
+fn clone_dir() -> Result<String> {
+    #[cfg(test)]
+    {
+        let dir = TEST_CLONE.with(|d| d.borrow().clone());
+        if !dir.is_empty() {
+            return Ok(dir);
+        }
+    }
+    Ok(std::env::current_dir()?.display().to_string())
+}
+
+/// `hive review check N`: runs the project's check in this clone, on the
+/// pull request's head, and records it (`review.check`). A red check whose
+/// failing tests all pass when re-run alone is flaky: the fix is queued on
+/// the pull request's head as this review's verdict.
+fn check(c: &mut Context, number: i64) -> Result<()> {
+    let project = project_of(c)?;
+    let s = &store(c)?.clone();
+    let slug = project.str("slug");
+    let view = fetch_view(s, &project, number)?;
+    need_open(&view)?;
+    let dir = clone_dir()?;
+    let actor = crate::commands::actor_of(c);
+    let now = crate::commands::now_of(c);
+    let rec = review_check::run(s, &project, &view, &dir, &actor, &now).map_err(|e| {
+        hive_cli::errorf(
+            2,
+            &format!("Cannot check #{number}"),
+            &e,
+            &format!(
+                "hive review checkout {number} in the job's clone, then hive review check {number}"
+            ),
+        )
+    })?;
+    writeln!(c.out, "{}", rec.line(number).replacen("check", "Check", 1))?;
+    if rec.green {
+        writeln!(
+            c.out,
+            "Recorded for this review: `hive review merge {number}` may merge this head."
+        )?;
+        return Ok(());
+    }
+    if !rec.flaky.is_empty() && need_undecided(s, &slug, number, false).is_ok() {
+        let pr = known_pr(s, &slug, number, &view);
+        let note = review_check::flaky_note(&rec, number);
+        let job =
+            review::request_changes(s, &project, &pr, &view, &note, &actor, &now).map_err(|e| {
+                hive_cli::errorf(
+                    1,
+                    &format!("Could not queue the fix of the flaky tests of #{number}"),
+                    &e,
+                    "the failure is recorded (review.failed)",
+                )
+            })?;
+        writeln!(
+            c.out,
+            "Not merged: the failing tests passed when re-run alone, so they are flaky ({}). The fix is queued as this review's verdict: {} ({}) makes them deterministic on the pull request's head - finish the job.",
+            rec.flaky.join(", "),
+            job.str("id"),
+            job.str("kind")
+        )?;
+        return Ok(());
+    }
+    writeln!(
+        c.out,
+        "Red: never merged. Give `hive review changes {number} --note \"<the failures and the fix>\"` or `hive review owner {number} --note \"...\"`."
     )?;
     Ok(())
 }
@@ -692,6 +853,56 @@ mod tests {
         crate::util::event_at(&s.conn().unwrap(), TEST_NOW, "daemon", "land.pr", "proj", d);
     }
 
+    /// Records a `review.check` of pull request `number` at `head`, as
+    /// `hive review check` would after its run.
+    fn record_check(
+        s: &hive_store::Store,
+        number: i64,
+        head: &str,
+        green: bool,
+        failures: &[&str],
+    ) {
+        crate::util::event_at(
+            &s.conn().unwrap(),
+            TEST_NOW,
+            "worker",
+            review_check::ACTION,
+            "proj",
+            json!({"project": "proj", "number": number, "head_sha": head, "exit": if green { 0 } else { 1 },
+                "green": green, "log": format!("/logs/review/proj-pr{number}-{head}.log"), "cmd": "make check",
+                "failures": failures, "flaky": []}),
+        );
+    }
+
+    /// A clone of the project's checkout for `hive review check` to run in,
+    /// and the commit it is at.
+    fn review_clone(repo: &str) -> (tempfile::TempDir, String, ClonePin) {
+        let dir = tempfile::tempdir().unwrap();
+        let clone = dir.path().join("clone").display().to_string();
+        run(".", &["git", "clone", "-q", repo, &clone]);
+        let sha = run(&clone, &["git", "rev-parse", "HEAD"])
+            .trim()
+            .to_string();
+        TEST_CLONE.with(|d| *d.borrow_mut() = clone);
+        (dir, sha, ClonePin)
+    }
+
+    struct ClonePin;
+    impl Drop for ClonePin {
+        fn drop(&mut self) {
+            TEST_CLONE.with(|d| d.borrow_mut().clear());
+        }
+    }
+
+    fn set_check(s: &hive_store::Store, cmd: &str) {
+        exec1(
+            s,
+            "UPDATE projects SET verify_cmd = ? WHERE slug = 'proj'",
+            &[&cmd],
+        );
+        set_setting(s, "daemon.min_free_mb", "0");
+    }
+
     fn events(s: &hive_store::Store, action: &str) -> Vec<Value> {
         crate::util::must_rows(
             &*s.conn().unwrap(),
@@ -800,6 +1011,261 @@ mod tests {
     }
 
     #[test]
+    fn a_reviewers_merge_needs_a_green_check_of_the_head_recorded_for_this_review() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let (_bin, _path, log, _view) = fake_gh();
+        let s = new_store();
+        let (_proj, _repo, _bare) = push_fixture(&s);
+        land_pr(&s, 7, "task", "TASK-001", "JOB-a");
+        let merges = |log: &str| {
+            calls(log)
+                .iter()
+                .filter(|c| c.starts_with("pr merge"))
+                .count()
+        };
+
+        // No check recorded: refused, and the command says how to get one.
+        let (out, err, code) = invoke(&s, "review", "proj", &["merge", "7"]);
+        assert_eq!(code, 2, "{out} {err}");
+        assert!(err.contains("no green check of its head"), "{err}");
+        assert!(err.contains("no check of #7 is recorded"), "{err}");
+        assert!(err.contains("hive review check 7"), "{err}");
+        assert_eq!(merges(&log), 0);
+
+        // A red check of the head: refused, naming the check and its log.
+        record_check(&s, 7, "abc123", false, &["a::b"]);
+        let (_, err, code) = invoke(&s, "review", "proj", &["merge", "7"]);
+        assert_eq!(code, 2, "{err}");
+        assert!(err.contains("check of #7 red at abc123 (exit 1)"), "{err}");
+        assert!(err.contains("failed: a::b"), "{err}");
+        assert!(
+            err.contains("log /logs/review/proj-pr7-abc123.log"),
+            "{err}"
+        );
+        assert!(err.contains("a red check is never merged"), "{err}");
+        assert_eq!(merges(&log), 0);
+
+        // A green check of an older head: refused, the head moved since.
+        record_check(&s, 7, "0ld0ld", true, &[]);
+        let (_, err, code) = invoke(&s, "review", "proj", &["merge", "7"]);
+        assert_eq!(code, 2, "{err}");
+        assert!(
+            err.contains("the newest check ran on 0ld0ld, but the head of #7 is abc123"),
+            "{err}"
+        );
+        assert!(
+            err.contains("log /logs/review/proj-pr7-0ld0ld.log"),
+            "{err}"
+        );
+        assert_eq!(merges(&log), 0);
+
+        // A check recorded before this review was queued is not this review's.
+        record_check(&s, 7, "abc123", true, &[]);
+        crate::util::event_at(
+            &s.conn().unwrap(),
+            TEST_NOW,
+            "daemon",
+            "review.queued",
+            "proj",
+            json!({"project": "proj", "number": 7, "sha": "abc123", "job": "JOB-r"}),
+        );
+        let (_, err, code) = invoke(&s, "review", "proj", &["merge", "7"]);
+        assert_eq!(code, 2, "{err}");
+        assert!(err.contains("no check of #7 is recorded"), "{err}");
+        assert_eq!(merges(&log), 0);
+        assert!(events(&s, "review.merged").is_empty());
+
+        // A green check of the head, for this review: merged.
+        record_check(&s, 7, "abc123", true, &[]);
+        let (out, err, code) = invoke(&s, "review", "proj", &["merge", "7"]);
+        assert_eq!(code, 0, "{out} {err}");
+        assert!(out.contains("Merged #7"), "{out}");
+        assert_eq!(merges(&log), 1);
+    }
+
+    #[test]
+    fn the_owners_merge_needs_no_recorded_check() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let (_bin, _path, log, _view) = fake_gh();
+        let s = new_store();
+        let (_proj, _repo, _bare) = push_fixture(&s);
+        land_pr(&s, 7, "task", "TASK-001", "JOB-a");
+        record_check(&s, 7, "abc123", false, &["a::b"]);
+        let (out, err, code) = invoke(&s, "review", "proj", &["merge", "7", "--by", "owner"]);
+        assert_eq!(code, 0, "{out} {err}");
+        assert!(out.contains("Merged #7"), "{out}");
+        assert_eq!(calls(&log), ["pr view 7", "pr merge 7"]);
+        assert_eq!(events(&s, "review.merged")[0]["by"], "owner");
+    }
+
+    #[test]
+    fn a_check_red_then_green_on_one_head_is_handed_to_the_owner_not_merged() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let (_bin, _path, log, _view) = fake_gh();
+        let s = new_store();
+        let (_proj, _repo, _bare) = push_fixture(&s);
+        land_pr(&s, 7, "task", "TASK-001", "JOB-a");
+        record_check(&s, 7, "abc123", false, &["store::tests::races"]);
+        record_check(&s, 7, "abc123", true, &[]);
+        let (out, err, code) = invoke(&s, "review", "proj", &["merge", "7"]);
+        assert_eq!(code, 0, "{out} {err}");
+        assert!(out.contains("Not merged"), "{out}");
+        assert!(
+            out.contains("handed to the owner with the flaky tests (store::tests::races)"),
+            "{out}"
+        );
+        assert!(
+            !calls(&log).iter().any(|c| c.starts_with("pr merge")),
+            "{:?}",
+            calls(&log)
+        );
+        assert!(events(&s, "review.merged").is_empty());
+        let owner = events(&s, "review.owner");
+        assert_eq!(owner.len(), 1);
+        assert!(
+            owner[0].to_string().contains("store::tests::races"),
+            "{}",
+            owner[0]
+        );
+        // The verdict is given: the reviewer cannot merge it afterwards.
+        let (_, err, code) = invoke(&s, "review", "proj", &["merge", "7"]);
+        assert_eq!(code, 2, "{err}");
+        assert!(
+            err.contains("already has a verdict (review.owner)"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn review_check_runs_the_check_on_the_head_and_records_it() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let (_bin, _path, log, view) = fake_gh();
+        let s = new_store();
+        let (_proj, repo, _bare) = push_fixture(&s);
+        land_pr(&s, 7, "job", "", "JOB-a");
+        let (_dir, sha, _pin) = review_clone(&repo);
+
+        // The clone is not at the pull request's head: nothing is run or recorded.
+        set_check(&s, "echo all good");
+        let (_, err, code) = invoke(&s, "review", "proj", &["check", "7"]);
+        assert_eq!(code, 2, "{err}");
+        assert!(err.contains("run `hive review checkout 7` first"), "{err}");
+        assert!(events(&s, review_check::ACTION).is_empty());
+
+        // The pull request as Hive pushed it: its head is the clone's commit.
+        crate::util::event_at(
+            &s.conn().unwrap(),
+            TEST_NOW,
+            "daemon",
+            "land.pr",
+            "proj",
+            json!({"project": "proj", "kind": "job", "job": "JOB-a", "number": 7, "url": "https://github.com/o/r/pull/7",
+                "head": "hive/worker/JOB-a", "base": "main", "to": sha, "opened": false, "title": "PR 7 title"}),
+        );
+        let at_head = view_json(7, "hive/worker/JOB-a", &[("src/a.rs", 5, 2)], "OPEN")
+            .replace("abc123", &sha);
+        std::fs::write(&view, &at_head).unwrap();
+        let (out, err, code) = invoke(&s, "review", "proj", &["check", "7"]);
+        assert_eq!(code, 0, "{out} {err}");
+        assert!(
+            out.contains(&format!("Check of #7 green at {}", &sha[..12])),
+            "{out}"
+        );
+        let checks = events(&s, review_check::ACTION);
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0]["head_sha"], sha.as_str());
+        assert_eq!(checks[0]["exit"], 0);
+        assert_eq!(checks[0]["green"], true);
+        let log_path = checks[0]["log"].as_str().unwrap().to_string();
+        assert!(log_path.contains("/logs/review/proj-pr7-"), "{log_path}");
+        let kept = std::fs::read_to_string(&log_path).unwrap();
+        assert!(
+            kept.contains("$ echo all good") && kept.contains("all good\n"),
+            "{kept}"
+        );
+
+        let (out, err, code) = invoke(&s, "review", "proj", &["merge", "7"]);
+        assert_eq!(code, 0, "{out} {err}");
+        assert!(out.contains("Merged #7"), "{out}");
+        assert!(calls(&log).iter().any(|c| c == "pr merge 7"));
+    }
+
+    #[test]
+    fn a_red_check_whose_failures_pass_alone_queues_their_fix_and_never_merges() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let (_bin, _path, log, view) = fake_gh();
+        let s = new_store();
+        let (_proj, repo, _bare) = push_fixture(&s);
+        land_pr(&s, 7, "job", "", "JOB-a");
+        let (_dir, sha, _pin) = review_clone(&repo);
+        std::fs::write(
+            &view,
+            view_json(7, "hive/worker/JOB-a", &[("src/a.rs", 5, 2)], "OPEN")
+                .replace("abc123", &sha),
+        )
+        .unwrap();
+        set_check(&s, "printf 'test a::flaky ... FAILED\\n'; exit 1");
+
+        // Failing alone too: plainly red, nothing is queued.
+        set_setting(
+            &s,
+            review_check::RERUN_SETTING,
+            "printf 'test %s ... FAILED\\n' {test}; exit 1",
+        );
+        let (out, err, code) = invoke(&s, "review", "proj", &["check", "7"]);
+        assert_eq!(code, 0, "{out} {err}");
+        assert!(
+            out.contains("red at") && out.contains("failed: a::flaky"),
+            "{out}"
+        );
+        assert!(out.contains("Red: never merged"), "{out}");
+        assert!(events(&s, "review.changes").is_empty());
+        assert_eq!(events(&s, review_check::ACTION)[0]["flaky"], json!([]));
+
+        // Passing alone: flaky, and the fix is queued as the verdict.
+        set_setting(
+            &s,
+            review_check::RERUN_SETTING,
+            "printf 'test %s ... ok\\n' {test}",
+        );
+        let (out, err, code) = invoke(&s, "review", "proj", &["check", "7"]);
+        assert_eq!(code, 0, "{out} {err}");
+        assert!(
+            out.contains("a::flaky passed when re-run alone (flaky)"),
+            "{out}"
+        );
+        assert!(out.contains("The fix is queued"), "{out}");
+        let checks = events(&s, review_check::ACTION);
+        assert_eq!(checks.len(), 2);
+        assert_eq!(checks[1]["flaky"], json!(["a::flaky"]));
+        assert_eq!(checks[1]["green"], false);
+        let changes = events(&s, "review.changes");
+        assert_eq!(changes.len(), 1);
+        assert!(
+            changes[0]["note"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("a::flaky"),
+            "{}",
+            changes[0]
+        );
+        // Never merged: the verdict is given, and no merge was asked of GitHub.
+        let (_, err, code) = invoke(&s, "review", "proj", &["merge", "7"]);
+        assert_eq!(code, 2, "{err}");
+        assert!(
+            !calls(&log).iter().any(|c| c.starts_with("pr merge")),
+            "{:?}",
+            calls(&log)
+        );
+        assert!(events(&s, "review.merged").is_empty());
+    }
+
+    #[test]
     fn a_large_pull_request_is_the_reviewers_to_merge() {
         let _serial = crate::test_helpers::serial();
         let _env = hive_testutil::env_lock();
@@ -824,6 +1290,7 @@ mod tests {
             out.contains("Read with extra care: 2 files / 1007 lines changed"),
             "{out}"
         );
+        record_check(&s, 7, "abc123", true, &[]);
         let (out, err, code) = invoke(&s, "review", "proj", &["merge", "7"]);
         assert_eq!(code, 0, "{out} {err}");
         assert!(
@@ -842,8 +1309,10 @@ mod tests {
         let s = new_store();
         let (_proj, _repo, _bare) = push_fixture(&s);
         land_pr(&s, 7, "task", "TASK-001", "JOB-a");
+        record_check(&s, 7, "abc123", true, &[]);
         let (out, err, code) = invoke(&s, "review", "proj", &["merge", "7"]);
         assert_eq!(code, 0, "{out} {err}");
+        assert!(out.contains("Merged #7"), "{out}");
         assert_eq!(calls(&log), ["pr view 7", "pr merge 7"]);
         let merged = events(&s, "review.merged");
         assert_eq!(merged.len(), 1);
@@ -869,6 +1338,7 @@ mod tests {
             "GraphQL: Something went wrong while executing your query (mergePullRequest)",
         )
         .unwrap();
+        record_check(&s, 7, "abc123", true, &[]);
         let (out, err, code) = invoke(&s, "review", "proj", &["merge", "7"]);
         assert_eq!(code, 0, "{out} {err}");
         assert!(
