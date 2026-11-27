@@ -1130,7 +1130,7 @@ The built-in agent harness: run a task or chat through the model provider, sign 
 ```text
 hive harness  the built-in agent harness: run a task or chat through the model provider, sign in, list models and sessions
 
-Usage: hive harness run -p TEXT [-C DIR] [--model M] [--steps-file PATH] [--resume ID] ... | chat [-C DIR] [--model M] [--yes] [--resume ID | --continue] | login [--with-token] | status | models | logout | sessions | show ID | cancel ID | prompt
+Usage: hive harness run (-p TEXT | --task-file F|-) [-C DIR] [--model M] [--steps-file PATH] [--resume ID] ... | chat [-C DIR] [--model M] [--yes] [--resume ID | --continue] | login [--with-token] | status | models | logout | sessions | show ID | cancel ID | prompt
 ```
 
 ### job

@@ -809,24 +809,29 @@ pub(crate) fn rented_class(caps: &std::collections::BTreeSet<String>) -> String 
 /// rented for work it cannot take stood drained all night on 27 November
 /// (CR-11114). Nor is a code job of a project whose check an end check
 /// found red on the base on that machine's class (`class_red`, TASK-144):
-/// the run there could land nothing.
+/// the run there could land nothing. A job whose kept work waits for its
+/// check here (`unchecked::pinned_here_sql`, with this machine's row
+/// `local`) is no reason either, but only while this machine could take
+/// it, as the lease says: a hand takes one this machine cannot run.
 pub(crate) fn rentable_jobs(
     conn: &(impl crate::util::Querier + ?Sized),
     caps: &std::collections::BTreeSet<String>,
+    local: &Row,
     since: &str,
     now: &str,
 ) -> Vec<Row> {
     let class = crate::class_red::class_of_caps(caps);
     let red = crate::class_red::class_filter_sql(conn, &class, now);
     let (fit, words) = hive_store::needs::sql_fit("j.needs", caps);
+    let (pin, pin_words) = crate::unchecked::pinned_here_sql(local);
     let mut vals: Vec<&dyn rusqlite::ToSql> = vec![&since];
-    for w in &words {
+    for w in words.iter().chain(&pin_words) {
         vals.push(w);
     }
     crate::util::must_rows(
         conn,
         &format!(
-            "SELECT j.id, j.kind, j.project FROM jobs j JOIN projects p ON p.slug = j.project WHERE j.status = 'queued' AND p.status = 'active' AND j.kind IN ({}) AND j.created_at <= ? AND {fit}{red} AND NOT EXISTS (SELECT 1 FROM harness_sessions h JOIN runs r ON r.id = h.run_id WHERE h.job_id = j.id AND h.status = 'held' AND r.executor = '{}') ORDER BY j.created_at",
+            "SELECT j.id, j.kind, j.project FROM jobs j JOIN projects p ON p.slug = j.project WHERE j.status = 'queued' AND p.status = 'active' AND j.kind IN ({}) AND j.created_at <= ? AND {fit}{red} AND NOT EXISTS (SELECT 1 FROM harness_sessions h JOIN runs r ON r.id = h.run_id WHERE h.job_id = j.id AND h.status = 'held' AND r.executor = '{}') AND NOT {pin} ORDER BY j.created_at",
             crate::jobs::work_kinds_sql(),
             crate::executor::LOCAL_EXECUTOR
         ),
@@ -849,7 +854,16 @@ pub(crate) fn starved_waiting(
     let since = crate::util::plus_minutes(now, -HANDS_WANTED_MINUTES);
     let fit = s
         .conn()
-        .map(|c| rentable_jobs(&c, &rented, &since, now).len())
+        .map(|c| {
+            rentable_jobs(
+                &c,
+                &rented,
+                &crate::executor::local_executor_row(s),
+                &since,
+                now,
+            )
+            .len()
+        })
         .unwrap_or(0);
     let mut line = format!(
         "{fit} job(s) a rented {} machine could run waited {waited} min with every slot on this machine busy or held",
@@ -1165,7 +1179,13 @@ pub(crate) fn auto_compute(
     // base on the class of machine it would rent (class_red.rs): the run
     // there could land nothing (TASK-144). `rentable_jobs` reads both.
     let rented = rented_caps(s);
-    let candidates = rentable_jobs(&conn, &rented, &since, now);
+    let candidates = rentable_jobs(
+        &conn,
+        &rented,
+        &crate::executor::local_executor_row(s),
+        &since,
+        now,
+    );
     let class = crate::class_red::class_of_caps(&rented);
     if candidates.is_empty() {
         return Err(why(format!(
@@ -1782,15 +1802,28 @@ pub(crate) fn daemon(
     // ADR-038: the framework's records travel in the binary; a store that lacks them gets them here.
     match hive_records::ensure_framework(s, &actor) {
         Err(err) => say(&o, format!("framework records: {err:#}")),
-        Ok(seeded) if !seeded.written.is_empty() => say(
-            &o,
-            format!(
-                "seeded {} framework record(s) from {}",
-                seeded.written.len(),
-                seeded.from
-            ),
-        ),
-        Ok(_) => {}
+        Ok(seeded) => {
+            if !seeded.written.is_empty() {
+                say(
+                    &o,
+                    format!(
+                        "seeded {} framework record(s) from {}",
+                        seeded.written.len(),
+                        seeded.from
+                    ),
+                );
+            }
+            if !seeded.revised.is_empty() {
+                say(
+                    &o,
+                    format!(
+                        "revised framework record(s) {} to the text of {}",
+                        seeded.revised.join(", "),
+                        seeded.from
+                    ),
+                );
+            }
+        }
     }
     for line in crate::selfupdate::check_restored(s, self_env.clone()) {
         say(&o, line);
@@ -4084,6 +4117,10 @@ mod tests {
         let _login = with_closed_login_gate();
         // The host's disk does not decide the hold: the dispatch reads 512 MB.
         let _free = crate::executor::pin_free_mb(512);
+        // The floor sends the pass up the reclaim ladder: its temp rung gets
+        // a root of this test's own, never the machine's (TASK-161).
+        let root = tempfile::tempdir().unwrap();
+        let _roots = crate::reclaim::swap_temp_roots(vec![root.path().to_path_buf()]);
         let s = new_store();
         new_bare_repo(&s);
         join(&s, "aurora");
@@ -4125,6 +4162,124 @@ mod tests {
             ),
             0
         );
+    }
+
+    /// Sets a file tree's modification times `ago` in the past, the way a
+    /// test home left by a killed `cargo test` hours earlier looks.
+    fn age_tree(path: &std::path::Path, ago: Duration) {
+        let when = std::time::SystemTime::now() - ago;
+        fn set(path: &std::path::Path, when: std::time::SystemTime) {
+            if let Ok(entries) = std::fs::read_dir(path) {
+                for e in entries.flatten() {
+                    set(&e.path(), when);
+                }
+            }
+            if let Ok(f) = std::fs::File::open(path) {
+                let _ = f.set_modified(when);
+            }
+        }
+        set(path, when);
+    }
+
+    /// TASK-161: a test's daemon pass under the disk floor never reaches a
+    /// temp root the test did not hand it. Two roots hold stale folders with
+    /// every name the ladder claims: the first stands in for the machine's
+    /// temp dirs (`once_daemon` seeds `daemon.sweep off`, and in a test
+    /// build no root is swept until a test swaps one in), and survives; the
+    /// second, swapped in, is swept by the same path, which proves the pass
+    /// did climb the ladder.
+    #[test]
+    fn daemon_pass_under_the_floor_leaves_temp_roots_it_was_not_given() {
+        let _serial = crate::test_helpers::serial();
+        let _login = with_closed_login_gate();
+        let _free = crate::executor::pin_free_mb(512);
+        let stale = crate::reclaim::TEMP_GRACE * 2;
+        let claimed = [
+            ".tmpAb3xY9",
+            "hive-template-store-q1",
+            "check-site-abc",
+            "distill-ui-xyz",
+        ];
+        let plant = |root: &std::path::Path| -> Vec<std::path::PathBuf> {
+            claimed
+                .iter()
+                .map(|name| {
+                    let d = root.join(name);
+                    std::fs::create_dir_all(&d).unwrap();
+                    std::fs::write(d.join("blob"), vec![1u8; 2048]).unwrap();
+                    age_tree(&d, stale);
+                    d
+                })
+                .collect()
+        };
+        let pass = |s: &hive_store::Store| {
+            once_daemon(
+                s,
+                DaemonOpts {
+                    worker_cmd: "sh -c 'echo SUMMARY: should not run'".into(),
+                    ..Default::default()
+                },
+            )
+        };
+        let floor = |s: &hive_store::Store| {
+            s.set_setting(
+                hive_store::HUMAN_AGENT,
+                "daemon.min_free_mb",
+                &i32::MAX.to_string(),
+            )
+            .unwrap();
+        };
+
+        // The machine's stand-in: nothing swapped in, the sweep left unset.
+        let machine = tempfile::tempdir().unwrap();
+        let mut machine_dirs = plant(machine.path());
+        // And one canary on the machine's own temp dir, a top-level name the
+        // ladder claims: the code before TASK-161 swept it on this pass.
+        struct Canary(std::path::PathBuf);
+        impl Drop for Canary {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let canary = Canary(std::env::temp_dir().join(format!(
+            "hive-task161-canary-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        )));
+        std::fs::create_dir_all(&canary.0).unwrap();
+        std::fs::write(canary.0.join("blob"), b"x").unwrap();
+        age_tree(&canary.0, stale);
+        machine_dirs.push(canary.0.clone());
+        let s = new_store();
+        new_bare_repo(&s);
+        floor(&s);
+        let out = pass(&s);
+        assert!(out.contains("idle: disk under floor"), "{out}");
+        for d in &machine_dirs {
+            assert!(d.exists(), "{} went:\n{out}", d.display());
+        }
+        assert_eq!(s.setting("daemon.sweep", "on"), "off", "seeded off");
+        assert!(crate::reclaim::temp_roots().is_empty());
+
+        // A second root the test swaps in: the same pass sweeps it, and
+        // still not the stand-in.
+        let own = tempfile::tempdir().unwrap();
+        let own_dirs = plant(own.path());
+        let _roots = crate::reclaim::swap_temp_roots(vec![own.path().to_path_buf()]);
+        let s = new_store();
+        new_bare_repo(&s);
+        floor(&s);
+        let out = pass(&s);
+        assert_eq!(s.setting("daemon.sweep", "on"), "on", "not seeded");
+        for d in &own_dirs {
+            assert!(!d.exists(), "{} stayed:\n{out}", d.display());
+        }
+        for d in &machine_dirs {
+            assert!(d.exists(), "{} went:\n{out}", d.display());
+        }
     }
 
     #[cfg(unix)]
@@ -4877,6 +5032,60 @@ mod tests {
             panic!("{err}");
         };
         assert!(why.starts_with("no improve or task job"), "{why}");
+    }
+
+    /// TASK-152 review: a job whose kept work waits for its check here is
+    /// no reason to rent while this machine could take it, as the lease
+    /// keeps it off a hand; once this machine cannot (kept for the work
+    /// that needs something), a rented machine could take it, so it counts.
+    #[test]
+    fn kept_work_counts_for_a_rental_only_when_this_machine_cannot_take_it() {
+        let _serial = crate::test_helpers::serial();
+        let s = store_with_projects(&["proj"]);
+        queued_job(&s, "j-kept", "proj", "task", "owner");
+        exec1(
+            &s,
+            "UPDATE jobs SET created_at = ?",
+            &[&crate::util::plus_minutes(TEST_NOW, -40)],
+        );
+        exec1(
+            &s,
+            "INSERT INTO runs(id, job_id, agent, project, started_at, finished_at, status, executor) VALUES('run-kept', 'j-kept', 'aurora', 'proj', ?, ?, 'lost', 'local')",
+            &[
+                &crate::util::plus_minutes(TEST_NOW, -35),
+                &crate::util::plus_minutes(TEST_NOW, -34),
+            ],
+        );
+        crate::unchecked::record(
+            &s.conn().unwrap(),
+            TEST_NOW,
+            "j-kept",
+            &crate::unchecked::Unchecked {
+                run: "run-kept".into(),
+                agent: "aurora".into(),
+                branch: crate::unchecked::unchecked_branch("aurora", "j-kept"),
+                base: "abc".into(),
+                commits: 1,
+                ..Default::default()
+            },
+        );
+        let rentable = || {
+            let since = crate::util::plus_minutes(TEST_NOW, -HANDS_WANTED_MINUTES);
+            rentable_jobs(
+                &s.conn().unwrap(),
+                &rented_caps(&s),
+                &crate::executor::local_executor_row(&s),
+                &since,
+                TEST_NOW,
+            )
+            .iter()
+            .map(|r| r.str("id"))
+            .collect::<Vec<_>>()
+        };
+        assert!(rentable().is_empty());
+        s.set_setting(hive_store::HUMAN_AGENT, "machine.reserve", "on")
+            .unwrap();
+        assert_eq!(rentable(), vec!["j-kept".to_string()]);
     }
 
     /// TASK-156 item 4: once a rented machine ran a project's work and none
@@ -6223,12 +6432,11 @@ mod tests {
         // waited beside them and no fleet run was asked to hold.
         let _serial = crate::test_helpers::serial();
         let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
-        // The kernel's memory warning halves the cap of four to two, and
-        // two runs fill it - one the owner's, so no express slot - while
-        // the fleet's nominal total is still four. It is pinned before the
-        // daemon's first tick: pinned between two ticks, a pass that read
-        // the calm cap of four before the pin leased the owner's next step
-        // as well, and no yield came (about half the runs; TASK-157).
+        // The kernel's memory warning is on before the daemon's first tick:
+        // it halves the cap of four to two from the start, so the two runs
+        // below fill it. Raising it only after they started raced the pass
+        // that leased them - a pass still under way read the calm pressure
+        // and leased the owner's next step as well (TASK-157).
         let _warned = crate::daemon_load::pin_pressure(crate::daemon_load::Pressure {
             mem_warning: true,
             ..crate::daemon_load::CALM
@@ -6262,6 +6470,8 @@ mod tests {
                     ..Default::default()
                 })
                 .unwrap();
+            // The halved cap of two is full - one run the owner's, so no
+            // express slot - while the fleet's nominal total is still four.
             assert_eq!(crate::capacity::fleet(&live.s).total, 4);
             let next = live.add("Owner's next step", "task:TASK-001:next");
             let text = live.wait_for(
@@ -7662,6 +7872,13 @@ mod tests {
         }
     }
 
+    /// What the daemon says when a handover's bound is up: the handover's
+    /// tend, or the slots' hold when the bound falls due between them.
+    const BOUND_LINES: [&str; 2] = [
+        "(daemon.restart_max_minutes): nothing new starts, the owner's work included",
+        "(daemon.restart_max_minutes), so no new runs start",
+    ];
+
     #[test]
     fn a_restart_comes_within_its_bound_while_the_owner_s_work_keeps_arriving() {
         let _serial = crate::test_helpers::serial();
@@ -7718,10 +7935,21 @@ mod tests {
             needle: "leased job-".into(),
             sent: false,
         }));
+        // The first run (the slow one) stays in flight until the bound has
+        // been said: the owner's runs of two seconds each, started in one
+        // tick on a loaded machine, can otherwise all end before the next
+        // tick, and the daemon then restarts with nothing in flight before
+        // the bound - right, but not what this test is about.
+        let gate = std::path::Path::new(&s.home).join("restart-bound-said");
+        let slow = std::path::Path::new(&s.home).join("slow-run-taken");
         let opts = DaemonOpts {
             interval: 300,
             out: Some(writer),
-            worker_cmd: "sh -c 'sleep 2; echo SUMMARY: ok'".into(),
+            worker_cmd: format!(
+                "sh -c 'if mkdir {slow} 2>/dev/null; then i=0; while [ ! -f {gate} ] && [ $i -lt 600 ]; do sleep 0.1; i=$((i+1)); done; else sleep 2; fi; echo SUMMARY: ok'",
+                slow = slow.display(),
+                gate = gate.display()
+            ),
             restart_on_change: true,
             ..Default::default()
         };
@@ -7760,9 +7988,14 @@ mod tests {
             let feeder = {
                 let s = s.clone();
                 let stop = stop_feeding.clone();
+                let out = out.clone();
+                let gate = gate.clone();
                 std::thread::spawn(move || {
                     let mut n = 0;
                     while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                        if BOUND_LINES.iter().any(|l| out.string().contains(l)) {
+                            let _ = std::fs::write(&gate, "");
+                        }
                         n += 1;
                         add(&s, &format!("Owner's task {n}"), &format!("task:TASK-{n}"));
                         let _ = hive_bus::emit(
@@ -7805,8 +8038,16 @@ mod tests {
             took < bound + test_wait(Duration::from_secs(20)),
             "left {took:?} after the restart was armed:\n{out}"
         );
-        let said = out
-            .find("(daemon.restart_max_minutes): nothing new starts, the owner's work included")
+        // The bound is said by whichever comes to it first: the handover's
+        // tend (and the daemon leaves with runs in flight), or, when it
+        // falls due between the tend and the slots of the same tick, the
+        // slots' hold, after which the runs in flight may all end before
+        // the next tend and the daemon leaves with nothing in flight. Four
+        // checks side by side on eight cores took the second path.
+        let said = BOUND_LINES
+            .iter()
+            .filter_map(|line| out.find(line))
+            .min()
             .unwrap_or_else(|| panic!("the bound never ended the handover:\n{out}"));
         assert!(
             !out[said..].contains("leased job-"),

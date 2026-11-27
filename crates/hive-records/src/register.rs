@@ -124,11 +124,20 @@ pub fn run_seed(c: &mut Context, _fs: &FlagSet, args: &[String]) -> Result<()> {
             if json_out {
                 return write_json(&mut c.out, &result);
             }
-            if result.written.is_empty() {
+            if !result.revised.is_empty() {
                 c.printf(format_args!(
-                    "nothing to seed: the store has all {} framework records\n",
-                    result.kept
+                    "revised {} framework record(s) that held an earlier shipped text: {}\n",
+                    result.revised.len(),
+                    result.revised.join(", ")
                 ))?;
+            }
+            if result.written.is_empty() {
+                if result.revised.is_empty() {
+                    c.printf(format_args!(
+                        "nothing to seed: the store has all {} framework records\n",
+                        result.kept
+                    ))?;
+                }
             } else {
                 c.printf(format_args!(
                     "seeded {} framework record(s) from {} ({} already present): {}\n",

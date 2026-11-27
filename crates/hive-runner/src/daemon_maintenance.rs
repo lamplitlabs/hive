@@ -403,6 +403,17 @@ impl DaemonMaintenance {
                                 lines
                             }));
                         }
+                        if !cancel.is_cancelled() {
+                            // TASK-151 item 3: one finding per burst of
+                            // workers ended from outside, naming them all.
+                            lines.extend(b.once("outside signal", || {
+                                crate::signal_stop::tend_outside_signal_findings(
+                                    &s,
+                                    &s.now(),
+                                    &actor,
+                                )
+                            }));
+                        }
                         if !cancel.is_cancelled() && crate::run::runner_stopped(&s).is_empty() {
                             lines.extend(b.once("landing outcomes", || {
                                 crate::landing_outcome::tend_landing_outcomes(
@@ -517,8 +528,11 @@ impl DaemonMaintenance {
                 }
                 // Kept and pushed as a pull request: the branch stays on
                 // the job until the forge merges it, and measuring it again
-                // would open nothing new.
-                if crate::delivery::open_pr_for_job(&conn, &slug, &job.str("id")).is_some() {
+                // would open nothing new. A store that cannot say counts
+                // as open, for the same reason.
+                if crate::delivery::open_pr_for_job(&conn, &slug, &job.str("id"))
+                    .map_or(true, |open| open.is_some())
+                {
                     continue;
                 }
                 return Some((project.clone(), job));

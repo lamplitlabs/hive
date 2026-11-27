@@ -205,6 +205,16 @@ fn report_turn(
         false,
         t.spec,
     );
+    let cmd = match crate::exec::brief_off_argv(&*ex, &session, &message, cmd) {
+        Ok(cmd) => cmd,
+        Err(e) => {
+            log.add(format!(
+                "report turn could not run: {}; the landing waits for the report",
+                err_message(&e)
+            ));
+            return;
+        }
+    };
     let mut cmd = crate::exec::with_resume(cmd, &trajectory);
     cmd.extend(["--session".to_string(), session.clone()]);
     if !t.pins.is_empty() {
@@ -1385,6 +1395,9 @@ pub(crate) fn run_job(
     // The stopped work is kept on its branch and written down: the job goes
     // back to the queue at no cost of an attempt.
     let mut unchecked_kept = false;
+    // The commits a stopped run left in its clone could not be fetched
+    // again: the run ends and that clone stays, where they are.
+    let mut stranded_clone_kept = false;
     let mut unfit: Option<crate::executor::ExecutorUnfit> = None;
     // The recipe did not parse: the project's fault, not the run's, so the
     // job keeps its attempt and waits for dispatch to release the project.
@@ -1441,6 +1454,47 @@ pub(crate) fn run_job(
         if let Some(r) = &resume {
             ex.set_resume(&r.base);
         }
+        // An earlier run was stopped in its check and its commits could not
+        // be fetched onto the kept branch: they are only in that run's
+        // clone, which this run's own clone would remove. Fetch them first;
+        // when that fails again the run ends and the clone stays (TASK-152
+        // item 1).
+        if resume.is_none()
+            && !ex.remote()
+            && !o.dry_run
+            && let Some(mut u) = crate::unchecked::stranded(s, &job.str("id"), &root)
+        {
+            match crate::unchecked::fetch_kept_clone(&root, &u) {
+                Ok(()) => {
+                    log.add(format!(
+                        "run {} was stopped in its check and its {} commit(s) stayed in {}; fetched onto {}",
+                        u.run, u.commits, u.clone, u.branch
+                    ));
+                    u.clone.clear();
+                    crate::unchecked::record(&*c, &s.now(), &job.str("id"), &u);
+                }
+                Err(why) => {
+                    // A runner error: the job is queued again until its
+                    // attempts run out, and the work stays waiting (an
+                    // error does not judge it); the clone is not touched.
+                    status = "error".into();
+                    summary = format!(
+                        "the {} commit(s) run {} left unchecked in {} could not be fetched onto {} ({}); the clone is kept: git -C {} fetch {} +HEAD:refs/heads/{}",
+                        u.commits,
+                        u.run,
+                        u.clone,
+                        u.branch,
+                        crate::util::trunc(&why, 200),
+                        crate::util::shell_quote(&root),
+                        crate::util::shell_quote(&u.clone),
+                        u.branch
+                    );
+                    log.put(&summary);
+                    stranded_clone_kept = true;
+                    return Ok(());
+                }
+            }
+        }
         let mut base = ex.prepare(&cancel)?;
         // An earlier run of the job was stopped in its check with its
         // worker's commits kept on a branch: this run checks them and lands
@@ -1454,6 +1508,18 @@ pub(crate) fn run_job(
                             u.run, u.commits, u.agent, u.branch
                         ));
                         base = u.base.clone();
+                        // The task changed after the work was kept: the
+                        // commits predate the amendment, and the run says so.
+                        for amended in crate::unchecked::amended_since_kept(
+                            s,
+                            &job.str("id"),
+                            &job.str("source"),
+                        ) {
+                            log.add(format!(
+                                "the task was amended after this work was kept ({amended}); the kept commits predate it - re-read `hive task show {}`",
+                                crate::compute::task_of_source(&job.str("source"))
+                            ));
+                        }
                         Some(u)
                     }
                     Err(why) => {
@@ -1626,6 +1692,16 @@ pub(crate) fn run_job(
                 agent_spec.as_ref(),
             ),
         };
+        // The brief goes to the worker in a file, never on its command
+        // line: another agent's `pkill -f <pattern>` matched workers by the
+        // words of their briefs and stopped them all (TASK-151).
+        if !custom_worker {
+            let opening = match &resume {
+                Some(r) => continuation_message(&run_id, r, &clone),
+                None => brief_text.clone(),
+            };
+            cmd = crate::exec::brief_off_argv(&*ex, &run_id, &opening, cmd)?;
+        }
         // The owner's work job starts past its project's narrowed lanes and
         // share (jobs.rs lease_job), up to the lock's bound, so on this
         // machine its gated commit may wait for every other check in the
@@ -1923,6 +1999,72 @@ pub(crate) fn run_job(
             };
             log.put(&summary);
             return Ok(());
+        }
+        // Ended from outside (TASK-151 item 3): a SIGTERM or SIGKILL with no
+        // hold, cancel or timeout on record is not the worker's doing, so the
+        // run is not judged. The job goes back to the queue without using an
+        // attempt, the clone stays, the commits are kept on the job's
+        // `-failed` branch and as a patch the next brief starts from, and the
+        // daemon posts one finding for the runs that ended together. A
+        // worker that had already finished the job keeps its finish.
+        if let Some(signal) = crate::signal_stop::outside_signal(out.timeout, out.exit_code)
+            && !finished_by_worker(&c)
+            && !owner_cancelled.load(Ordering::SeqCst)
+            && !cancel.is_cancelled()
+        {
+            let on_record = crate::signal_stop::stop_on_record(s, &job.str("id"), &run_id);
+            let earlier = crate::signal_stop::earlier_requeues(&*c, &job.str("id"));
+            if !on_record.is_empty() {
+                log.add(format!(
+                    "the worker exited {} ({signal}), but {on_record}; judged as it stands",
+                    out.exit_code
+                ));
+            } else if earlier >= crate::signal_stop::SIGNAL_REQUEUE_LIMIT {
+                log.add(format!(
+                    "the worker exited {} ({signal}) from outside, and this job was requeued {earlier} times that way already; judged as it stands",
+                    out.exit_code
+                ));
+            } else {
+                let mut stop = crate::signal_stop::Signalled {
+                    run: run_id.clone(),
+                    job: job.str("id"),
+                    project: project.str("slug"),
+                    agent: agent.to_string(),
+                    executor: ex.name(),
+                    exit: out.exit_code,
+                    signal: signal.into(),
+                    commits: ex.commit_count(&base),
+                    ..Default::default()
+                };
+                if stop.commits > 0 && !root.is_empty() {
+                    let kept_branch = crate::land::failed_work_branch(agent, &job.str("id"));
+                    let kept = crate::land::keep_failed_work(
+                        &root,
+                        |dst| {
+                            matches!(
+                                fetch_run_work(s, &cancel, ex.as_ref(), &job.str("id"), &root, dst, &log),
+                                Ok(o) if o.exit_code == 0
+                            )
+                        },
+                        &base,
+                        &kept_branch,
+                        &home,
+                        &project.str("slug"),
+                    );
+                    if !kept.is_empty() {
+                        stop.branch = kept_branch;
+                        if let Some((_, patch)) = kept.split_once(" and in ") {
+                            stop.patch = patch.trim().to_string();
+                        }
+                    }
+                }
+                commits = stop.commits;
+                status = "held".into();
+                summary = stop.summary();
+                stop.record(s, &s.now(), "runner");
+                log.put(&summary);
+                return Ok(());
+            }
         }
         let result_raw = match &unchecked {
             Some(u) => Some(u.report.clone()),
@@ -2264,10 +2406,31 @@ pub(crate) fn run_job(
                     ex.verify(&cancel, cmd, minutes)
                 })
             {
-                // A job from a voted card lands only on its card's proof:
-                // the check red on the default branch, green with the change.
-                status = "failed".into();
-                summary = format!("{commits} commit(s) but {why}; nothing landed");
+                if stopped_by_runner(&cancel) {
+                    // The runner stopped the card's proof (a forced
+                    // restart): the check was cut, not red, so the work is
+                    // kept for the job's next run to prove and check, as a
+                    // stopped end check is (TASK-152 item 6).
+                    status = "lost".into();
+                    summary = format!(
+                        "{LOST_RUN_SUMMARY} (during the check; {commits} commit(s) not judged, nothing landed)"
+                    );
+                    exit_code = None;
+                    log.add(format!(
+                        "the card's proof was stopped by the runner ({why}); the job returns to the queue"
+                    ));
+                    check_stopped = Some(base.clone());
+                    worker_report = crate::unchecked::report_lines(
+                        result_raw.as_deref().unwrap_or_default(),
+                        &parsed.summary,
+                    );
+                } else {
+                    // A job from a voted card lands only on its card's
+                    // proof: the check red on the default branch, green
+                    // with the change.
+                    status = "failed".into();
+                    summary = format!("{commits} commit(s) but {why}; nothing landed");
+                }
             } else {
                 let mut ok = true;
                 let mut check_tool = String::new();
@@ -2590,6 +2753,24 @@ pub(crate) fn run_job(
                                     "identity check (ADR-022):\n{}",
                                     problems.join("\n")
                                 ));
+                                // The refused commits are the worker's work all
+                                // the same (a lost trailer refuses as surely as a
+                                // forged one): keep them as after a failed check,
+                                // so a retry or the owner starts from them.
+                                let kept = crate::land::keep_failed_work(
+                                    &root,
+                                    |dst| {
+                                        crate::util::git(&root, &["update-ref", dst, &holding]).ok()
+                                    },
+                                    &base,
+                                    &crate::land::failed_work_branch(author, &job.str("id")),
+                                    &home,
+                                    &project.str("slug"),
+                                );
+                                if !kept.is_empty() {
+                                    log.add(format!("the refused run's work: {kept}"));
+                                    summary.push_str(&format!("; {kept}"));
+                                }
                             } else {
                                 let own = crate::keys::own_commit_count(
                                     &root, &base, &holding, &accepted,
@@ -2752,6 +2933,26 @@ pub(crate) fn run_job(
     } else {
         crate::diskroom::dir_mb(Path::new(&ex.clone()))
     };
+    // The stop came from the owner's cancel - of the run, or of the task it
+    // works for (the watch cancels the run's token for both) - not from a
+    // restart: nobody wants the work any more, so it is neither kept nor
+    // queued again (TASK-152 item 7).
+    // The job itself cancelled while it was leased (`hive job finish ...
+    // cancelled` from another shell, the console's stop) is the same: the
+    // board refuses to queue it again (hive-board finish_run_job).
+    let job_cancelled = crate::jobs::job_row(&*c, job.str("id")).str("status") == "cancelled";
+    let owner_stopped =
+        owner_cancelled.load(Ordering::SeqCst) || run_task_cancelled(s, &run_id) || job_cancelled;
+    if status == "lost" && check_stopped.is_some() && owner_stopped {
+        check_stopped = None;
+        status = "failed".into();
+        summary =
+            format!("cancelled by the owner during the check; {commits} commit(s) not landed");
+        if let Some(u) = &unchecked {
+            crate::unchecked::drop_branch(&root, &u.branch);
+        }
+        log.put(&summary);
+    }
     // The runner stopped the check of finished work: its commits are kept on
     // a branch of the project's checkout before the clone goes, and the
     // job's next run checks them instead of doing the task again. A clone
@@ -2789,6 +2990,7 @@ pub(crate) fn run_job(
                     .as_ref()
                     .map_or_else(|| worker_report.clone(), |u| u.report.clone()),
                 commits: commits as i64,
+                clone: String::new(),
             };
             crate::unchecked::record(&c, &s.now(), &job.str("id"), &kept);
             unchecked_kept = true;
@@ -2804,9 +3006,27 @@ pub(crate) fn run_job(
             work_not_fetched = true;
             summary.push_str("; its commits could not be fetched, so the clone is kept");
         } else {
+            // Written down with the clone the commits are in: the job's
+            // next run fetches them from there before its own clone would
+            // remove it (TASK-152 item 1).
+            let kept = crate::unchecked::Unchecked {
+                run: run_id.clone(),
+                agent: author.to_string(),
+                pubkey: unchecked
+                    .as_ref()
+                    .map_or_else(|| pubkey.clone(), |u| u.pubkey.clone()),
+                branch: kept_branch.clone(),
+                base: kept_base,
+                report: unchecked
+                    .as_ref()
+                    .map_or_else(|| worker_report.clone(), |u| u.report.clone()),
+                commits: commits as i64,
+                clone: ex.clone(),
+            };
+            crate::unchecked::record(&c, &s.now(), &job.str("id"), &kept);
             stopped_clone_kept = true;
             summary.push_str(&format!(
-                "; its commits could not be kept on {kept_branch}, so the clone {} is kept",
+                "; its commits could not be kept on {kept_branch}, so the clone {} is kept for the job's next run",
                 ex.clone()
             ));
         }
@@ -2815,7 +3035,8 @@ pub(crate) fn run_job(
     // The agent was told to remove what it added (brief rule 9); whatever is
     // still registered on the clone goes now and is written down against it.
     // A held run keeps its clone for the run that carries on.
-    let held_clone = (status == "held" || stopped_clone_kept) && !ex.remote();
+    let held_clone =
+        (status == "held" || stopped_clone_kept || stranded_clone_kept) && !ex.remote();
     let left = if held_clone {
         ex.hold()
     } else if work_not_fetched {
@@ -3029,6 +3250,14 @@ pub(crate) fn run_job(
             }
         }
         _ => {}
+    }
+    // A job whose task the owner cancelled while it ran is not put back in
+    // the queue by the run's end, whatever stopped it: the cancel ends the
+    // task's open jobs, and this one was leased then (TASK-152 item 7).
+    // A job itself cancelled while it ran stays cancelled: the board
+    // refuses to queue it again.
+    if job_status == "queued" && status != "dry-run" && owner_stopped {
+        job_status = if job_cancelled { "cancelled" } else { "failed" }.into();
     }
     let final_branch = if job_status == "queued" {
         job.str("branch")
@@ -5595,6 +5824,79 @@ mod tests {
     }
 
     /// The reviewer's clone stands on the pull request's head after
+    /// A commit the identity check refuses (here: no trailers) is still the
+    /// worker's work: it is kept on the job's -failed branch, as after a
+    /// failed check, and the refusal names that branch.
+    #[test]
+    fn commits_the_landing_refuses_are_kept_on_the_failed_branch() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = hive_testutil::env_lock();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let s = new_store();
+        let (_proj, root) = new_repo(&s);
+        join(&s, "aurora");
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "no trailers".into(),
+            "commit without the provenance hook".into(),
+            1,
+            0,
+            "test".into(),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        let job = crate::jobs::lease_job(
+            &s,
+            "aurora".into(),
+            TEST_NOW.into(),
+            crate::jobs::LeaseOpts {
+                job_id: job.str("id"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // Signed by the run's key, but past the hook: no trailers, as a
+        // message whose last paragraph read `H: x` left it under doNothing.
+        let worker = "printf 'x\\n' > x.txt && git add x.txt && git -c core.hooksPath=/dev/null commit -q -m 'refused work' && echo 'SUMMARY: committed'";
+        let r = run_job(
+            &s,
+            job,
+            "aurora",
+            TEST_NOW,
+            RunOpts {
+                worker_cmd: format!("sh -c {}", crate::util::shell_quote(worker)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(r.str("status"), "failed", "run: {r:?}");
+        let kept = crate::land::failed_work_branch("aurora", &r.str("job_id"));
+        let summary = r.str("summary");
+        assert!(
+            summary.starts_with("1 commit(s) refused: commit ")
+                && summary.contains("lacks its Hive-Agent trailer")
+                && summary.contains(&format!(
+                    "nothing landed; its commits are kept on branch {kept}"
+                )),
+            "the refusal does not name the kept branch: {summary}"
+        );
+        assert_eq!(
+            run(&root, &["git", "log", "-1", "--format=%s", &kept]).trim(),
+            "refused work",
+            "the refused commit is not on {kept}"
+        );
+        // The job's own branch is not made: a retry lands there.
+        assert!(
+            !crate::unchecked::branch_exists(&root, &format!("hive/aurora/{}", r.str("job_id"))),
+            "the refused work landed on the job's branch"
+        );
+    }
+
     /// `hive review checkout`: the commits past the base are the author's,
     /// signed by another run's key, and the run lands nothing of them.
     /// The review's verdict is its outcome.
@@ -6783,6 +7085,346 @@ mod tests {
         assert_eq!(j.str("branch"), landed, "job: {j:?}");
     }
 
+    /// Runs `job_id` (leased to aurora) with a worker that commits NOTE.md,
+    /// waits for `marker` - the check under way - then calls `stop` and
+    /// returns the stopped run's row with its log.
+    fn run_until_stopped_in_check(
+        s: &hive_store::Store,
+        job_id: &str,
+        marker: &std::path::Path,
+        stop: impl FnOnce(&hive_bus::CancellationToken),
+    ) -> (Row, String) {
+        let leased = crate::jobs::lease_job(
+            s,
+            "aurora".into(),
+            TEST_NOW.into(),
+            crate::jobs::LeaseOpts {
+                job_id: job_id.to_string(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!leased.0.is_empty(), "lease returned no job");
+        let cancel = hive_bus::CancellationToken::new();
+        let run_cancel = cancel.clone();
+        let run_store = s.clone();
+        let (result_tx, result_rx) = crossbeam_channel::bounded(1);
+        std::thread::spawn(move || {
+            let worker = "echo note > NOTE.md && git add NOTE.md && git commit -q -m note && echo 'SUMMARY: done - added a note'";
+            let r = run_job(
+                &run_store,
+                leased,
+                "aurora",
+                TEST_NOW,
+                RunOpts {
+                    worker_cmd: format!("sh -c {}", crate::util::shell_quote(worker)),
+                    cancel: run_cancel,
+                    ..Default::default()
+                },
+            );
+            let _ = result_tx.send(r);
+        });
+        let began = std::time::Instant::now();
+        while !marker.exists() {
+            assert!(
+                began.elapsed() < crate::test_helpers_daemon::test_wait(Duration::from_secs(60)),
+                "the check never started"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        stop(&cancel);
+        let r = result_rx
+            .recv_timeout(crate::test_helpers_daemon::test_wait(Duration::from_secs(
+                60,
+            )))
+            .expect("the run did not settle after it was stopped")
+            .unwrap();
+        let log = std::fs::read_to_string(r.str("log")).unwrap_or_default();
+        (r, log)
+    }
+
+    /// A project whose check stalls the first time (touching `check-started`
+    /// under the store home) and passes once NOTE.md is there; a task job.
+    fn stalling_check_job(
+        s: &hive_store::Store,
+        source: &str,
+    ) -> (String, String, std::path::PathBuf) {
+        let (proj, root) = new_repo(s);
+        join(s, "aurora");
+        let marker = std::path::Path::new(&s.home).join("check-started");
+        let mark = crate::util::shell_quote(&marker.display().to_string());
+        crate::util::exec1(
+            &s.conn().unwrap(),
+            "UPDATE projects SET verify_cmd = ? WHERE slug = ?",
+            &[
+                &format!("test -e {mark} && test -f NOTE.md && exit 0; touch {mark}; sleep 60"),
+                &proj.str("slug"),
+            ],
+        );
+        let (job, _) = crate::jobs::add_job(
+            s,
+            "proj".into(),
+            "task".into(),
+            "a note".into(),
+            "add a note".into(),
+            1,
+            0,
+            source.into(),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        (job.str("id"), root, marker)
+    }
+
+    fn lease_aurora(s: &hive_store::Store, job_id: &str) -> Row {
+        crate::jobs::lease_job(
+            s,
+            "aurora".into(),
+            TEST_NOW.into(),
+            crate::jobs::LeaseOpts {
+                job_id: job_id.to_string(),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    }
+
+    /// TASK-152 item 1: the stop kept the commits in the clone when the
+    /// fetch onto the kept branch failed, but wrote nothing down, so the
+    /// next run's clone removed them and the task was done again. The next
+    /// run now fetches them from that clone first and lands them; while the
+    /// fetch still fails it ends without touching the clone.
+    #[test]
+    fn run_job_fetches_commits_a_stopped_check_left_in_its_clone() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = hive_testutil::env_lock();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let s = new_store();
+        let (job_id, root, marker) = stalling_check_job(&s, "test");
+        let kept = crate::unchecked::unchecked_branch("aurora", &job_id);
+        // A lock on the kept branch's ref: the fetch into the checkout fails.
+        let lock_dir = std::path::Path::new(&root).join(".git/refs/heads/hive/aurora");
+        std::fs::create_dir_all(&lock_dir).unwrap();
+        let lock = lock_dir.join(format!("{job_id}-unchecked.lock"));
+        std::fs::write(&lock, "").unwrap();
+        let (r, log) = run_until_stopped_in_check(&s, &job_id, &marker, |c| c.cancel());
+        assert_eq!(r.str("status"), "lost", "run: {r:?}\n{log}");
+        assert!(
+            r.str("summary").contains("is kept for the job's next run"),
+            "run: {r:?}\n{log}"
+        );
+        assert!(!crate::unchecked::branch_exists(&root, &kept));
+        let clone = std::path::Path::new(&s.home).join("work").join(&job_id);
+        assert!(
+            clone.join(".git").exists(),
+            "the clone with the commits stays"
+        );
+        let stranded = crate::unchecked::stranded(&s, &job_id, &root)
+            .expect("the stop writes the kept clone down");
+        assert_eq!(stranded.clone, clone.display().to_string());
+        let j = crate::jobs::job_row(&s.conn().unwrap(), job_id.clone());
+        assert_eq!(j.str("status"), "queued", "job: {j:?}");
+
+        // The fetch fails again: the run ends before a clone of its own and
+        // the commits stay where they are.
+        let worker_ran = std::path::Path::new(&s.home).join("worker-ran");
+        let worker = format!(
+            "sh -c {}",
+            crate::util::shell_quote(&format!(
+                "touch {}; echo 'SUMMARY: failed: redone'; exit 1",
+                crate::util::shell_quote(&worker_ran.display().to_string())
+            ))
+        );
+        let again = run_job(
+            &s,
+            lease_aurora(&s, &job_id),
+            "aurora",
+            TEST_NOW,
+            RunOpts {
+                worker_cmd: worker.clone(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let log = std::fs::read_to_string(again.str("log")).unwrap_or_default();
+        assert_eq!(again.str("status"), "error", "run: {again:?}\n{log}");
+        assert!(
+            again.str("summary").contains("could not be fetched onto"),
+            "run: {again:?}"
+        );
+        assert!(!worker_ran.exists(), "no worker starts:\n{log}");
+        assert!(clone.join(".git").exists(), "the clone is not removed");
+        let j = crate::jobs::job_row(&s.conn().unwrap(), job_id.clone());
+        assert_eq!(j.str("status"), "queued", "job: {j:?}");
+
+        // The lock is gone: the next run fetches the commits and lands them.
+        std::fs::remove_file(&lock).unwrap();
+        let landed_run = run_job(
+            &s,
+            lease_aurora(&s, &job_id),
+            "aurora",
+            TEST_NOW,
+            RunOpts {
+                worker_cmd: worker,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let log = std::fs::read_to_string(landed_run.str("log")).unwrap_or_default();
+        assert_eq!(
+            landed_run.str("status"),
+            "done",
+            "run: {landed_run:?}\n{log}"
+        );
+        assert!(!worker_ran.exists(), "the task was done again:\n{log}");
+        let landed = format!("hive/aurora/{job_id}");
+        let tip = run(
+            &root,
+            &["git", "rev-parse", &format!("refs/heads/{landed}")],
+        );
+        assert_eq!(
+            run(&root, &["git", "show", &format!("{}:NOTE.md", tip.trim())]).trim(),
+            "note"
+        );
+        let j = crate::jobs::job_row(&s.conn().unwrap(), job_id.clone());
+        assert_eq!(j.str("status"), "done", "job: {j:?}");
+    }
+
+    /// TASK-152 item 7: a job whose task the owner cancels during its end
+    /// check is stopped there by the cancel; that stop is not a restart's,
+    /// so the work is not kept and the job is not queued again.
+    #[test]
+    fn run_job_cancelled_during_its_check_is_not_requeued() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = hive_testutil::env_lock();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let s = new_store();
+        let (job_id, root, marker) = stalling_check_job(&s, "test");
+        let task = hive_tasks::tasks::new(&s, "proj", "a note", "add a note", 0, "human").unwrap();
+        crate::util::exec1(
+            &s.conn().unwrap(),
+            "UPDATE jobs SET source = ? WHERE id = ?",
+            &[&format!("task:{}", task.id), &job_id],
+        );
+        let s2 = s.clone();
+        let (r, log) = run_until_stopped_in_check(&s, &job_id, &marker, |_| {
+            hive_tasks::tasks::cancel(&s2, &task.id, "not wanted", "human").unwrap();
+        });
+        assert_ne!(r.str("status"), "lost", "run: {r:?}\n{log}");
+        assert!(
+            !r.str("summary").contains("kept on branch"),
+            "run: {r:?}\n{log}"
+        );
+        let kept = crate::unchecked::unchecked_branch("aurora", &job_id);
+        assert!(!crate::unchecked::branch_exists(&root, &kept), "{log}");
+        assert!(crate::unchecked::pending(&s, &job_id, &root).is_none());
+        let j = crate::jobs::job_row(&s.conn().unwrap(), job_id.clone());
+        assert_ne!(j.str("status"), "queued", "job: {j:?}\n{log}");
+    }
+
+    /// TASK-152 review: a leased job set cancelled (`hive job finish ...
+    /// cancelled` from another shell) and then stopped is not queued again
+    /// by the stop, nor is its work kept: the run ends with the job
+    /// cancelled, not stale.
+    #[test]
+    fn run_job_cancelled_while_leased_is_not_requeued_by_a_stop() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = hive_testutil::env_lock();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let s = new_store();
+        let (job_id, root, marker) = stalling_check_job(&s, "test");
+        let s2 = s.clone();
+        let id2 = job_id.clone();
+        let (r, log) = run_until_stopped_in_check(&s, &job_id, &marker, |c| {
+            crate::util::exec1(
+                &s2.conn().unwrap(),
+                "UPDATE jobs SET status = 'cancelled' WHERE id = ?",
+                &[&id2],
+            );
+            c.cancel();
+        });
+        assert_ne!(r.str("status"), "stale", "run: {r:?}\n{log}");
+        assert!(
+            log.contains("cancelled by the owner during the check"),
+            "{log}"
+        );
+        let kept = crate::unchecked::unchecked_branch("aurora", &job_id);
+        assert!(!crate::unchecked::branch_exists(&root, &kept), "{log}");
+        let j = crate::jobs::job_row(&s.conn().unwrap(), job_id.clone());
+        assert_ne!(j.str("status"), "queued", "job: {j:?}\n{log}");
+        assert_eq!(j.int("attempts"), 1, "job: {j:?}");
+    }
+
+    /// TASK-152 item 6: a stop during the card's proof was read as the
+    /// card's check failing - the run failed and its work went. It is now a
+    /// stopped check: the work is kept and the next run proves and lands it.
+    #[test]
+    fn run_job_stopped_in_its_card_proof_keeps_the_work() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = hive_testutil::env_lock();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let s = new_store();
+        s.set_setting("human", hive_store::EVOLVE_REQUIRE_CHECK, "on")
+            .unwrap();
+        let (job_id, root, marker) = stalling_check_job(&s, "test");
+        let mark = crate::util::shell_quote(&marker.display().to_string());
+        // The card's check stalls the first time; then it is red on the
+        // default branch (no NOTE.md) and green with the change.
+        let check = format!(
+            "if test -e {mark}; then test -f NOTE.md && echo 'test result: ok. 1 passed; 0 failed'; else touch {mark}; sleep 60; fi"
+        );
+        let conn = s.conn().unwrap();
+        conn.execute(
+            "INSERT INTO posts (id, project, area, thread, kind, agent, date, summary, body, created_at) VALUES ('card-note', 'proj', 'a', 'card-note', 'suggestion', 'w', '2026-11-08T00:00:00Z', 's', ?1, '2026-11-08T00:00:00Z')",
+            [format!("Class: product\nFile: NOTE.md\nVariable: v\nSignal: check:{check}\n")],
+        )
+        .unwrap();
+        crate::util::exec1(
+            &conn,
+            "UPDATE jobs SET kind = 'improve', source = 'suggestion:card-note' WHERE id = ?",
+            &[&job_id],
+        );
+        crate::util::exec1(
+            &conn,
+            "UPDATE projects SET verify_cmd = 'true' WHERE slug = 'proj'",
+            &[],
+        );
+        drop(conn);
+        let (r, log) = run_until_stopped_in_check(&s, &job_id, &marker, |c| c.cancel());
+        assert_eq!(r.str("status"), "lost", "run: {r:?}\n{log}");
+        assert!(
+            !r.str("summary").contains("card's check"),
+            "a stopped proof is not a failed one: {r:?}\n{log}"
+        );
+        let kept = crate::unchecked::unchecked_branch("aurora", &job_id);
+        assert!(crate::unchecked::branch_exists(&root, &kept), "{log}");
+        let j = crate::jobs::job_row(&s.conn().unwrap(), job_id.clone());
+        assert_eq!(j.str("status"), "queued", "job: {j:?}");
+        assert_eq!(j.int("attempts"), 0, "job: {j:?}");
+        let again = run_job(
+            &s,
+            lease_aurora(&s, &job_id),
+            "aurora",
+            TEST_NOW,
+            RunOpts {
+                worker_cmd: "sh -c 'exit 1'".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let log = std::fs::read_to_string(again.str("log")).unwrap_or_default();
+        assert_eq!(again.str("status"), "done", "run: {again:?}\n{log}");
+    }
+
     #[test]
     fn run_job_takes_exit_75_from_a_custom_worker_as_an_error_not_a_hold() {
         let _serial = crate::test_helpers::serial();
@@ -6816,6 +7458,125 @@ mod tests {
             s.held_harness_session_for_job(&job.str("id"))
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn run_job_requeues_a_worker_ended_from_outside_without_using_an_attempt() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = hive_testutil::env_lock();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let s = new_store();
+        let (_, root) = new_repo(&s);
+        let job = staged_work_job(&s);
+        let job_id = job.str("id");
+        let attempts = crate::jobs::job_row(&conn(&s), job_id.clone()).int("attempts");
+        assert_eq!(attempts, 1, "the lease took an attempt");
+        // The worker commits, then is killed from outside as a `pkill` did
+        // to every worker on 2026-11-26: SIGTERM, no hold, cancel or timeout.
+        let worker =
+            "echo note > NOTE.md && git add NOTE.md && git commit -q -m note && kill -TERM $$";
+        let r = run_job(
+            &s,
+            job.clone(),
+            "aurora",
+            TEST_NOW,
+            RunOpts {
+                worker_cmd: format!("sh -c {}", crate::util::shell_quote(worker)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(r.int("exit_code"), 143, "run: {r:?}");
+        assert_eq!(r.str("status"), "held", "run: {r:?}");
+        assert!(
+            r.str("summary")
+                .starts_with("ended by an outside SIGTERM (exit 143)"),
+            "run: {r:?}"
+        );
+        let after = crate::jobs::job_row(&conn(&s), job_id.clone());
+        assert_eq!(after.str("status"), "queued", "job: {after:?}");
+        assert_eq!(
+            after.int("attempts"),
+            attempts - 1,
+            "the lease's attempt is given back: {after:?}"
+        );
+        assert_eq!(after.str("lease_agent"), "", "job: {after:?}");
+        // The commit is kept: on the job's -failed branch in the checkout,
+        // and in the clone, which stays for the queued job.
+        let kept = crate::land::failed_work_branch("aurora", &job_id);
+        let log = run(&root, &["git", "log", "--format=%s", "-1", &kept]);
+        assert_eq!(log.trim(), "note", "kept branch {kept}");
+        let clone = crate::test_helpers::work_leftovers(&s.home);
+        assert!(!clone.is_empty(), "the clone is kept");
+        // The event names the run and the branch; the next brief reads it.
+        let ev = crate::util::must_one(
+            &conn(&s),
+            "SELECT detail FROM events WHERE action = 'job.signalled' AND subject = ?",
+            &[&job_id],
+        );
+        let d = crate::util::json_map(&ev.str("detail"));
+        assert_eq!(
+            d.get("run").and_then(|v| v.as_str()),
+            Some(r.str("id").as_str())
+        );
+        assert_eq!(
+            d.get("branch").and_then(|v| v.as_str()),
+            Some(kept.as_str())
+        );
+        let earlier = crate::brief::earlier_attempt(&s, &job_id, "fjord").unwrap();
+        assert!(earlier.why.contains("outside SIGTERM"), "{earlier:?}");
+        assert!(earlier.patch.ends_with(".patch"), "{earlier:?}");
+        // Not judged: no result post, and the job is not counted as failed.
+        assert_eq!(
+            crate::util::must_one(
+                &conn(&s),
+                "SELECT jobs_failed FROM agents WHERE name = 'aurora'",
+                &[]
+            )
+            .int("jobs_failed"),
+            0
+        );
+        // A worker that exits 143 on its own, the same way, past the limit
+        // of such requeues is judged as it stands.
+        for _ in 0..crate::signal_stop::SIGNAL_REQUEUE_LIMIT {
+            crate::util::event_at(
+                &conn(&s),
+                TEST_NOW,
+                "runner",
+                "job.signalled",
+                &job_id,
+                json!({}),
+            );
+        }
+        let job = crate::jobs::lease_job(
+            &s,
+            "aurora".into(),
+            TEST_NOW.into(),
+            crate::jobs::LeaseOpts {
+                job_id: job_id.clone(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let r = run_job(
+            &s,
+            job,
+            "aurora",
+            TEST_NOW,
+            RunOpts {
+                worker_cmd: "sh -c 'exit 143'".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_ne!(r.str("status"), "held", "run: {r:?}");
+        assert_eq!(
+            crate::jobs::job_row(&conn(&s), job_id.clone()).int("attempts"),
+            attempts,
+            "past the limit the attempt is used"
         );
     }
 
