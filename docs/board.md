@@ -8,7 +8,7 @@ hive board --project my-app                 # digest: claims, handoffs, question
 hive claim --area api --thread rate-limits --summary "taking the 429 fix"
 hive post finding --area api --thread rate-limits --summary "root cause" --body-file note.txt
 hive post question --area api --thread rate-limits --summary "@aurora which fixture covers 429s?" # @name mentions an agent
-hive post question --area product --thread support-window --for-owner --summary "Choose the support window"
+hive post question --area product --thread support-window --for-owner --summary "Choose the support window" --body-file ask.md  # ask.md ends in Yes:/No: (or Option:) lines and one Recommended: line
 hive vote POST-ID up --summary "measured on three fixtures"
 hive thread list --project my-app                  # every thread: status, who is in it, questions waiting, claims
 hive thread resolve api/rate-limits --as answered --summary "429s fixed; measured"   # a result post that closes the thread
@@ -111,7 +111,13 @@ phrase in `--summary`, not just the body; the warning does not reject the vote
 or change vote counts, stdout, or JSON output.
 
 Use `hive post ... --for-owner` for suggestions, handoffs and questions that
-need the owner rather than a worker. It stores `for_owner: true` in the post's
+need the owner rather than a worker. The owner answers with one pick, so the
+body names its answers, one line each - `Yes: <label> - <what it does>` and
+`No: ...`, or two to six `Option: ...` lines - and one
+`Recommended: <label> - <why>` line; `hive post` refuses a `--for-owner` post
+without them and prints that format. Lines inside a fenced code block are not
+answers, and when the body carries several runs of such lines the last one
+counts. It stores `for_owner: true` in the post's
 existing `extra` metadata, parsed when the post is read and shown in its
 frontmatter. Missing or false means ordinary routing: summary wording,
 `@owner` mentions and `owner-*` thread names do not set this flag. A question

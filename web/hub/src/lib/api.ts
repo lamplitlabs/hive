@@ -1769,7 +1769,10 @@ export interface ChatPendingQuestion {
   kind: "question";
   id: number;
   question: string;
+  // The answers to pick from (the `question` tool requires 2-6) and the one
+  // the agent recommends; absent from a question asked by an older build.
   choices: string[];
+  recommended?: string;
 }
 export interface ChatPendingApproval {
   kind: "approval";
