@@ -86,11 +86,62 @@
 # run everything. `--scope` prints the decision and exits
 # (scripts/tests/verify-check-test.sh).
 #
+# The console: hive-hub's build script builds web/hub/out and the crate
+# embeds it. When it could not (no npm, HIVE_HUB_SKIP_BUILD=1 on a clean
+# tree, or a target dir shared with another clone that cargo took this
+# tree's build for, TASK-156) out/ holds a one-page placeholder of about
+# 207 bytes and two hive-hub tests fail far from the cause. Once the test
+# binaries are built, a check that tests hive-hub stops there with what to
+# do. `--console` prints what web/hub/out holds and exits 1 unless it is a
+# built console, with the same message on stderr
+# (scripts/tests/verify-check-test.sh).
+#
 # Usage: scripts/verify-check.sh            (the check)
 #        scripts/verify-check.sh --pool     (print the pool size and exit)
 #        scripts/verify-check.sh --scope    (print the pre-commit scope and exit)
+#        scripts/verify-check.sh --console  (print what web/hub/out holds and exit)
 #        scripts/verify-check.sh --chunk S C (internal: one chunk of the pool)
 set -e
+
+# Sets console_state to what web/hub/out holds - built, placeholder or
+# missing - and console_bytes to the size of its index.html (see above).
+console_export() {
+  console_bytes=0
+  if [ ! -f web/hub/out/index.html ]; then
+    console_state=missing
+    return 0
+  fi
+  console_bytes=$(wc -c < web/hub/out/index.html | tr -d ' ')
+  if grep -q 'The Hive console was not built' web/hub/out/index.html || [ ! -d web/hub/out/_next ]; then
+    console_state=placeholder
+  else
+    console_state=built
+  fi
+}
+
+# Fails the check with the cause and the fix when web/hub/out is not a
+# built console.
+require_console() {
+  console_export
+  [ "$console_state" = built ] && return 0
+  if [ "$console_state" = missing ]; then
+    held="no web/hub/out/index.html"
+  else
+    held="the ${console_bytes}-byte placeholder page"
+  fi
+  why="hive-hub's build script did not build it for this tree"
+  if [ "${HIVE_HUB_SKIP_BUILD:-}" = 1 ]; then
+    why="HIVE_HUB_SKIP_BUILD=1 is set, so hive-hub's build script did not build it"
+  elif ! command -v npm > /dev/null 2>&1; then
+    why="npm is not on PATH, so hive-hub's build script could not build it"
+  fi
+  {
+    echo "verify-check: the console is not built: web/hub/out holds $held ($why)."
+    echo "verify-check: server::tests::embedded_export and server::tests::static_export_slashless_pages would fail on it, so the check stops here."
+    echo "verify-check: build it in this tree with \`cd web/hub && npm ci && npm run build\` and rerun the check; a CARGO_TARGET_DIR shared with another clone is the usual cause on a hand (CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-unset})."
+  } >&2
+  exit 1
+}
 
 # Prints how many chunks run at once (see above).
 pool_size() {
@@ -244,6 +295,16 @@ if [ "${1:-}" = "--scope" ]; then
   exit 0
 fi
 
+if [ "${1:-}" = "--console" ]; then
+  console_export
+  if [ "$console_state" = placeholder ]; then
+    echo "console: placeholder ($console_bytes bytes)"
+  else
+    echo "console: $console_state"
+  fi
+  require_console
+  exit 0
+fi
 if [ "${1:-}" = "--chunk" ]; then
   # One chunk: suite S, chunk C, under the pool's work directory.
   w=$VERIFY_CHECK_WORK
@@ -376,6 +437,11 @@ if [ ! -s "$work/binaries" ]; then
   exit 1
 fi
 built=$(date +%s)
+# The test binaries are built, and with them hive-hub's console: a tree
+# whose hive-hub tests would read a placeholder stops here (see above).
+if grep -q '/crates/hive-hub/Cargo.toml	' "$work/binaries"; then
+  require_console
+fi
 
 # Doc tests are compiled by rustdoc, not listed: cargo runs them as before.
 if [ -n "$doc" ]; then

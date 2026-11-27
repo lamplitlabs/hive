@@ -1410,6 +1410,9 @@ pub(crate) fn run_job(
     // The shared Cargo build-cache lane this run builds into, held until the
     // clone is gone so no concurrent run of the project shares it.
     let mut build_cache: Option<crate::buildcache::Lane> = None;
+    // A run on a hand: the target dir of its own its worker and gate build
+    // into, which the run-end check on the hand is given too.
+    let mut hand_target_dir = String::new();
 
     // The vault secrets granted to this run, if any; wiped when dropped.
     let mut secret_grant = crate::secrets::SecretGrant::default();
@@ -1759,6 +1762,22 @@ pub(crate) fn run_job(
             if let Some(r) = &recipe {
                 for (k, v) in &r.env {
                     env.insert(k.clone(), v.clone());
+                }
+            }
+            // Each run on a hand builds into its own target dir, as a local
+            // run takes a lane of its own (`buildcache::prepare_hand`).
+            if !o.dry_run && !custom_worker {
+                let prepared = crate::buildcache::prepare_hand(
+                    crate::buildcache::is_cargo_project(Path::new(&root)),
+                    ex.worker_dirs().first().map_or("", String::as_str),
+                    &mut env,
+                );
+                let line = prepared.line();
+                if !line.is_empty() {
+                    log.add(line);
+                }
+                if let crate::buildcache::Prepared::HandRun(dir) = prepared {
+                    hand_target_dir = dir;
                 }
             }
             // A local hive-hand runs on this machine: its worker uses this
@@ -2370,7 +2389,15 @@ pub(crate) fn run_job(
                         project.str("verify_cmd")
                     ));
                 } else if !project.str("verify_cmd").is_empty() {
-                    let check_cmd = wrapped_check(s, &project, recipe.as_ref(), &pins, &clone);
+                    let mut check_cmd = wrapped_check(s, &project, recipe.as_ref(), &pins, &clone);
+                    if !hand_target_dir.is_empty() {
+                        // The hand's verify verb passes no env: the check
+                        // builds where the run's worker and gate did.
+                        check_cmd = format!(
+                            "export CARGO_TARGET_DIR={}\n{check_cmd}",
+                            crate::util::shell_quote(&hand_target_dir)
+                        );
+                    }
                     base_check_cmd = check_cmd.clone();
                     let (mut rc, mut vout) = ex.verify(&cancel, &check_cmd, minutes);
                     if rc == Some(crate::verify_lock::DISK_FULL_EXIT) && ex.name() == "local" {
