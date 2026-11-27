@@ -281,6 +281,39 @@ pub(crate) fn reserve_for_owner(
     (owner_running == 0).then_some(0)
 }
 
+/// The local slots the governor offers the owner's queued work this tick,
+/// with no run asked to yield: the verdict's room under the cap, else the
+/// one slot over it ([`Verdict::express`], or the owner reservation over a
+/// full cap, [`reserve_for_owner`]) - the same slots the dispatch opens. The
+/// yield (yield_lane.rs) calls the fleet full when this and the paired
+/// machines' free slots are none, not when the jobs in flight reach the
+/// fleet's nominal total: the kernel's memory warning halves the cap, and
+/// the express slot is one past it.
+pub(crate) fn owner_room(
+    limits: &Limits,
+    pressure: &Pressure,
+    running: usize,
+    measuring: usize,
+    reserved: usize,
+    owner_running: usize,
+) -> usize {
+    let verdict = decide(
+        limits,
+        pressure,
+        running,
+        measuring,
+        reserved,
+        owner_running,
+    );
+    if verdict.room > 0 {
+        verdict.room
+    } else {
+        usize::from(
+            verdict.express || reserve_for_owner(&verdict, pressure, true, owner_running).is_some(),
+        )
+    }
+}
+
 /// Why the owner's next run could not start on this machine once a fleet
 /// run yielded its lane, or None when it could: the yield (yield_lane.rs)
 /// asks a fleet run to hold only then. It is the governor's own answer for
@@ -892,6 +925,32 @@ mod tests {
         let v = decide(&l, &warned_and_loaded, 0, 0, 0, 0);
         assert_eq!(v.room, 0, "a load hold still closes the slots");
         assert!(v.express, "a soft load hold keeps the lane: {v:?}");
+    }
+
+    #[test]
+    fn owner_room_is_the_slots_the_dispatch_offers_the_owner_not_the_nominal_cap() {
+        let l = limits(4, 12.0, 1024);
+        let warned = Pressure {
+            mem_warning: true,
+            ..calm()
+        };
+        // Under the cap: the room.
+        assert_eq!(owner_room(&l, &calm(), 1, 0, 0, 0), 3);
+        // The memory warning halves four to two: two runs, one the owner's,
+        // leave no slot although two of the four are not taken.
+        assert_eq!(owner_room(&l, &warned, 2, 0, 0, 1), 0);
+        // With none of them the owner's, the express slot is one.
+        assert_eq!(owner_room(&l, &warned, 2, 0, 0, 0), 1);
+        // A full cap with the owner's run among it: none; a self-update
+        // build waiting takes the slot it keeps.
+        assert_eq!(owner_room(&l, &calm(), 4, 0, 0, 1), 0);
+        assert_eq!(owner_room(&l, &calm(), 3, 0, 1, 1), 0);
+        // Critical memory pressure: nothing.
+        let critical = Pressure {
+            mem_critical: true,
+            ..calm()
+        };
+        assert_eq!(owner_room(&l, &critical, 0, 0, 0, 0), 0);
     }
 
     #[test]
