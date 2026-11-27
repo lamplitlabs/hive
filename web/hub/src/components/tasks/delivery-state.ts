@@ -94,6 +94,9 @@ export function deliveryView(d: DeliveryInput | null | undefined): DeliveryView 
       return link ? view("Merged: ", link, ".", "ok") : view("Merged" + (d.number ? " (PR #" + d.number + ")" : "") + ".", null, "", "ok");
     case "held":
       return view("Held" + note, null, "", "warn");
+    // Nobody is woken to change the work: the owner's turn.
+    case "held_for_owner":
+      return view("Held for you" + (d.note ? ": " + sentence(d.note) : ".") + " The runner tries again once the work changes.", null, "", "warn");
     // Older work, from before each task had its own pull request.
     case "waiting":
       return view(d.waiting === 1 ? "One finished step waits for its pull request." : (d.waiting || 0) + " finished steps wait for their pull request.", null, "", "neutral");

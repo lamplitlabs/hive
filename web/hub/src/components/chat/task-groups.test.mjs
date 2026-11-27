@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { GROUP_ORDER, entryGroup, entryId, foldedEntries, jobWaitingForPr, listEntries, prGroupOf, prMood, prWaitLine, sessionWords, stepWords, taskFinished, taskGroup, taskGroupOf, taskMood, taskMoodOf, taskTitleOf } from "./task-groups.ts";
+import { GROUP_ORDER, entryGroup, entryId, foldedEntries, jobWaitingForPr, listEntries, ownerTurn, prGroupOf, prMood, prWaitLine, sessionWords, stepWords, taskFinished, taskGroup, taskGroupOf, taskMood, taskMoodOf, taskOwnerTurn, taskPrState, taskTitleOf } from "./task-groups.ts";
 
 const session = (over = {}) => ({ job: "job-1", kind: "feature", title: "Build it", job_status: "queued", agent: "", session: "", status: "", started_at: "", updated_at: "", ended_at: "", cost: 0, steps: 0, ...over });
 const task = (over = {}) => ({ id: "TASK-001", project: "one", title: "Ship it", status: "in_progress", priority: 10, lead: "one-lead", created_by: "owner", created_at: "", updated_at: "", last_at: "", messages: 0, last_message_at: "", last_author: "", needs_you: false, sessions: [], ...over });
@@ -270,4 +270,28 @@ test("an approved pull request whose merge waits says what it waits for, in one 
   );
   assert.equal(prWaitLine("merge_waiting", ""), "");
   assert.equal(prWaitLine("review_failed", "approved; anything"), "", "only a waiting merge has the line");
+});
+
+test("a pull request held for the owner is the owner's turn; one the runner retries is not", () => {
+  const done = session({ job_status: "done", branch: "hive/w/job-1" });
+  const conflict = task({ sessions: [done], hold: { state: "held_for_owner", note: "does not merge cleanly; this one is for you", at: "" } });
+  assert.equal(taskMood(conflict).word, "Pull request held for you");
+  assert.equal(taskMood(conflict).tone, "wait");
+  assert.equal(taskGroup(conflict), "needs_review");
+  assert.equal(sessionWords(done, taskPrState(conflict)).word, "Pull request held for you");
+  assert.equal(taskOwnerTurn(conflict), true);
+  // A hub that says so wins.
+  assert.equal(taskOwnerTurn({ ...conflict, owner_turn: false }), false);
+
+  const fault = task({ sessions: [done], hold: { state: "held", note: "gh: could not resolve host", at: "" } });
+  assert.equal(taskMood(fault).word, "Waiting for its pull request");
+  assert.equal(taskGroup(fault), "review");
+  assert.equal(taskOwnerTurn(fault), false);
+
+  // The owner's turn outranks a step at work, as on the lifecycle view.
+  const busy = task({ sessions: [done, session({ job: "job-2", job_status: "leased" })], hold: conflict.hold });
+  assert.equal(taskMood(busy).word, "Pull request held for you");
+  assert.equal(ownerTurn("in_progress", "held_for_owner"), true);
+  assert.equal(ownerTurn("review", ""), true);
+  assert.equal(ownerTurn("in_progress", "held"), false);
 });

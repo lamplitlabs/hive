@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { jobWaitingForPr, ownerTurn } from "../src/components/chat/task-groups.ts";
 import { projectLifecycle, taskLifecycle } from "./lifecycle.mjs";
 
 const task = (over) => ({ id: "TASK-1", project: "demo", status: "open", lead: "", created_at: "2026-11-26T10:00:00Z", ...over });
@@ -46,19 +47,44 @@ test("the mock groups a project's tasks by phase", () => {
   assert.equal(p.tasks.length, 2);
 });
 
-// The cases crates/hive-hub/src/phases.rs runs through the hub's own
-// derivation: the mock places every one where the hub does.
+// The cases crates/hive-hub/src/phases.rs writes into a store and reads
+// back through the hub's routes: the mock answers every one with what the
+// hub serializes, field for field (lifecycle-answers.json, written by the
+// hub's test), and the Sessions list's owner rule waits on the owner where
+// the hub does.
 const here = dirname(fileURLToPath(import.meta.url));
-const { cases } = JSON.parse(readFileSync(join(here, "lifecycle-cases.json"), "utf8"));
+const read = (name) => JSON.parse(readFileSync(join(here, name), "utf8"));
+const { cases, defaults } = read("lifecycle-cases.json");
+const { phases, answers } = read("lifecycle-answers.json");
 
-test("the mock places every shared case where the hub does", () => {
-  assert.ok(cases.length >= 20);
+// A case as the mock reads a task detail, with the fixture's defaults for
+// what the case leaves out and the store's clock for the events' time.
+const detailOf = (c) => ({
+  task: task({ ...c.task, id: defaults.task_id, created_at: defaults.task_created_at }),
+  jobs: c.jobs.map((j) => ({ created_at: defaults.job.created_at, finished_at: "", branch: "", ...j })),
+  delivery: c.delivery ? { ...defaults.delivery, at: defaults.at, ...c.delivery } : null,
+});
+
+test("the mock answers every shared case with what the hub's route serializes", () => {
+  assert.ok(cases.length >= 25);
+  assert.deepEqual(Object.keys(answers).sort(), cases.map((c) => c.name).sort());
   for (const c of cases) {
-    const l = taskLifecycle({
-      task: task({ ...c.task, id: "TASK-007" }),
-      jobs: c.jobs.map((j) => ({ created_at: "2026-11-26T10:00:00Z", finished_at: "", branch: "", ...j })),
-      delivery: c.delivery ? { url: "", at: "2026-11-26T11:00:00Z", note: "", ...c.delivery } : null,
-    });
+    const { phases: mine, ...l } = taskLifecycle(detailOf(c));
     assert.deepEqual([l.phase, l.waits_on], [c.phase, c.waits_on], c.name);
+    assert.deepEqual(l, answers[c.name], c.name);
+    assert.deepEqual(mine, phases, c.name);
+    const row = projectLifecycle("proj", [detailOf(c)]).tasks[0];
+    assert.deepEqual(row, { task: l.task, phase: l.phase, waits_on: l.waits_on, note: l.note, rework: l.rework }, c.name);
+  }
+});
+
+test("the Sessions list waits on the owner exactly where the hub does", () => {
+  for (const c of cases) {
+    const d = detailOf(c);
+    const waiting = d.jobs.some((j) => j.kind !== "lead" && jobWaitingForPr(j.status, j.branch));
+    const turn = ownerTurn(c.task.status, d.delivery && (waiting || !d.delivery.state.startsWith("held")) ? d.delivery.state : "");
+    // A closed task is the board's word, whoever's turn its pull request was.
+    const open = c.phase !== "done" && c.phase !== "cancelled";
+    assert.equal(turn && open, c.waits_on === "owner", c.name);
   }
 });

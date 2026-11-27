@@ -100,5 +100,17 @@
         "harness_session": "run-20260911-001"
       }
     ]
+  },
+  "delivery": {
+    "at": "2026-09-01T19:12:00Z",
+    "can_ask": false,
+    "landed": 0,
+    "note": "does not merge cleanly into main; job job-20260901T190200Z-87e2d1 already rebased the task's work once, so this one is for you",
+    "number": 0,
+    "remote": "",
+    "sha": "",
+    "state": "held_for_owner",
+    "url": "",
+    "waiting": 1
   }
 }

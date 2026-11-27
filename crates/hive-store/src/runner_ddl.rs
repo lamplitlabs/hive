@@ -36,6 +36,7 @@ pub const RUNNER_DDL: &[&str] = &[
     r####"CREATE INDEX IF NOT EXISTS runs_agent_recent ON runs (agent, mode, started_at DESC, id DESC)"####,
     r####"CREATE INDEX IF NOT EXISTS runs_status_started ON runs (status, started_at DESC)"####,
     r####"CREATE INDEX IF NOT EXISTS runs_executor_status ON runs (executor, status, started_at DESC)"####,
+    r####"CREATE INDEX IF NOT EXISTS runs_job ON runs (job_id, started_at)"####,
     r####"CREATE INDEX IF NOT EXISTS jobs_source_status ON jobs (source, status, created_at DESC)"####,
     r####"CREATE INDEX IF NOT EXISTS jobs_source_status_kind_id ON jobs (source, status, kind, id)"####,
     r####"CREATE INDEX IF NOT EXISTS jobs_status_finished ON jobs (status, finished_at DESC, id)"####,
