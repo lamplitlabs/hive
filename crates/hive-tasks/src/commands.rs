@@ -252,6 +252,82 @@ fn actor(c: &Context) -> String {
     }
 }
 
+/// The environment variables that mark a caller as a run of Hive's rather than the owner at a
+/// terminal: a harness session, a job's worker, a console conversation's agent, a schedule's
+/// script. Each names what the caller is, in this order.
+const RUN_MARKERS: [&str; 4] = [
+    "HIVE_CONVERSATION",
+    "HIVE_JOB",
+    "HIVE_SCHEDULE",
+    "HIVE_HARNESS",
+];
+
+/// Who a `hive compute request|approve|deny` is from (PR 314 review): the owner only by the rule
+/// `hive_goals::require_owner` has - an owner-shaped name ("human" or "human:NAME"), no other
+/// agent in HIVE_AGENT, not a worker (`hive_store::worker_guard`) - and only when none of
+/// [`RUN_MARKERS`] is set. Any other caller that would pass for the owner (a conversation's
+/// agent has no HIVE_AGENT, a schedule's script neither, a worker may type `--agent human`) is
+/// named after what it is: its HIVE_AGENT, its conversation, its job, its schedule, or
+/// "harness". So such a caller's request is an agent's, and its approval is not the owner's.
+fn compute_actor(c: &Context) -> String {
+    let name = actor(c);
+    let var = |key: &str| std::env::var(key).unwrap_or_default().trim().to_string();
+    let env_agent = var("HIVE_AGENT");
+    let marked = RUN_MARKERS.iter().any(|key| !var(key).is_empty());
+    let owner = owner_shaped(&name)
+        && (env_agent.is_empty() || owner_shaped(&env_agent))
+        && !marked
+        && !hive_store::worker_guard(&c.home);
+    if owner || !hive_store::human_actor(&name) {
+        return name;
+    }
+    if !env_agent.is_empty() && !hive_store::human_actor(&env_agent) {
+        return run_name("", &env_agent, "agent");
+    }
+    let schedule = var("HIVE_SCHEDULE");
+    if !var("HIVE_CONVERSATION").is_empty() {
+        run_name("", &var("HIVE_CONVERSATION"), "conversation")
+    } else if !var("HIVE_JOB").is_empty() {
+        run_name("", &var("HIVE_JOB"), "job")
+    } else if !schedule.is_empty() {
+        run_name("schedule-", &schedule, "schedule")
+    } else if !var("HIVE_HARNESS").is_empty() {
+        "harness".into()
+    } else {
+        "agent".into()
+    }
+}
+
+/// `hive_goals::owner_actor`'s shape: "human" or "human:NAME" (NAME 1-64 of `[A-Za-z0-9_-]`),
+/// nothing secret-shaped.
+fn owner_shaped(actor: &str) -> bool {
+    let shaped = match actor.strip_prefix("human") {
+        Some("") => true,
+        Some(rest) => rest.strip_prefix(':').is_some_and(|n| {
+            (1..=64).contains(&n.len())
+                && n.chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+        }),
+        None => false,
+    };
+    shaped && !hive_store::secret_shaped(actor)
+}
+
+/// A run's id as an actor name: `prefix` + the id's name-safe characters (at most 64), or
+/// `fallback` when none is left.
+fn run_name(prefix: &str, id: &str, fallback: &str) -> String {
+    let safe: String = id
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+        .take(64)
+        .collect();
+    if safe.is_empty() || hive_store::human_actor(&safe) {
+        fallback.into()
+    } else {
+        format!("{prefix}{safe}")
+    }
+}
+
 fn read_body(inline: &str, file: &str) -> Result<String> {
     if !inline.is_empty() {
         return Ok(inline.to_string());
@@ -1703,7 +1779,7 @@ pub fn run_compute(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()>
             let r = request_compute(
                 store(c)?,
                 &c.project,
-                &actor(c),
+                &compute_actor(c),
                 &size,
                 fs.get_int("hours"),
                 &fs.get_string("reason"),
@@ -1724,11 +1800,13 @@ pub fn run_compute(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()>
                     ),
                 )
             } else {
+                // Over a limit every request waits, the owner's too (PR 314 review): the
+                // owner's `hive compute approve` is what lets it past the limit.
                 printf(
                     c,
                     format_args!(
-                        "{} pending: {} for {}h - proposal {} waits for the owner\n",
-                        r.id, r.size, r.hours, r.proposal_post
+                        "{} pending: {} for {}h - proposal {} waits for the owner (`hive compute approve {}` rents it past the limits)\n",
+                        r.id, r.size, r.hours, r.proposal_post, r.id
                     ),
                 )
             }
@@ -1753,9 +1831,9 @@ pub fn run_compute(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()>
                 format_args!(
                     "caps: provider {}  max_vms {} (in use {})  max_hours_per_day {} (today {})  auto_approve {}  budget_credits {}\n",
                     caps.provider,
-                    caps.max_vms,
+                    crate::compute::limit_words(caps.max_vms),
                     caps.vms_now,
-                    caps.max_hours_per_day,
+                    crate::compute::limit_words(caps.max_hours_per_day),
                     caps.hours_today,
                     caps.auto_approve,
                     caps.budget_credits
@@ -1793,7 +1871,7 @@ pub fn run_compute(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()>
         }
         "approve" | "deny" => {
             need("compute", rest, 1, "a request id")?;
-            let who = actor(c);
+            let who = compute_actor(c);
             let r = if sub == "approve" {
                 approve(store(c)?, &rest[0], &fs.get_string("words"), &who)?
             } else {

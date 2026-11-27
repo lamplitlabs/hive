@@ -6,7 +6,7 @@ import { AddMachineButton, PairingRow } from "@/components/compute/add-machine";
 import { MachineCard, RevokeDeviceButton } from "@/components/compute/machine";
 import { ThisMachineCard } from "@/components/compute/this-machine";
 import { CapsPanel, ComputeRequestCard, ComputeRequestListRow, ComputeRequestRow } from "@/components/compute/compute";
-import { waitingNote } from "@/components/compute/compute-state";
+import { requestState, waitingNote } from "@/components/compute/compute-state";
 import { HygienePanel } from "@/components/hive/hygiene";
 import { RunnersAskedElsewhere, RunnersQuestion, runnersAsking } from "@/components/hive/runners";
 import { Button } from "@/components/ui/button";
@@ -54,20 +54,23 @@ export default function ComputePage() {
   // Approved requests that are starting or running are live and use hours, so
   // they get their own group; "Past requests" keeps the settled ones.
   const live = c.requests.filter((r) => LIVE.has(r.status)).sort(newestFirst);
-  const past = c.requests.filter((r) => r.status !== "pending" && !LIVE.has(r.status)).sort(newestFirst);
+  // A request a limit refused waits for the owner's answer (Rent it anyway / raise / Do not rent,
+  // TASK-165): it sits under Waiting for you, not among the past ones.
+  const notRented = c.requests.filter((r) => !!r.limit_hit).sort(newestFirst);
+  const past = c.requests.filter((r) => r.status !== "pending" && !LIVE.has(r.status) && !r.limit_hit).sort(newestFirst);
   // The compute route returns the raw executor rows; the runner adds the live
   // running / free counts (and the local machine), so prefer it once loaded.
   // A removed machine is gone for good; it is kept in the store as history, not shown.
   const executors: Executor[] = (runner.data?.executors?.length ? runner.data.executors : (c.executors ?? []).map((e) => ({ ...e, running: e.running ?? 0, free: e.free ?? 0 }))).filter((e) => e.status !== "removed");
   const local = executors.find((e) => e.kind === "local" || e.name === "local") ?? null;
   const pastShown = allPast ? past : past.slice(0, PAST_SHOWN);
-  const pastFailed = past.filter((r) => r.status === "failed").length;
+  const pastFailed = past.filter((r) => requestState(r).bad).length;
   const active = executors.filter((e) => e.status === "active").length;
   const pairings = c.pairings ?? [];
   // A finished pairing's machine is in the executors list already; the row
   // under it is the report, kept until dismissed.
   const machinesNote = executors.length ? plural(active, "machine") + " taking work right now." : "Every machine your agents can use.";
-  const waiting = pending.length + (asking ? 1 : 0);
+  const waiting = pending.length + notRented.length + (asking ? 1 : 0);
   return (
     <>
       <PageHeader title="Machines" subtitle={SUB} action={<AddMachineButton caps={c.caps} size="default" variant="default" />} />
@@ -80,7 +83,7 @@ export default function ComputePage() {
 
         {waiting ? (
           <section aria-label="Waiting for you">
-            <SectionHeading count={waiting} note={waitingNote(pending.length, asking)}>
+            <SectionHeading count={waiting} note={waitingNote(pending.length + notRented.length, asking)}>
               Waiting for you
             </SectionHeading>
             {asking ? <RunnersQuestion note={runnersNote} className={pending.length ? "mb-3" : undefined} /> : null}
@@ -90,6 +93,13 @@ export default function ComputePage() {
                   <li key={r.id}>
                     <ComputeRequestListRow r={r} />
                   </li>
+                ))}
+              </ul>
+            ) : null}
+            {notRented.length ? (
+              <ul className={pending.length ? "mt-2 grid gap-2" : "grid gap-2"} aria-label="Not rented">
+                {notRented.map((r) => (
+                  <ComputeRequestRow key={r.id} r={r} />
                 ))}
               </ul>
             ) : null}
@@ -140,7 +150,7 @@ export default function ComputePage() {
         </section>
 
         <section aria-label="Limits">
-          <SectionHeading note="Every request for an extra machine has to fit inside these.">Limits</SectionHeading>
+          <SectionHeading note="What agents and the daemon may rent by themselves. Your own requests are never refused by them.">Limits</SectionHeading>
           <CapsPanel caps={c.caps} />
         </section>
 

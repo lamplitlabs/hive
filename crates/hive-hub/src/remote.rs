@@ -74,12 +74,50 @@ fn assertion_of(r: &Request) -> Option<(String, webauthn::Assertion)> {
     ))
 }
 
-/// Whether a write route needs the team's owner rather than any member.
-fn owner_route(route: &str) -> bool {
-    route == "settings" || route == "members" || route.starts_with("members/")
+/// Whether a write route needs the team's owner rather than any member: settings and members,
+/// and every write that rents past a rental limit or raises one (PR 314 review) - the rent
+/// dialog's `compute/executors` with `"raise": true`, `compute/<id>/rent`, `compute/<id>/approve`
+/// and `compute/refile-today`. A member's own request under the limits stays any member's.
+fn owner_route(route: &str, body: &[u8]) -> bool {
+    if route == "settings" || route == "members" || route.starts_with("members/") {
+        return true;
+    }
+    let parts: Vec<&str> = route.trim_matches('/').split('/').collect();
+    match parts.as_slice() {
+        ["compute", "refile-today"] => true,
+        ["compute", _, "rent" | "approve"] => true,
+        ["compute", "executors"] => raises_a_limit(body),
+        _ => false,
+    }
+}
+
+/// Whether a rent dialog's body asks to raise a limit. A body that does not read as a JSON
+/// object, or a `raise` the route would refuse, is taken as one that does: the owner's passkey
+/// is asked for rather than a member's write let through on a doubt.
+fn raises_a_limit(body: &[u8]) -> bool {
+    match serde_json::from_slice::<crate::additions::JsonMap>(body) {
+        Ok(payload) => {
+            crate::machines::payload_bool(&payload, "raise", false).is_none_or(|raise| raise)
+        }
+        Err(_) => true,
+    }
 }
 
 impl Handler {
+    /// Whether a write came from the owner: on the loopback listener always; through the front
+    /// only when the passkey that signed it - [`Handler::front_gate`] checked the signature
+    /// already - is the team owner's.
+    pub(crate) fn owners_write(&self, r: &Request) -> bool {
+        if !r.via_front {
+            return true;
+        }
+        let Some(store) = self.store.as_deref() else {
+            return false;
+        };
+        let credential = r.header(webauthn::CREDENTIAL_HEADER);
+        matches!(store.member(&credential), Ok(Some(m)) if m.active() && m.role == "owner")
+    }
+
     /// The front's gate: true when the request may go on to its route.
     /// Requests on the loopback listener always may; the rest are checked as
     /// the module says and refused with 403 here.
@@ -226,11 +264,11 @@ impl Handler {
             }
         }
         let route = r.path().strip_prefix("/api/v1/").unwrap_or("");
-        if owner_route(route) && member.role != "owner" {
+        if owner_route(route, &r.body) && member.role != "owner" {
             forbidden(
                 w,
                 "Only the team's owner can do this",
-                "Settings and members change only with an owner's passkey.",
+                "Settings and members change, and a machine is rented past a limit, only with an owner's passkey.",
                 "Ask the team's owner.",
             );
             return false;
@@ -892,6 +930,87 @@ mod tests {
                 .map(String::as_str),
             Some("90")
         );
+    }
+
+    /// PR 314 review item 2: through the front, renting past a limit or raising one takes the
+    /// team owner's passkey. A member who is not the owner gets 403 on the rent dialog's
+    /// `"raise": true`, on `compute/<id>/rent`, `compute/<id>/approve` and
+    /// `compute/refile-today`, and the limit stays as it was; the member's own request without a
+    /// raise passes the gate but, over a limit, waits for the owner. Before, any member's
+    /// signed write was taken as the owner's and raised the limit.
+    #[test]
+    fn a_member_who_is_not_the_owner_cannot_rent_past_a_limit_through_the_front() {
+        let _serial = crate::test_helpers::serial();
+        let (s, srv) = open_hub("member");
+        crate::test_helpers_http::additions_project(&s, "one");
+        for (k, v) in [
+            ("compute.auto_approve", "1"),
+            ("compute.max_vms", "0"),
+            ("compute.max_hours_per_day", "0"),
+        ] {
+            s.set_setting("human", k, v).unwrap();
+        }
+        let r = hive_tasks::request_compute(&s, "one", "one-lead", "small", 2, "agent's").unwrap();
+        let hit = hive_tasks::get_caps(&s).unwrap().limit_hit(2).unwrap();
+        hive_tasks::not_rented(&s, &r.id, &hit, "hive").unwrap();
+        let other = hive_tasks::request_compute(&s, "one", "one-lead", "small", 2, "more").unwrap();
+        let rent = format!("/api/v1/compute/{}/rent", r.id);
+        let approve = format!("/api/v1/compute/{}/approve", other.id);
+        let writes: [(&str, &str); 4] = [
+            (
+                "/api/v1/compute/executors",
+                r#"{"mode":"request","project":"one","size":"small","hours":3,"reason":"mine","raise":true}"#,
+            ),
+            (&rent, r#"{"raise":true}"#),
+            (&approve, r#"{"words":"go"}"#),
+            ("/api/v1/compute/refile-today", "{}"),
+        ];
+        for (count, (path, body)) in (1u32..).zip(writes) {
+            let n = nonce(&srv);
+            let (status, reply) = write(&srv, path, body, Some((&ALICE, "alice-key", &n, count)));
+            assert_eq!(status, 403, "{path}: {reply}");
+            assert_eq!(
+                reply["error"], "Only the team's owner can do this",
+                "{path}"
+            );
+        }
+        assert_eq!(s.setting("compute.max_hours_per_day", ""), "0");
+        assert_eq!(s.setting("compute.max_vms", ""), "0");
+        let n = |id: &str| hive_tasks::get_compute(&s, id).unwrap();
+        assert_eq!(n(&other.id).status, "pending");
+        assert!(hive_tasks::open_limit_hit(&s, &r.id).unwrap().is_some());
+        // The member's own request with no raise passes the gate, and over the limits it waits.
+        let nn = nonce(&srv);
+        let (status, reply) = write(
+            &srv,
+            "/api/v1/compute/executors",
+            r#"{"mode":"request","project":"one","size":"small","hours":3,"reason":"mine"}"#,
+            Some((&ALICE, "alice-key", &nn, 5)),
+        );
+        assert_eq!(status, 201, "{reply}");
+        assert_eq!(reply["request"]["status"], "pending", "{reply}");
+        assert_eq!(s.setting("compute.max_hours_per_day", ""), "0");
+    }
+
+    /// The owner's passkey through the front still rents past a limit and raises it.
+    #[test]
+    fn the_owner_rents_past_a_limit_through_the_front() {
+        let _serial = crate::test_helpers::serial();
+        let (s, srv) = open_hub("owner");
+        crate::test_helpers_http::additions_project(&s, "one");
+        s.set_setting("human", "compute.max_hours_per_day", "2")
+            .unwrap();
+        s.set_setting("human", "compute.max_vms", "none").unwrap();
+        let n = nonce(&srv);
+        let (status, reply) = write(
+            &srv,
+            "/api/v1/compute/executors",
+            r#"{"mode":"request","project":"one","size":"small","hours":3,"reason":"mine","raise":true}"#,
+            Some((&ALICE, "alice-key", &n, 1)),
+        );
+        assert_eq!(status, 201, "{reply}");
+        assert_eq!(reply["request"]["status"], "approved", "{reply}");
+        assert_eq!(s.setting("compute.max_hours_per_day", ""), "3");
     }
 
     #[test]

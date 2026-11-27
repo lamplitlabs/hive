@@ -5,6 +5,7 @@
 // (tasks, messages, compute, records, constitution, events) follow the
 // "API v1 additions" contract - the hive hub is checked against these types.
 import type { Transcript, VoiceStatus } from "@/lib/voice";
+import type { LimitHit, RentalPreview } from "@/components/compute/compute-state";
 
 export class ApiError extends Error {
   status: number;
@@ -3295,12 +3296,18 @@ export interface ComputeRequest {
   // why it failed, why its machine was released. Empty until something happened
   // and once the machine is ready (older hubs omit it).
   note?: string;
+  // A request a rental limit refused (TASK-165), not answered yet: its row reads
+  // "Not rented: ..." with Rent it anyway / raise the limit / Do not rent.
+  limit_hit?: LimitHit;
   at: string;
   updated_at: string;
 }
 
+export type { LimitHit, RentalPreview } from "@/components/compute/compute-state";
+
 export interface ComputeCaps {
   provider: string;
+  // -1 is no limit (the setting is none); 0 is a limit of nothing.
   max_vms: number;
   max_hours_per_day: number;
   auto_approve: boolean | 0 | 1;
@@ -3335,6 +3342,8 @@ export interface Compute {
   // newest first. `executor` is the executors row (kind "dial") it works as;
   // `last_seen_at` is the hand's last call; a revoked device keeps its row.
   devices?: HandDevice[];
+  // Requests a limit refused today and nobody answered: a limit change offers to rent them.
+  refused_today?: string[];
 }
 
 export interface HandDevice {
@@ -3392,6 +3401,8 @@ export type AddMachineInput =
       hours?: number;
       reason: string;
       approve?: boolean;
+      // Rent it and raise the limit to N (TASK-165): the limit it passes is set to let it through.
+      raise?: boolean;
     };
 
 export interface MachineAdded {
@@ -4198,6 +4209,12 @@ export const writes = {
       "compute/executors",
       input,
     ),
+  // TASK-165: what the owner reads before renting, and the answers on a request a limit refused.
+  rentalPreview: (project: string, hours: number) => api<RentalPreview>("compute/preview?project=" + enc(project) + "&hours=" + hours),
+  rentRefused: (id: string, raise: boolean) => post<{ request: ComputeRequest }>("compute/" + enc(id) + "/rent", { raise }),
+  keepOff: (id: string) => post<{ request: ComputeRequest }>("compute/" + enc(id) + "/keep-off", {}),
+  refileToday: () => post<{ filed: string[] }>("compute/refile-today", {}),
+  letProjectRunOnLinux: (project: string) => post<{ project: string; needs: string }>("compute/linux", { project }),
   // A machine that dials in: a join code for `hive-hand join`, and revoking
   // the device key a hand enrolled with (its next call is refused).
   joinCode: () => post<JoinCode>("machines/join-codes", {}),

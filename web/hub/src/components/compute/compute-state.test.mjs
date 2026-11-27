@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ANY_PROJECT, ANY_PROJECT_WORD, diskMeter, keepAwakeOn, machineLabels, machineLogoKey, machineOs, machineProjects, meterPercent, meterTone, requestProject, requestProjectHint, requestReason, requestTitle, runnerState, slotsMeter, thisMachineOs, waitingNote } from "./compute-state.ts";
+import { ANY_PROJECT, ANY_PROJECT_WORD, choiceLabel, diskMeter, fitChoices, limitChoices, limitFieldHelp, noRentalWarning, refileOffer, requestState, keepAwakeOn, machineLabels, machineLogoKey, machineOs, machineProjects, meterPercent, meterTone, requestProject, requestProjectHint, requestReason, requestTitle, runnerState, slotsMeter, thisMachineOs, waitingNote } from "./compute-state.ts";
 
 test("meterTone: ok below 70, warning below 90, failed from 90", () => {
   assert.equal(meterTone(0), "ok");
@@ -129,4 +129,45 @@ test("the Waiting for you line names what waits: a request, or only Hive's clean
   assert.equal(waitingNote(2, true), "An agent asked for an extra machine. It starts only if you approve.");
   assert.equal(waitingNote(0, true), "Hive asks before it cleans up after other agent programs on this machine.");
   assert.equal(waitingNote(0, false), "");
+});
+
+
+// TASK-165 item 1: over a limit the owner gets three answers, the first recommended, no free text.
+test("limitChoices: Rent it anyway (Recommended) / raise to N / Do not rent", () => {
+  const hit = { setting: "compute.max_hours_per_day", limit: 24, used: 12, asks: 16, raise_to: 28 };
+  assert.deepEqual(limitChoices(hit).map(choiceLabel), ["Rent it anyway (Recommended)", "Rent it and raise the limit to 28", "Do not rent"]);
+});
+
+// TASK-165 item 2: 0 is explained beside the field, none reads as no limit, and a change
+// that leaves no rental possible says so; refused requests are offered again.
+test("limitFieldHelp explains 0 and none", () => {
+  assert.match(limitFieldHelp("0"), /^0 - Hive rents nothing/);
+  assert.match(limitFieldHelp("none"), /^No limit/);
+  assert.match(limitFieldHelp("2"), /never refused/);
+});
+
+test("noRentalWarning says when no rental is possible", () => {
+  assert.match(noRentalWarning("0", "24"), /rents no machine by itself/);
+  assert.match(noRentalWarning("2", "0"), /rents no machine by itself/);
+  assert.equal(noRentalWarning("2", "none"), "");
+  assert.equal(refileOffer(0), "");
+  assert.equal(refileOffer(2), "2 requests were not rented today because of a limit. Rent them now?");
+});
+
+// TASK-165 item 3: no waiting job fits -> Do not rent (Recommended), Rent it anyway, and the
+// Linux switch with its risk when the project's needs name macos.
+test("fitChoices: no fitting job recommends not renting and names the Linux risk", () => {
+  const p = { fit: { fits: 0, waiting: 1, blocked: [{ project: "brain", jobs: 1, missing: ["macos"] }] }, os_needs: ["macos"], linux_risk: "brain's jobs then run on Linux machines too" };
+  const c = fitChoices(p);
+  assert.deepEqual(c.map(choiceLabel), ["Do not rent (Recommended)", "Rent it anyway", "Let project jobs run on Linux"]);
+  assert.match(c[2].detail, /^Risk: brain's jobs then run on Linux/);
+  assert.equal(fitChoices({ ...p, fit: { fits: 2, waiting: 3, blocked: [] } }), null, "a fitting job needs no question");
+});
+
+// TASK-165 item 4: a request a limit refused reads "Not rented", not "Failed".
+test("requestState: a limit refusal is Not rented, a real failure stays Failed", () => {
+  const hit = { setting: "compute.max_hours_per_day", limit: 24, used: 12, asks: 16, raise_to: 28 };
+  const r = requestState({ status: "failed", note: "Not rented: today's limit of 24 hours is used (12 used, this asks 16)", limit_hit: hit });
+  assert.deepEqual([r.label, r.bad, r.lead], ["Not rented", false, ""]);
+  assert.deepEqual(requestState({ status: "failed", note: "az said no" }), { badge: "failed", lead: "Why it failed: ", bad: true });
 });

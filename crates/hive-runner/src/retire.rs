@@ -1390,7 +1390,29 @@ mod tests {
         );
         caps.login_source = false;
         caps.max_vms = 0;
-        assert!(crate::compute::caps_allow(caps, req, TEST_NOW).starts_with("cap:"));
+        assert_eq!(
+            crate::compute::caps_allow(caps.clone(), req.clone(), TEST_NOW),
+            "Not rented: the limit of extra machines at once is 0 - Hive rents nothing by itself"
+        );
+        // A request filed under the owner's name is held by the limit like any other (PR 314
+        // review): the name lifts nothing.
+        let named = hive_tasks::ComputeRequest {
+            requested_by: hive_store::HUMAN_AGENT.into(),
+            ..req.clone()
+        };
+        assert_eq!(
+            crate::compute::caps_allow(caps.clone(), named, TEST_NOW),
+            "Not rented: the limit of extra machines at once is 0 - Hive rents nothing by itself"
+        );
+        // TASK-165: a request the owner approved passes the limit; only the login source holds it.
+        let owner = hive_tasks::ComputeRequest {
+            decided_by: hive_store::HUMAN_AGENT.into(),
+            ..req
+        };
+        assert_eq!(
+            crate::compute::caps_allow(caps, owner, TEST_NOW),
+            hive_tasks::NO_LOGIN_SOURCE
+        );
     }
 
     #[test]
