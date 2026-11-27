@@ -1837,17 +1837,103 @@ mod tests {
             "the owner's tasks ran one at a time"
         );
         assert_eq!(leased[4], idle[0], "{leased:?}");
+        // The owner's project runs four at once against a share of one: the
+        // owner's work is not held to the share (review of PR 276).
+        assert_eq!(super::occupied_work_jobs(&s, "proj"), 4);
+        assert!(
+            super::occupied_work_jobs(&s, "proj") > i64::from(super::parallel_per_project(&s)),
+            "the owner's work was held to its project's share"
+        );
         // The daemon leases only into a free slot, so past the five nothing
-        // more starts; asked for one more anyway, the fleet's work keeps its
-        // share: p1, already running one job, does not get its second.
-        join(&s, "fjord");
+        // more starts; asked for more anyway, the fleet's work keeps its
+        // share: every idle project gets its one job, and p1, already
+        // running one, never gets its second.
+        let more = [
+            "fjord", "glade", "heath", "inlet", "jetty", "knoll", "lagoon",
+        ];
+        for name in more {
+            join(&s, name);
+        }
+        let leased_more = more.iter().map(|a| lease(a)).collect::<Vec<_>>();
         assert_eq!(
-            lease("fjord"),
-            idle[1],
+            leased_more[..6],
+            idle[1..],
+            "the idle projects each take their one lane"
+        );
+        assert_eq!(
+            leased_more[6], "",
             "fleet work leased past its project's share"
         );
         let conn = s.conn().unwrap();
         assert_eq!(super::job_row(&conn, idle_2).str("status"), "queued");
+    }
+
+    #[test]
+    fn two_owner_projects_share_the_free_slots_turn_about() {
+        // Review of PR 276: the owner's work leases past its project's
+        // share, so with the owner's tasks queued in two projects one of
+        // them could take every slot while the other's waited. The slots go
+        // turn about instead: the project that leased longest ago first.
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        add_second_project(&s, "other");
+        s.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO projects (slug, name, path, remote, brain, verify_cmd, default_branch, status, added_at, added_by, last_seen) VALUES ('idle', 'idle', '/nowhere/idle', '', 0, '', 'main', 'active', ?1, ?2, ?1)",
+                rusqlite::params![s.now(), hive_store::HUMAN_AGENT],
+            )
+            .unwrap();
+        crate::capacity::unpin_per_project(&s);
+        s.set_setting(hive_store::HUMAN_AGENT, "capacity", "5")
+            .unwrap();
+        let mine = (1..=4)
+            .map(|n| queue(&s, "proj", "task", &format!("task:TASK-10{n}"), 80))
+            .collect::<Vec<_>>();
+        let theirs = (1..=4)
+            .map(|n| queue(&s, "other", "task", &format!("task:TASK-20{n}"), 80))
+            .collect::<Vec<_>>();
+        let fleet = queue(&s, "idle", "improve", "lead-idle:idle:1", 1);
+        assert_eq!(
+            super::parallel_per_project(&s),
+            2,
+            "five slots, three projects with work"
+        );
+        let agents = ["aurora", "borealis", "cinder", "dusk", "ember"];
+        for name in agents {
+            join(&s, name);
+        }
+        // One lease a minute, as the daemon's ticks would: the fairness
+        // between projects reads when each project last leased.
+        let leased = agents
+            .iter()
+            .enumerate()
+            .map(|(i, agent)| {
+                super::lease_job(
+                    &s,
+                    (*agent).into(),
+                    format!("2026-09-06T10:0{i}:00Z"),
+                    super::LeaseOpts {
+                        any_proj: true,
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+                .str("id")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            leased,
+            [&mine[0], &theirs[0], &mine[1], &theirs[1], &mine[2]].map(String::clone),
+            "the owner's two projects take the slots turn about"
+        );
+        // Past the share of two in one project, and in neither all five.
+        assert_eq!(super::occupied_work_jobs(&s, "proj"), 3);
+        assert_eq!(super::occupied_work_jobs(&s, "other"), 2);
+        // The fleet's job waits behind both projects' owner work.
+        let conn = s.conn().unwrap();
+        assert_eq!(super::job_row(&conn, fleet).str("status"), "queued");
     }
 
     #[test]
