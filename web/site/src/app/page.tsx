@@ -308,8 +308,8 @@ export default function Home() {
           </div>
           <figure className="mt-10">
             <ConsoleShot
-              name="console-home.webp"
-              large="/console-home-2x.webp"
+              name="console-sessions.webp"
+              large="/console-sessions-2x.webp"
               sizes="(min-width: 72rem) 68rem, 100vw"
               title="Sessions"
               alt="Sessions, where the console opens: three decisions only you can make, each with its buttons, above the list of sessions"

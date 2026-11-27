@@ -258,7 +258,7 @@ const HELP: Record<string, string> = {
   light_model: "The model for smaller jobs like planning and answering. Empty means the main model.",
   measure_model: "The model that measures every baseline, experiment and merge against the project's own checks. Empty means the main model. Changing it measures every baseline again; a set value keeps them when the main model changes.",
   "ask.model": "The model that answers your questions in Ask. Empty means the light model.",
-  decide_model: "The small model that answers yes, no or pass on the routine asks a lead may decide while you are away. Empty means the measuring model, then the light model.",
+  decide_model: "The small model that answers yes, no or pass on the routine asks a lead decides for you. Empty means the measuring model, then the light model.",
   decide_provider: "The provider the decision model runs on. Empty means the hub's own provider.",
   "decide.mode": "On: the decision model decides routine asks under the lead's name. Shadow: it only records what it would have said. Off: the lead decides them as before.",
   "decide.timeout_seconds": "How long the decision model may take to answer before the ask is left to the lead.",

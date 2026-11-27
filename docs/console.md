@@ -128,7 +128,7 @@ under **Asked you**, and a pull request handed to you on **Sessions** under
 **Needs your review**. [Notifications](#notifications) can tell you, with a
 sound, the moment a new ask arrives.
 
-![Sessions with the broken strip, the hard-stop asks and the session list](how-to/images/console-home.webp)
+![Sessions with the broken strip, the hard-stop asks and the session list](how-to/images/console-sessions.webp)
 
 ## Insights
 
@@ -162,7 +162,16 @@ words for them), or one per `Option:` line - with the one the asker
 recommends first and marked **Recommended**; nothing needs typing, and a
 note is optional (`hive decide <post> yes|no --words '...'`, or
 `hive decide <post> --option '<answer>'`, from the terminal). An `Option:`
-pick is recorded as that pick, never as a yes. The hard stops among them are also on the Sessions strip,
+pick is recorded as that pick, never as a yes. A question whose asker
+wrote no answers still gets a pair, filled in by the console and by `hive
+decide`: a question the daemon asked gets the daemon's (**Seat the lead** or
+**Not now** for a `lead-role:` marker, **Add it** or **Not now** for a
+`toolkit:` marker, otherwise **Hand it to an agent** or **I handle it**), a
+major dependency upgrade the watcher found gets **Upgrade it** or **Leave it
+to me**, and the self-improvement loop's flat-fixture pause gets **Run more
+cycles** or **Keep it paused** (recommended) - a No keeps the loop paused
+until a fixture whose score moves is enabled, and the loop's stop keeps its
+own resume words. The hard stops among them are also on the Sessions strip,
 with the same buttons. A hard stop with no answers, or none recommended,
 never reaches you: it goes to the project's lead, which asks again with the
 answers written out. Among the questions the stops come first; a decision
