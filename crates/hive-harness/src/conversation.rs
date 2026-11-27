@@ -4347,11 +4347,22 @@ mod tests {
         panic!("the conversation never settled");
     }
 
+    /// Whether the stored row has caught up with the live status. A turn
+    /// shows its end in memory first and writes the row just after, so a
+    /// row read beside a live "idle" can still say "running" for a moment;
+    /// with no runtime the live status comes from the row itself.
+    fn stored_as_live(m: &Manager, row: &Row, live: &Live) -> bool {
+        row.status == live.status || m.running(&row.id).is_none()
+    }
+
     fn wait_idle(m: &Manager, id: &str) -> Row {
         for _ in 0..400 {
             let row = m.row(id).expect("row");
             let live = m.live(&row);
-            if (live.status == "idle" || live.status == "ended") && live.queued.is_empty() {
+            if (live.status == "idle" || live.status == "ended")
+                && live.queued.is_empty()
+                && stored_as_live(m, &row, &live)
+            {
                 return row;
             }
             thread::sleep(Duration::from_millis(25));
@@ -6526,6 +6537,7 @@ mod tests {
             let live = m.live(&row);
             if want.contains(&live.status.as_str())
                 && (live.status != "idle" || live.queued.is_empty())
+                && stored_as_live(m, &row, &live)
             {
                 return row;
             }
