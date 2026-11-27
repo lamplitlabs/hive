@@ -43,32 +43,45 @@ fn one_dyn(q: &Querier, query: &str, args: &[&dyn rusqlite::ToSql]) -> Row {
 
 pub(crate) const OCCUPIED_JOB_SQL: &str = "(k.status = 'leased' OR (k.status != 'queued' AND EXISTS (SELECT 1 FROM runs r WHERE r.job_id = k.id AND r.project = k.project AND r.agent = k.lease_agent AND r.status = 'running')))";
 
-/// The machine a job `alias` holds a slot on: the executor of its running
-/// run, else the one its last lease was taken for (`job.lease` detail
-/// `executor`), else '' (this machine).
-pub(crate) fn job_machine_sql(alias: &str) -> String {
+/// The machine a lease takes a job for: the executor it names, this one
+/// when it names none.
+pub(crate) fn lease_machine(executor: &str) -> &str {
+    if executor.is_empty() {
+        crate::executor::LOCAL_EXECUTOR
+    } else {
+        executor
+    }
+}
+
+/// A SQL expression for the machine job `alias` is in flight on: its
+/// running run's executor, else the machine its last lease was taken for
+/// (`executor` in the `job.lease` event; a lease is taken before its run
+/// starts), else this machine. The verify lock is a file on each machine
+/// (verify_lock.rs), so a project's checks take turns per machine and the
+/// lease counts a project's jobs per machine (TASK-156): three of the
+/// brain's runs on the Mac no longer fill the count an idle rented machine
+/// leases against.
+pub(crate) fn machine_of_sql(alias: &str) -> String {
     format!(
-        "COALESCE((SELECT r.executor FROM runs r WHERE r.job_id = {alias}.id AND r.status = 'running' ORDER BY r.started_at DESC LIMIT 1), (SELECT json_extract(e.detail, '$.executor') FROM events e WHERE e.action = 'job.lease' AND e.subject = {alias}.id AND json_valid(e.detail) ORDER BY e.seq DESC LIMIT 1), '')"
+        "COALESCE(NULLIF((SELECT r.executor FROM runs r WHERE r.job_id = {alias}.id AND r.status = 'running' ORDER BY r.started_at DESC, r.id DESC LIMIT 1), ''), NULLIF((SELECT json_extract(e.detail, '$.executor') FROM events e WHERE e.action = 'job.lease' AND e.subject = {alias}.id AND json_valid(e.detail) ORDER BY e.seq DESC LIMIT 1), ''), '{}')",
+        crate::executor::LOCAL_EXECUTOR
     )
 }
 
 /// [`OCCUPIED_JOB_SQL`] narrowed to the jobs that hold a slot on
-/// `executor` ('' is this machine). A project's lanes are a machine's: its
-/// checks share that machine's verify lock and its slots. Before this, two
-/// runs of the brain on a rented Linux machine held two of the project's
-/// lanes here, and the owner's fix waited "lanes full" for an hour with
-/// local slots free (TASK-144).
+/// `executor` ('' is this machine), by [`machine_of_sql`]. A project's
+/// lanes are a machine's: its checks share that machine's verify lock and
+/// its slots. Before this, two runs of the brain on a rented Linux machine
+/// held two of the project's lanes here, and the owner's fix waited "lanes
+/// full" for an hour with local slots free (TASK-144). The lease and the
+/// yield read `machine_of_sql` directly; the tests count with this.
+#[cfg(test)]
 pub(crate) fn occupied_on_sql(executor: &str) -> String {
-    let machine = job_machine_sql("k");
-    let local = crate::executor::LOCAL_EXECUTOR;
-    if executor.is_empty() || executor == local {
-        format!("({OCCUPIED_JOB_SQL} AND {machine} IN ('', '{local}'))")
-    } else {
-        format!(
-            "({OCCUPIED_JOB_SQL} AND {machine} = '{}')",
-            executor.replace('\'', "''")
-        )
-    }
+    format!(
+        "({OCCUPIED_JOB_SQL} AND {} = '{}')",
+        machine_of_sql("k"),
+        lease_machine(executor).replace('\'', "''")
+    )
 }
 
 #[derive(Debug, Clone, Default)]
@@ -391,7 +404,21 @@ pub(crate) struct Lanes {
 /// work runs past the share ([`owner_work_bound`]) and its runs' commit caps
 /// are widened by it ([`owner_commit_cap`]).
 pub(crate) fn project_lanes(s: &hive_store::Store, slug: &str) -> Lanes {
-    let base = parallel_per_project(s);
+    lanes_of(s, slug, parallel_per_project(s))
+}
+
+/// [`project_lanes`] on machine `machine`: the lock is a file on each
+/// machine, so the lanes that fit the commit cap are counted per machine,
+/// out of the project's share there ([`crate::capacity::share_on`]).
+pub(crate) fn project_lanes_on(s: &hive_store::Store, slug: &str, machine: &str) -> Lanes {
+    lanes_of(
+        s,
+        slug,
+        crate::capacity::share_on(s, lease_machine(machine)),
+    )
+}
+
+fn lanes_of(s: &hive_store::Store, slug: &str, base: i32) -> Lanes {
     let open = Lanes {
         lanes: base,
         base,
@@ -471,8 +498,15 @@ pub(crate) fn minutes_up(seconds: i64) -> i64 {
 
 /// The projects whose work lanes are fewer than `parallel_per_project`, with their
 /// lane counts; empty when every project keeps the plain limit.
+#[cfg(test)]
 pub(crate) fn narrowed_lanes(s: &hive_store::Store) -> Vec<(String, Lanes)> {
-    if parallel_per_project(s) <= 1 {
+    narrowed_lanes_on(s, crate::executor::LOCAL_EXECUTOR)
+}
+
+/// [`narrowed_lanes`] on machine `machine` ([`project_lanes_on`]).
+pub(crate) fn narrowed_lanes_on(s: &hive_store::Store, machine: &str) -> Vec<(String, Lanes)> {
+    let share = crate::capacity::share_on(s, lease_machine(machine));
+    if share <= 1 {
         return Vec::new();
     }
     let Ok(conn) = s.conn() else {
@@ -487,7 +521,7 @@ pub(crate) fn narrowed_lanes(s: &hive_store::Store) -> Vec<(String, Lanes)> {
     .into_iter()
     .map(|r| r.str("slug"))
     .filter_map(|slug| {
-        let lanes = project_lanes(s, &slug);
+        let lanes = lanes_of(s, &slug, share);
         (lanes.lanes < lanes.base).then_some((slug, lanes))
     })
     .collect()
@@ -501,17 +535,37 @@ pub(crate) fn narrowed_lanes(s: &hive_store::Store) -> Vec<(String, Lanes)> {
 /// owner's runs would queue checks in front of a commit past its cap. The
 /// share plus one bounds that queue; without the lock nothing waits.
 /// `verify.lock` is one setting for every project (per project or one lock
-/// for the machine), so the bound is too.
+/// for the machine), so the bound is too. This is this machine's bound
+/// ([`owner_work_bound_on`]).
 pub(crate) fn owner_work_bound(s: &hive_store::Store) -> Option<i32> {
-    crate::verify_lock::lock_name(s, "")?;
-    Some(parallel_per_project(s).saturating_add(1))
+    owner_work_bound_on(s, crate::executor::LOCAL_EXECUTOR)
 }
 
-/// How many of `project`'s work jobs ([`WORK_KINDS`]) are leased or running:
-/// the checks a clone's gated commit in the project may wait for under the
-/// verify lock. The tests count them; the commit cap reads the bound.
+/// [`owner_work_bound`] on machine `machine`: the lock is a file under
+/// each machine's own home (verify_lock.rs), so a commit waits only for
+/// the checks on its own machine, and the bound is the project's share of
+/// that machine's slots - from its cores and memory, never below the
+/// fleet's share ([`crate::capacity::share_on`]) - plus one, counted against
+/// the project's work jobs on that machine alone (TASK-156: the brain's
+/// three runs on the Mac held an idle 8-core rented machine to one or two).
+pub(crate) fn owner_work_bound_on(s: &hive_store::Store, machine: &str) -> Option<i32> {
+    crate::verify_lock::lock_name(s, "")?;
+    Some(crate::capacity::share_on(s, lease_machine(machine)).saturating_add(1))
+}
+
+/// How many of `project`'s work jobs ([`WORK_KINDS`]) are leased or running
+/// on this machine: the checks a clone's gated commit in the project may
+/// wait for under the verify lock. The tests count them; the commit cap
+/// reads the bound.
 #[cfg(test)]
 pub(crate) fn occupied_work_jobs(s: &hive_store::Store, project: &str) -> i64 {
+    occupied_work_jobs_on(s, project, crate::executor::LOCAL_EXECUTOR)
+}
+
+/// [`occupied_work_jobs`] on machine `executor`: the verify lock is a file
+/// on each machine, so each machine's count stands alone (TASK-156).
+#[cfg(test)]
+pub(crate) fn occupied_work_jobs_on(s: &hive_store::Store, project: &str, executor: &str) -> i64 {
     let Ok(conn) = s.conn() else {
         return 0;
     };
@@ -521,7 +575,7 @@ pub(crate) fn occupied_work_jobs(s: &hive_store::Store, project: &str) -> i64 {
             &format!(
                 "SELECT COUNT(*) AS n FROM jobs k WHERE k.project = ? AND k.kind IN ({}) AND {}",
                 work_kinds_sql(),
-                occupied_on_sql(crate::executor::LOCAL_EXECUTOR)
+                occupied_on_sql(executor)
             ),
             &[&project],
         )
@@ -604,8 +658,16 @@ pub(crate) fn lease_job(
     } else {
         o.minutes
     };
-    let limit = parallel_per_project(s);
-    let narrowed = narrowed_lanes(s);
+    // A project's jobs are counted on the machine the lease is for, against
+    // the project's share of that machine (TASK-156): the verify lock is a
+    // file on each machine, and a count over the fleet let three of the
+    // brain's runs on the Mac keep an idle 8-core rented machine at one or
+    // two runs while nine of its jobs waited "lanes full".
+    let machine = lease_machine(&o.executor).to_string();
+    let limit = crate::capacity::share_on(s, &machine);
+    let narrowed = narrowed_lanes_on(s, &machine);
+    let bound = owner_work_bound_on(s, &machine);
+    let on_machine = format!("{} = ?", machine_of_sql("k"));
     let is_lead = s
         .agent(&agent)
         .ok()
@@ -677,13 +739,14 @@ pub(crate) fn lease_job(
         // (owner_work_bound), both below. The share still spreads the fleet's
         // work, plans it (plan.rs) and gates research.
         // Every count below is of the machine the lease is for
-        // (occupied_on_sql): a run on another machine uses that machine's
-        // slots and its verify lock, not these (TASK-144).
-        let occupied_here = occupied_on_sql(&o.executor);
+        // (`on_machine`, machine_of_sql): a run on another machine uses that
+        // machine's slots and its verify lock, not these (TASK-144,
+        // TASK-156).
         let mut sql = format!(
-            "SELECT j.* FROM jobs j JOIN projects p ON p.slug = j.project WHERE j.status = 'queued' AND p.status = 'active' AND ({OWNER_DRIVEN_SQL} OR (SELECT COUNT(*) FROM jobs k WHERE k.project = j.project AND {occupied_here}) < ?)"
+            "SELECT j.* FROM jobs j JOIN projects p ON p.slug = j.project WHERE j.status = 'queued' AND p.status = 'active' AND ({OWNER_DRIVEN_SQL} OR (SELECT COUNT(*) FROM jobs k WHERE k.project = j.project AND {OCCUPIED_JOB_SQL} AND {on_machine}) < ?)"
         );
-        let mut vals: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(limit)];
+        let mut vals: Vec<Box<dyn rusqlite::ToSql>> =
+            vec![Box::new(machine.clone()), Box::new(limit)];
         // A project whose checks take turns runs only as many of the fleet's
         // work jobs as fit the commit cap (project_lanes); its research,
         // ballots and answers keep the plain limit, and so does the owner's
@@ -695,9 +758,10 @@ pub(crate) fn lease_job(
         let work_kinds = work_kinds_sql();
         for (slug, lanes) in &narrowed {
             sql.push_str(&format!(
-                " AND NOT (j.project = ? AND j.kind IN ({work_kinds}) AND NOT {OWNER_DRIVEN_SQL} AND (SELECT COUNT(*) FROM jobs k WHERE k.project = j.project AND k.kind IN ({work_kinds}) AND {occupied_here}) >= ?)"
+                " AND NOT (j.project = ? AND j.kind IN ({work_kinds}) AND NOT {OWNER_DRIVEN_SQL} AND (SELECT COUNT(*) FROM jobs k WHERE k.project = j.project AND k.kind IN ({work_kinds}) AND {OCCUPIED_JOB_SQL} AND {on_machine}) >= ?)"
             ));
             vals.push(Box::new(slug.clone()));
+            vals.push(Box::new(machine.clone()));
             vals.push(Box::new(lanes.lanes));
         }
         // With the checks taking turns the owner's work is bounded too
@@ -706,10 +770,11 @@ pub(crate) fn lease_job(
         // the bound would queue one check more than that in front of an
         // earlier run's commit. At a share of one, eight owner tasks of the brain leasing
         // at once would each wait out the others' 23-minute checks.
-        if let Some(bound) = owner_work_bound(s) {
+        if let Some(bound) = bound {
             sql.push_str(&format!(
-                " AND NOT (j.kind IN ({work_kinds}) AND {OWNER_DRIVEN_SQL} AND (SELECT COUNT(*) FROM jobs k WHERE k.project = j.project AND k.kind IN ({work_kinds}) AND {occupied_here}) >= ?)"
+                " AND NOT (j.kind IN ({work_kinds}) AND {OWNER_DRIVEN_SQL} AND (SELECT COUNT(*) FROM jobs k WHERE k.project = j.project AND k.kind IN ({work_kinds}) AND {OCCUPIED_JOB_SQL} AND {on_machine}) >= ?)"
             ));
+            vals.push(Box::new(machine.clone()));
             vals.push(Box::new(bound));
         }
         // One slot is kept back from the owner's work past its share
@@ -723,9 +788,10 @@ pub(crate) fn lease_job(
         // (review of PR 276, item A).
         if o.keep_slot {
             sql.push_str(&format!(
-                " AND NOT (j.kind IN ({work_kinds}) AND {OWNER_DRIVEN_SQL} AND (SELECT COUNT(*) FROM jobs k WHERE k.project = j.project AND k.kind IN ({work_kinds}) AND {} AND {occupied_here}) >= ?)",
+                " AND NOT (j.kind IN ({work_kinds}) AND {OWNER_DRIVEN_SQL} AND (SELECT COUNT(*) FROM jobs k WHERE k.project = j.project AND k.kind IN ({work_kinds}) AND {} AND {OCCUPIED_JOB_SQL} AND {on_machine}) >= ?)",
                 owner_driven_sql("k")
             ));
+            vals.push(Box::new(machine.clone()));
             vals.push(Box::new(limit));
         }
         // The owner's work goes first in its project: while an owner-driven
@@ -934,7 +1000,7 @@ pub(crate) fn lease_job(
             &agent,
             "job.lease",
             &r.str("id"),
-            json!({"until": until, "wait_s": wait_s, "executor": o.executor}),
+            json!({"until": until, "wait_s": wait_s, "executor": machine}),
         );
         // Taking a job is a sign of life; the agent's heartbeat starts with the lease.
         if let Ok(at) = chrono::DateTime::parse_from_rfc3339(&now) {
@@ -2488,6 +2554,201 @@ mod tests {
         );
         let conn = s.conn().unwrap();
         assert_eq!(super::job_row(&conn, idle_2).str("status"), "queued");
+    }
+
+    /// A rented 8-core Linux hand, active, as its probe leaves it.
+    fn eight_core_hand(s: &hive_store::Store, name: &str) {
+        crate::executor::add_executor(
+            s,
+            crate::test_helpers::TEST_NOW,
+            name,
+            &format!("hive@{name}"),
+            "/srv/hive",
+            8,
+            "*",
+            "human",
+        )
+        .unwrap();
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE executors SET status = 'active', os = 'linux', arch = 'amd64' WHERE name = ?",
+                [name],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn three_runs_on_one_machine_leave_an_idle_eight_core_hand_its_own_share() {
+        // TASK-156, MSG-20261127T124556Z-1 item 2: the lease counted a
+        // project's jobs in flight on every machine against one fleet-wide
+        // share, and three Mac-only research jobs of other projects divided
+        // that share though the rented machine could not run them. With
+        // three of the brain's runs on the Mac, the idle 8-core hand took
+        // one or two while nine jobs waited "lanes full". Counted per
+        // machine, with only the projects the hand could serve dividing its
+        // slots, the hand takes the waiting work.
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        crate::capacity::unpin_per_project(&s);
+        s.set_setting(hive_store::HUMAN_AGENT, "capacity", "3")
+            .unwrap();
+        s.set_setting(
+            hive_store::HUMAN_AGENT,
+            crate::verify_lock::SETTING,
+            crate::verify_lock::PROJECT,
+        )
+        .unwrap();
+        let hand = "hands-cr-8";
+        eight_core_hand(&s, hand);
+        let mut mac_only = Vec::new();
+        for slug in ["eszett", "lamplit", "leben"] {
+            s.conn()
+                .unwrap()
+                .execute(
+                    "INSERT INTO projects (slug, name, path, remote, brain, verify_cmd, default_branch, status, added_at, added_by, last_seen) VALUES (?1, ?1, '/nowhere/' || ?1, '', 0, '', 'main', 'active', ?2, ?3, ?2)",
+                    rusqlite::params![slug, s.now(), hive_store::HUMAN_AGENT],
+                )
+                .unwrap();
+            let job = queue(&s, slug, "improve", &format!("research:{slug}"), 1);
+            s.conn()
+                .unwrap()
+                .execute("UPDATE jobs SET needs = 'macos' WHERE id = ?", [&job])
+                .unwrap();
+            mac_only.push(job);
+        }
+        let work = (1..=8)
+            .map(|n| queue(&s, "proj", "improve", &format!("lead-idle:proj:{n}"), 10))
+            .collect::<Vec<_>>();
+        let fleet = crate::capacity::fleet(&s);
+        assert_eq!(
+            (fleet.total, fleet.busy_projects, fleet.per_project),
+            (11, 4, 3),
+            "{}",
+            fleet.line()
+        );
+        assert_eq!(crate::capacity::busy_projects_on(&s, hand), 1);
+        assert_eq!(crate::capacity::machine_share(&s, hand), 8);
+        assert_eq!(super::owner_work_bound_on(&s, hand), Some(9));
+        assert_eq!(super::owner_work_bound(&s), Some(4));
+        let agents = (1..=12).map(|n| format!("w{n}")).collect::<Vec<_>>();
+        for name in &agents {
+            join(&s, name);
+        }
+        let caps = crate::executor::caps(&crate::executor::executor_row(&s, hand));
+        let lease = |agent: &str, executor: &str| {
+            super::lease_job(
+                &s,
+                agent.into(),
+                crate::test_helpers::TEST_NOW.into(),
+                super::LeaseOpts {
+                    projects: vec!["proj".into()],
+                    caps: (!executor.is_empty()).then(|| caps.clone()),
+                    executor: executor.into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        // Three of the project's runs in flight on this machine fill its
+        // share here.
+        for agent in &agents[..3] {
+            assert!(work.contains(&lease(agent, "").str("id")));
+        }
+        assert!(
+            lease(&agents[3], "").0.is_empty(),
+            "this machine past its share"
+        );
+        // The idle hand still leases: the three on this machine are not its
+        // count, and the Mac-only jobs do not divide its slots.
+        let mut on_hand = Vec::new();
+        for agent in &agents[3..] {
+            let got = lease(agent, hand);
+            if got.0.is_empty() {
+                break;
+            }
+            on_hand.push(got.str("id"));
+        }
+        assert_eq!(on_hand.len(), 5, "the hand took {on_hand:?}");
+        let conn = s.conn().unwrap();
+        for job in &work {
+            assert_eq!(super::job_row(&conn, job.clone()).str("status"), "leased");
+        }
+        for job in &mac_only {
+            assert_eq!(super::job_row(&conn, job.clone()).str("status"), "queued");
+        }
+        // The lease names the machine it was taken for: the count reads it
+        // until the run starts.
+        let detail = crate::util::must_one(
+            &*conn,
+            "SELECT detail FROM events WHERE action = 'job.lease' AND subject = ?",
+            &[&on_hand[0]],
+        )
+        .str("detail");
+        let parsed: serde_json::Value = serde_json::from_str(&detail).unwrap();
+        assert_eq!(parsed["executor"], hand, "{detail}");
+    }
+
+    #[test]
+    fn the_owners_work_is_bounded_per_machine_under_the_verify_lock() {
+        // TASK-156 item 2: the lock is a file on each machine, so the
+        // owner's work bound (share plus one) holds per machine. At the
+        // bound on this machine the owner's next task still leases on the
+        // idle hand.
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        crate::capacity::pin_per_project(&s, 1);
+        s.set_setting(
+            hive_store::HUMAN_AGENT,
+            crate::verify_lock::SETTING,
+            crate::verify_lock::PROJECT,
+        )
+        .unwrap();
+        let hand = "hands-cr-9";
+        eight_core_hand(&s, hand);
+        let tasks = (1..=4)
+            .map(|n| queue(&s, "proj", "task", &format!("task:TASK-30{n}"), 80))
+            .collect::<Vec<_>>();
+        let local_bound = super::owner_work_bound(&s).unwrap();
+        assert_eq!(local_bound, 2);
+        assert_eq!(super::owner_work_bound_on(&s, hand), Some(2));
+        for name in ["a1", "a2", "a3", "a4", "a5"] {
+            join(&s, name);
+        }
+        let caps = crate::executor::caps(&crate::executor::executor_row(&s, hand));
+        let lease = |agent: &str, executor: &str| {
+            super::lease_job(
+                &s,
+                agent.into(),
+                crate::test_helpers::TEST_NOW.into(),
+                super::LeaseOpts {
+                    any_proj: true,
+                    caps: (!executor.is_empty()).then(|| caps.clone()),
+                    executor: executor.into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        let agents = ["a1", "a2", "a3", "a4", "a5"];
+        let mut i = 0;
+        while i < local_bound as usize {
+            assert!(tasks.contains(&lease(agents[i], "").str("id")));
+            i += 1;
+        }
+        assert!(
+            lease(agents[i], "").0.is_empty(),
+            "an owner run leased past this machine's bound of {local_bound}"
+        );
+        assert!(tasks.contains(&lease(agents[i], hand).str("id")));
+        // Each machine counts its own: the bound here, one on the hand.
+        assert_eq!(
+            super::occupied_work_jobs(&s, "proj"),
+            i64::from(local_bound)
+        );
+        assert_eq!(super::occupied_work_jobs_on(&s, "proj", hand), 1);
     }
 
     #[test]
