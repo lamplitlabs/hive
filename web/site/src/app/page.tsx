@@ -272,7 +272,9 @@ export default function Home() {
               eager
             />
             <figcaption className="mt-3 text-center text-sm text-muted-foreground">
-              Sessions, where the console opens: what waits for your answer, and the agents at work. The pictures show the console&apos;s own example data.
+              {/* A phone shows the decisions alone, so the caption there says no more than that. */}
+              Sessions, where the console opens: what waits for your answer<span className="max-sm:hidden">, and the agents at work</span>. The pictures show
+              the console&apos;s own example data.
             </figcaption>
           </figure>
         </div>
