@@ -553,6 +553,12 @@ const SHARED_BOARD_LISTED: usize = 20;
 /// The shared board's open posts - the commons cards and findings on threads
 /// nobody resolved - oldest first: id, kind, the project each came from, and
 /// its summary.
+///
+/// The daemon's own notices about a machine asked for any project (`runner/compute`:
+/// "ready", "released", "failed", compute.rs `compute_finding`) are not wishes: they sit on
+/// the shared board because the request does, and nothing closes that thread when the
+/// request was approved without a proposal. Listed here, each rental's notices would be
+/// handed to the brain to promote or decline, and alone could start a triage job.
 pub(crate) fn open_shared_posts(s: &hive_store::Store) -> Vec<Row> {
     let Ok(conn) = s.conn() else {
         return Vec::new();
@@ -561,9 +567,14 @@ pub(crate) fn open_shared_posts(s: &hive_store::Store) -> Vec<Row> {
         &conn,
         "SELECT p.id AS id, p.kind AS kind, p.origin_project AS origin, p.summary AS summary FROM posts p \
          WHERE p.project = ? AND p.kind IN ('suggestion', 'finding') \
+         AND NOT (p.area = ? AND p.thread = ?) \
          AND NOT EXISTS (SELECT 1 FROM posts r WHERE r.project = p.project AND r.area = p.area AND r.thread = p.thread AND r.resolution != '') \
          ORDER BY p.date, p.id",
-        &[&hive_store::COMMONS_SLUG],
+        &[
+            &hive_store::COMMONS_SLUG,
+            &crate::compute::COMPUTE_AREA,
+            &crate::compute::COMPUTE_THREAD,
+        ],
     )
 }
 
@@ -944,6 +955,58 @@ mod tests {
                 .unwrap()
                 .1
         );
+    }
+
+    /// PR 291 review, item 1: a machine asked for any project is a request on the shared
+    /// board, so the daemon's notices about it ("ready", "released", "failed") are findings
+    /// there too. They are the daemon's log, not wishes for the brain: none is listed for the
+    /// triage and none starts a triage job, while a worker's finding beside them still does.
+    #[test]
+    fn the_daemons_machine_notices_on_the_shared_board_are_not_triaged() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        new_repo(&s);
+        let req = hive_tasks::ComputeRequest {
+            id: "CR-001".into(),
+            project: hive_tasks::ANY_PROJECT.into(),
+            ..Default::default()
+        };
+        for (summary, body) in [
+            ("compute CR-001 ready: hands-cr-001", "up for every project"),
+            ("compute CR-001 released: idle for 30 minutes", "gone"),
+        ] {
+            crate::compute::compute_finding(&s, "hive", req.clone(), summary, body).unwrap();
+        }
+        assert_eq!(
+            crate::test_helpers::count(
+                &s,
+                "SELECT COUNT(*) AS n FROM posts WHERE project = ? AND kind = 'finding' AND area = 'runner' AND thread = 'compute'",
+                &[&hive_store::COMMONS_SLUG],
+            ),
+            2,
+            "the notices are on the shared board"
+        );
+        assert!(
+            open_shared_posts(&s).is_empty(),
+            "{:?}",
+            open_shared_posts(&s)
+        );
+        assert!(
+            !plan_shared_board(&s, "proj".into(), TEST_NOW.into(), "runner".into())
+                .unwrap()
+                .1,
+            "machine notices alone start no triage"
+        );
+        s.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO posts (id, project, area, thread, kind, agent, date, summary, origin_project, created_at) \
+                 VALUES ('f1', 'commons', 'runner', 'git-locks', 'finding', 'quartz-30', ?1, 'a lesson', 'ai', ?1)",
+                [TEST_NOW],
+            )
+            .unwrap();
+        let open: Vec<String> = open_shared_posts(&s).iter().map(|p| p.str("id")).collect();
+        assert_eq!(open, ["f1"], "a worker's finding in the same area still is");
     }
 
     #[test]
