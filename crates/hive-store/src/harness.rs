@@ -316,6 +316,16 @@ impl Store {
         let n=conn.execute("UPDATE harness_sessions SET cancel_requested_at = ?, updated_at = ? WHERE id = ? AND status = 'running' AND cancel_requested_at = ''",params![self.now(),self.now(),id])?;
         Ok(n > 0)
     }
+    /// Withdraws a pending cancel request of a session that is still
+    /// running, once it has stopped the turn it was asked of. A session
+    /// that runs many turns (a conversation's) would otherwise stop every
+    /// later turn at its first step, and refuse a new request as pending.
+    /// Returns whether a request was withdrawn.
+    pub fn clear_harness_cancel(&self, id: &str) -> Result<bool> {
+        let conn = self.conn()?;
+        let n=conn.execute("UPDATE harness_sessions SET cancel_requested_at = '', updated_at = ? WHERE id = ? AND status = 'running' AND cancel_requested_at != ''",params![self.now(),id])?;
+        Ok(n > 0)
+    }
     /// Asks every running harness session of run `run_id` to hold: stop at
     /// the next safe point, keep its trajectory and exit `held`, so the job
     /// carries on from it after the runner restarts. Returns how many
@@ -1127,6 +1137,17 @@ mod go_harness_tests {
                 .downcast_ref::<ErrHarnessCancelPending>()
                 .is_some()
         );
+        // Withdrawn once it stopped its turn: a new request is taken.
+        assert!(s.clear_harness_cancel("running").unwrap());
+        assert!(!s.clear_harness_cancel("running").unwrap());
+        assert_eq!(
+            s.harness_session_head("running")
+                .unwrap()
+                .unwrap()
+                .cancel_requested_at,
+            ""
+        );
+        assert!(s.request_harness_cancel("running").unwrap());
         s.begin_harness_session(HarnessSession {
             id: "done".into(),
             ..HarnessSession::default()
