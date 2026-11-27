@@ -56,10 +56,16 @@ pub(crate) fn planning_status(
             }
             None => String::new(),
         };
+        // The owner's No keeps the pause: say so rather than ask again.
+        let kept = if crate::flat_gate::kept_paused(s, &question)? {
+            format!("; the owner said keep it paused on question {question}")
+        } else {
+            String::new()
+        };
         return Ok(PlanningStatus {
             state: "blocked".to_string(),
             reason: format!(
-                "{reason}{evidence}{heal}; owner: {}",
+                "{reason}{evidence}{heal}{kept}; owner: {}",
                 crate::flat_gate::flat_owner_step(project, &question)
             ),
             question,
