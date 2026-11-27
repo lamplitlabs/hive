@@ -20,6 +20,8 @@ import { PauseCard, SettingRow, setShowKeys, useShowKeys } from "@/components/se
 import { groupIcon, type GroupIcon } from "@/components/settings/settings-state";
 import type { Runner, Setting, SettingsPayload } from "@/lib/api";
 import { capWarning, runsTodayOf } from "@/lib/cap-warning-state";
+import { RefileOffer } from "@/components/compute/refile-offer";
+import { limitFieldHelp, noRentalWarning } from "@/components/compute/compute-state";
 import { COMPUTE_PROVIDERS, settingHelp, settingLabel } from "@/lib/setting-labels";
 import { useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
@@ -132,7 +134,12 @@ const GROUPS: Group[] = [
     match: (n) => n.startsWith("compute."),
     clusters: COMPUTE_CLUSTERS,
     primary: ["compute.provider", "compute.max_vms", "compute.max_hours_per_day", "compute.auto_approve", "compute.budget_credits"],
-    strip: (canEdit) => <CloudSetup canEdit={canEdit} />,
+    strip: (canEdit) => (
+      <>
+        <RefileOffer canEdit={canEdit} />
+        <CloudSetup canEdit={canEdit} />
+      </>
+    ),
   },
   {
     id: "git",
@@ -241,8 +248,8 @@ const EXTRA_DEFAULTS: Omit<Setting, "updated_at" | "updated_by">[] = [
   { name: "light_reasoning", value: "", default: "", kind: "choice", min: null, choices: ["", "default", "minimal", "low", "medium", "high", "xhigh"], description: "the reasoning effort of the light runs - lead, answer, ballot, reflect, onboard and clean jobs - and of a light-class agent; empty means harness.reasoning; default sends nothing" },
   { name: "measure_reasoning", value: "", default: "", kind: "choice", min: null, choices: ["", "default", "minimal", "low", "medium", "high", "xhigh"], description: "the reasoning effort the self-improvement loop measures fixtures with; empty means worker_reasoning, then harness.reasoning; default sends nothing. Like measure_model it is part of the evaluator: a change re-measures every baseline" },
   { name: "compute.provider", value: "azure", default: "azure", kind: "choice", min: null, choices: ["azure", "aws", "gcp", "multipass"], description: "where agents get more machines from: azure (az login), aws (aws configure / aws sso login), gcp (gcloud auth login) or multipass (local VMs on the hub machine); each provider reads its own compute.<provider>.* settings" },
-  { name: "compute.max_vms", value: "0", default: "0", kind: "count", min: 0, choices: null, description: "VMs that may exist at once across all requests; 0 means compute is off" },
-  { name: "compute.max_hours_per_day", value: "0", default: "0", kind: "count", min: 0, choices: null, description: "VM-hours the runner may approve per UTC day; 0 means none" },
+  { name: "compute.max_vms", value: "0", default: "0", kind: "count-or-none", min: 0, choices: null, description: "machines agents and the daemon may have at once; 0 means Hive rents nothing by itself, none means no limit" },
+  { name: "compute.max_hours_per_day", value: "0", default: "0", kind: "count-or-none", min: 0, choices: null, description: "machine-hours agents and the daemon may rent per UTC day; 0 means Hive rents nothing by itself, none means no limit" },
   { name: "compute.auto_approve", value: "0", default: "0", kind: "switch", min: null, choices: null, description: "1 lets within-cap requests start without the owner; 0 holds every request for a decision" },
   { name: "compute.budget_credits", value: "0", default: "0", kind: "count", min: 0, choices: null, description: "credits the compute requests may spend in total; 0 means no budget" },
   { name: "compute.self_heal", value: "1", default: "1", kind: "switch", min: null, choices: null, description: "1: a refused login is replaced from the executor token on file (hive executor token); 0: never" },
@@ -328,8 +335,12 @@ const ANCHOR = "scroll-mt-16 lg:scroll-mt-4";
 // to say about a value.
 type Warnings = Record<string, (value: string) => string>;
 
+// The rental limits explain their value beside the field (TASK-165): "0 - Hive rents nothing",
+// "No limit", or that the owner's own requests are never refused by it.
+const NOTES: Warnings = { "compute.max_vms": limitFieldHelp, "compute.max_hours_per_day": limitFieldHelp };
+
 function GroupRows({ g, rows, canEdit, provider, searching, expanded, onToggle, warnings }: { g: Group; rows: Setting[]; canEdit: boolean; provider: string; searching: boolean; expanded: boolean; onToggle: () => void; warnings?: Warnings }) {
-  const row = (s: Setting) => (s.name === "push.credential" ? <CredentialRow key={s.name} s={s} canEdit={canEdit} /> : <SettingRow key={s.name} s={s} canEdit={canEdit} labels={SETTING_LABELS[s.name]} warn={warnings?.[s.name]} />);
+  const row = (s: Setting) => (s.name === "push.credential" ? <CredentialRow key={s.name} s={s} canEdit={canEdit} /> : <SettingRow key={s.name} s={s} canEdit={canEdit} labels={SETTING_LABELS[s.name]} warn={warnings?.[s.name]} note={NOTES[s.name]} />);
   const primary = g.primary;
   const folded = rows.filter((s) => primary && !primary.includes(s.name)).length;
   // Folding one row away saves nothing; show it.
@@ -468,7 +479,19 @@ export default function SettingsPage() {
   // than let the fleet idle in silence. Same payload the Agents page reads.
   const runner = useApi<Runner>("runner", { refresh: 30000 });
   const runsToday = runsTodayOf(runner.data);
-  const warnings = useMemo<Warnings>(() => ({ jobs_per_day: (value) => capWarning(value, runsToday) }), [runsToday]);
+  // A rental limit change that leaves no rental possible says so (TASK-165 item 2): each limit's
+  // row weighs its draft against the other one's saved value.
+  const saved = (name: string) => q.data?.settings?.find((s) => s.name === name)?.value ?? "";
+  const maxVms = saved("compute.max_vms");
+  const maxHours = saved("compute.max_hours_per_day");
+  const warnings = useMemo<Warnings>(
+    () => ({
+      jobs_per_day: (value) => capWarning(value, runsToday),
+      "compute.max_vms": (value) => noRentalWarning(value, maxHours),
+      "compute.max_hours_per_day": (value) => noRentalWarning(maxVms, value),
+    }),
+    [runsToday, maxVms, maxHours],
+  );
   const [find, setFind] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [spied, setSpied] = useState("");

@@ -2371,9 +2371,11 @@ async function handle(req, res) {
       s.value = v;
       s.updated_at = now();
       s.updated_by = "owner";
-      if (s.name === "compute.max_vms") state.compute.caps.max_vms = Number(v);
+      // "none" lifts a rental limit (-1 in the caps, as hive_tasks::NO_LIMIT).
+      const limit = (x) => (/^(none|off|unlimited)$/i.test(String(x).trim()) ? -1 : Number(x));
+      if (s.name === "compute.max_vms") state.compute.caps.max_vms = limit(v);
       if (s.name === "compute.max_hours_per_day")
-        state.compute.caps.max_hours_per_day = Number(v);
+        state.compute.caps.max_hours_per_day = limit(v);
       if (s.name === "compute.budget_credits")
         state.compute.caps.budget_credits = Number(v);
       if (s.name === "compute.auto_approve")
@@ -2389,6 +2391,28 @@ async function handle(req, res) {
         s.secret ? { masked: true } : { value: v, previous },
       );
       return send(res, 200, { ok: true, setting: maskSetting(s) });
+    }
+    // TASK-165: the owner's answers on a request a limit refused, and the rent dialog's actions.
+    if (segs[0] === "compute" && segs.length === 2 && segs[1] === "linux") {
+      const p = state.projects.find((x) => x.slug === body.project);
+      if (p) p.needs = String(p.needs || "").split(",").filter((w) => w && w !== "macos" && w !== "windows").join(",");
+      return send(res, 200, { project: body.project, needs: p?.needs || "" });
+    }
+    if (segs[0] === "compute" && segs.length === 2 && segs[1] === "refile-today") {
+      const filed = [];
+      for (const r of state.compute.requests.filter((x) => x.limit_hit)) filed.push(mockRefile(r, false).id);
+      return send(res, 200, { filed });
+    }
+    if (segs[0] === "compute" && segs.length === 3 && (segs[2] === "rent" || segs[2] === "keep-off")) {
+      const r = state.compute.requests.find((x) => x.id === segs[1]);
+      if (!r || !r.limit_hit)
+        return fail(res, 409, "Compute request was not refused by a limit", "Only a request a rental limit refused, not answered yet, may be rented again or kept off.", "Refresh the compute requests.");
+      if (segs[2] === "keep-off") {
+        delete r.limit_hit;
+        emit("human", "compute.kept-off", r.id, {});
+        return send(res, 200, { request: r });
+      }
+      return send(res, 201, { request: mockRefile(r, body.raise === true) });
     }
     // compute
     if (
@@ -2412,21 +2436,7 @@ async function handle(req, res) {
           r.id + " is " + r.status,
           "nothing to do",
         );
-      if (
-        segs[2] === "approve" &&
-        state.compute.caps.vms_now >= state.compute.caps.max_vms
-      )
-        return fail(
-          res,
-          409,
-          "cap reached",
-          "compute.max_vms is " +
-            state.compute.caps.max_vms +
-            " and " +
-            state.compute.caps.vms_now +
-            " are up",
-          "raise compute.max_vms in Settings or release a machine",
-        );
+      // The owner's approval is never refused by a rental limit (TASK-165).
       r.status = segs[2] === "approve" ? "approved" : "denied";
       r.decided_by = "human";
       r.updated_at = now();
@@ -2859,6 +2869,16 @@ async function handle(req, res) {
             "reason must be a non-empty string.",
             "Send a JSON object with a valid reason.",
           );
+        // Rent it and raise the limit to N (TASK-165): the limit the request passes goes up.
+        if (body.raise === true) {
+          const hit = mockLimitHit(Number(body.hours) || 4);
+          if (hit) {
+            const key = hit.setting === "compute.max_vms" ? "max_vms" : "max_hours_per_day";
+            state.compute.caps[key] = hit.raise_to;
+            const row = state.settings?.settings?.find?.((x) => x.name === hit.setting);
+            if (row) row.value = String(hit.raise_to);
+          }
+        }
         const r = {
           id:
             "CR-" + String(state.compute.requests.length + 1).padStart(3, "0"),
@@ -4374,7 +4394,13 @@ async function handle(req, res) {
     });
   }
   if (segs[0] === "compute" && segs.length === 1)
-    return send(res, 200, state.compute);
+    return send(res, 200, {
+      ...state.compute,
+      refused_today: state.compute.requests.filter((r) => r.limit_hit && (r.updated_at || "").slice(0, 10) === now().slice(0, 10)).map((r) => r.id),
+    });
+  // TASK-165: what the owner reads before renting.
+  if (segs[0] === "compute" && segs[1] === "preview" && segs.length === 2)
+    return send(res, 200, mockRentalPreview(q.get("project") || "", Number(q.get("hours")) || 4));
   if (segs[0] === "projects" && segs.length === 1)
     return send(res, 200, {
       projects: state.projects.map((p) => ({ ...p, ...goalFields(p) })),
@@ -5811,3 +5837,64 @@ createServer((req, res) => {
     `hive mock hub on http://127.0.0.1:${port}/api/v1/  (fixtures: ${root})`,
   ),
 );
+
+// ---- TASK-165: rental limits never refuse the owner ----
+
+// The limit an agent's request for `hours` would pass, as hive_tasks::Caps::limit_hit; null under both.
+function mockLimitHit(hours) {
+  const c = state.compute.caps;
+  if (c.max_vms >= 0 && c.vms_now + 1 > c.max_vms)
+    return { setting: "compute.max_vms", limit: c.max_vms, used: c.vms_now, asks: 1, raise_to: c.vms_now + 1 };
+  if (c.max_hours_per_day >= 0 && c.hours_today + hours > c.max_hours_per_day)
+    return { setting: "compute.max_hours_per_day", limit: c.max_hours_per_day, used: c.hours_today, asks: hours, raise_to: c.hours_today + hours };
+  return null;
+}
+
+function mockLimitWords(hit) {
+  if (!hit) return "";
+  if (hit.setting === "compute.max_vms") return "Not rented: the limit of " + hit.limit + " extra machine(s) at once is reached (" + hit.used + " up, this asks 1 more)";
+  return "Not rented: today's limit of " + hit.limit + " hours is used (" + hit.used + " used, this asks " + hit.asks + ")";
+}
+
+// GET compute/preview: the queued jobs a rented Linux machine could run, as hive_runner::compute::rental_preview.
+function mockRentalPreview(project, hours) {
+  const any = !project || project === "commons";
+  const jobs = (state.jobs || []).filter((j) => j.status === "queued" && (any || j.project === project));
+  const blocked = [];
+  let fits = 0;
+  for (const j of jobs) {
+    const miss = String(j.needs || "").split(",").filter((w) => w === "macos" || w === "windows");
+    if (!miss.length) {
+      fits++;
+      continue;
+    }
+    let b = blocked.find((x) => x.project === j.project);
+    if (!b) blocked.push((b = { project: j.project, jobs: 0, missing: [] }));
+    b.jobs++;
+    for (const w of miss) if (!b.missing.includes(w)) b.missing.push(w);
+  }
+  const needs = blocked.map((b) => b.project + " needs " + b.missing.join(", ")).join("; ");
+  const fit_words = fits > 0 ? fits + " waiting job(s) can run on it" : blocked.length ? "No waiting job can run on this machine: " + needs : "No job is waiting now";
+  const p = state.projects.find((x) => x.slug === project);
+  const os_needs = String(p?.needs || "").split(",").filter((w) => w === "macos" || w === "windows");
+  const limit = mockLimitHit(hours);
+  return {
+    fit: { fits, waiting: jobs.length, blocked },
+    fit_words,
+    limit,
+    limit_words: mockLimitWords(limit),
+    os_needs,
+    linux_risk: os_needs.length ? project + "'s jobs then run on Linux machines too: work that only builds or passes its check on " + os_needs.join(", ") + " fails there and lands nothing" : "",
+  };
+}
+
+// Rent it anyway on a request a limit refused: a new request of the owner's, approved.
+function mockRefile(r, raise) {
+  const hit = r.limit_hit;
+  if (raise && hit) state.compute.caps[hit.setting === "compute.max_vms" ? "max_vms" : "max_hours_per_day"] = hit.raise_to;
+  delete r.limit_hit;
+  const n = { ...r, id: "CR-" + String(state.compute.requests.length + 1).padStart(3, "0"), requested_by: "human", status: "approved", decided_by: "human", note: "", at: now(), updated_at: now() };
+  state.compute.requests.push(n);
+  emit("human", "compute.refiled", r.id, { request: n.id, raise });
+  return n;
+}

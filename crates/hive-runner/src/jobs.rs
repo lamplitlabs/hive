@@ -7891,8 +7891,13 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         }
         let req = hive_tasks::request_compute(&s, "proj", "aurora", "Standard_B2ms", 4, "long run")
             .unwrap();
-        hive_tasks::approve(&s, &req.id, "fine", crate::util::HUMAN_AGENT).unwrap();
-        // The owner lowers the cap after approving: the worker checks it again.
+        // Approved by the daemon (auto_approve under the limits), not by the owner: the limit
+        // still bounds it, and the worker checks it again.
+        crate::util::exec1(
+            &*s.conn().unwrap(),
+            "UPDATE compute_requests SET status = 'approved', decided_by = 'hive' WHERE id = ?",
+            &[&req.id],
+        );
         s.set_setting(crate::util::HUMAN_AGENT, "compute.max_hours_per_day", "1")
             .unwrap();
         let w = crate::compute::new_compute_worker(
@@ -7907,14 +7912,27 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         w.wait(std::time::Duration::from_secs(5));
         let _ = w.drain();
         let got = hive_tasks::get_compute(&s, &req.id).unwrap();
-        assert_eq!(got.status, "failed", "over caps: {got:?}");
+        // TASK-165 item 4: not rented, said with the limit and the numbers, never "Failed: cap".
+        assert_eq!(
+            (got.status.as_str(), got.note.as_str()),
+            (
+                "failed",
+                "Not rented: today's limit of 1 hour is used (0 used, this asks 4)"
+            ),
+            "over caps: {got:?}"
+        );
+        assert!(hive_tasks::open_limit_hit(&s, &req.id).unwrap().is_some());
         let conn = s.conn().unwrap();
         let f = crate::util::must_one(
             &conn,
             "SELECT * FROM posts WHERE kind = 'finding' AND thread = 'compute'",
             &[],
         );
-        assert!(f.str("summary").contains("cap:"), "finding: {f:?}");
+        assert!(
+            f.str("summary")
+                .contains("not rented: today's limit of 1 hour"),
+            "finding: {f:?}"
+        );
         assert!(!crate::compute::redact_secrets("token ****** leaked").contains("******"));
         crate::azure::init();
         assert!(crate::provider::provider_names().contains(&"azure".to_string()));

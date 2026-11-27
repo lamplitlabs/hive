@@ -442,7 +442,21 @@ impl Handler {
         let Some(store) = self.store.as_deref() else {
             return;
         };
+        // "Rent it and raise the limit to N" (TASK-165 item 1): the owner's request is filed
+        // whatever the limits say; with `raise` the limit it passes is set to let it through.
+        let Some(raise) = payload_bool(payload, "raise", false) else {
+            invalid(w, "raise", "true or false");
+            return;
+        };
         let _lock = ADDITION_WRITES.lock().unwrap_or_else(|e| e.into_inner());
+        if raise
+            && let Ok(caps) = hive_tasks::get_caps(store)
+            && let Some(hit) = caps.limit_hit(hours as i32)
+            && let Err(e) = hive_tasks::raise_limit(store, &hit, hive_store::HUMAN_AGENT)
+        {
+            addition_failure(w, e.to_string());
+            return;
+        }
         let req = match hive_tasks::request_compute(
             store,
             &project,
@@ -859,6 +873,103 @@ mod tests {
             status == 400 || status == 404,
             "no project: {status} {result:?}"
         );
+    }
+
+    /// TASK-165 items 1 and 3: the console's rental dialog reads a preview first - the waiting
+    /// jobs the machine could run and the limit an agent's request would pass - and "Rent it
+    /// and raise the limit to N" files the owner's request and raises the limit it passes.
+    #[test]
+    fn the_rent_dialog_previews_and_raises_the_limit_when_asked() {
+        let _serial = crate::test_helpers::serial();
+        let s = http::additions_store(false);
+        http::additions_project(&s, "one");
+        s.store
+            .set_setting("human", "compute.max_hours_per_day", "4")
+            .unwrap();
+        s.store
+            .set_setting("human", "compute.max_vms", "none")
+            .unwrap();
+        let h = http::handler(&s);
+        let (status, preview) = http::additions_request(
+            h.clone(),
+            "GET",
+            "/api/v1/compute/preview?project=one&hours=6",
+            "",
+        );
+        assert_eq!(status, 200, "{preview:?}");
+        assert_eq!(preview["fit_words"], "No job is waiting now");
+        assert_eq!(
+            preview["limit_words"],
+            "Not rented: today's limit of 4 hours is used (0 used, this asks 6)"
+        );
+        assert_eq!(preview["limit"]["raise_to"], 6);
+        let (status, result) = http::additions_request(
+            h.clone(),
+            "POST",
+            "/api/v1/compute/executors",
+            r#"{"mode":"request","project":"one","size":"small","hours":6,"reason":"mine","raise":true}"#,
+        );
+        assert_eq!(status, 201, "{result:?}");
+        assert_eq!(result["request"]["status"], "approved");
+        assert_eq!(s.store.setting("compute.max_hours_per_day", ""), "6");
+    }
+
+    /// TASK-165 items 1, 2 and 4: a request a limit refused is listed with the limit it hit and
+    /// among today's refusals; Rent it anyway files the owner's own request, Do not rent ends
+    /// the question.
+    #[test]
+    fn a_request_a_limit_refused_is_answered_from_the_machines_page() {
+        let _serial = crate::test_helpers::serial();
+        let s = http::additions_store(false);
+        http::additions_project(&s, "one");
+        let h = http::handler(&s);
+        let hit = hive_tasks::LimitHit {
+            setting: "compute.max_hours_per_day".into(),
+            limit: 24,
+            used: 12,
+            asks: 13,
+            raise_to: 25,
+        };
+        let mut ids = Vec::new();
+        for reason in ["first", "second"] {
+            let r = hive_tasks::request_compute(&s.store, "one", "one-lead", "small", 13, reason)
+                .unwrap();
+            hive_tasks::not_rented(&s.store, &r.id, &hit, "hive").unwrap();
+            ids.push(r.id);
+        }
+        let (_, listed) = http::additions_request(h.clone(), "GET", "/api/v1/compute", "");
+        assert_eq!(listed["refused_today"], json!(ids));
+        assert_eq!(
+            listed["requests"][0]["note"],
+            "Not rented: today's limit of 24 hours is used (12 used, this asks 13)"
+        );
+        assert_eq!(listed["requests"][0]["limit_hit"]["raise_to"], 25);
+        let (status, result) = http::additions_request(
+            h.clone(),
+            "POST",
+            &format!("/api/v1/compute/{}/keep-off", ids[0]),
+            "{}",
+        );
+        assert_eq!(status, 200, "{result:?}");
+        let (status, result) = http::additions_request(
+            h.clone(),
+            "POST",
+            &format!("/api/v1/compute/{}/rent", ids[1]),
+            r#"{"raise":false}"#,
+        );
+        assert_eq!(status, 201, "{result:?}");
+        assert_eq!(result["request"]["status"], "approved");
+        assert_eq!(result["request"]["requested_by"], "human");
+        let (status, _) = http::additions_request(
+            h.clone(),
+            "POST",
+            &format!("/api/v1/compute/{}/rent", ids[1]),
+            "{}",
+        );
+        assert_eq!(status, 409, "answered once");
+        let (_, listed) = http::additions_request(h, "GET", "/api/v1/compute", "");
+        assert_eq!(listed["refused_today"], json!([]));
+        assert!(listed["requests"][0].get("limit_hit").is_none());
     }
 
     #[test]

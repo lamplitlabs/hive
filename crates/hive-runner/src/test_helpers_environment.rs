@@ -166,9 +166,15 @@ mod tests {
         );
         caps.vms_now = 2;
         assert_eq!(
-            crate::compute::caps_allow(caps, req, TEST_NOW),
-            "cap: 2 machine(s) approved, provisioning or ready against compute.max_vms=1"
+            crate::compute::caps_allow(caps.clone(), req.clone(), TEST_NOW),
+            "Not rented: the limit of 1 machine at once is reached (1 in use, this asks 1 more)"
         );
+        // TASK-165 item 1: approved by the owner, no limit refuses it.
+        let approved = hive_tasks::ComputeRequest {
+            decided_by: hive_store::HUMAN_AGENT.into(),
+            ..req
+        };
+        assert_eq!(crate::compute::caps_allow(caps, approved, TEST_NOW), "");
     }
 
     #[test]

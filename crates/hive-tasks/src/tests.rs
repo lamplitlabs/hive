@@ -7010,3 +7010,119 @@ fn project_lifecycles_on_a_store_copy() {
         );
     }
 }
+
+/// TASK-165 item 1: the owner's own request is never refused by a rental limit - with
+/// auto_approve on it is approved past compute.max_vms and compute.max_hours_per_day, where an
+/// agent's identical request waits for the owner. Before, the owner's request went pending
+/// (and the worker failed it) like an agent's.
+#[test]
+fn the_owners_request_passes_the_limits_an_agents_does_not() {
+    let _serial = crate::test_helpers::serial();
+    let s = new_store();
+    for (k, v) in [
+        ("compute.auto_approve", "1"),
+        ("compute.max_vms", "0"),
+        ("compute.max_hours_per_day", "0"),
+    ] {
+        s.set_setting("human", k, v).unwrap();
+    }
+    let agent = request_compute(&s, "demo", "demo-lead", "Standard_B2ms", 4, "agent").unwrap();
+    assert_eq!(agent.status, "pending", "an agent stays capped");
+    let owner = request_compute(&s, "demo", "human", "Standard_B2ms", 12, "mine").unwrap();
+    assert_eq!(
+        (owner.status.as_str(), owner.decided_by.as_str()),
+        ("approved", "hive"),
+        "the owner's request is filed whatever the limits say"
+    );
+    assert!(owners_call(&owner));
+    // The owner approving the agent's request makes it the owner's call too.
+    let approved = approve(&s, &agent.id, "yes", "human").unwrap();
+    assert!(owners_call(&approved));
+    // The caps an agent's request would pass, in the words its row shows.
+    let caps = get_caps(&s).unwrap();
+    let hit = caps.limit_hit(4).expect("over compute.max_vms=0");
+    assert_eq!(hit.setting, "compute.max_vms");
+    assert_eq!(
+        hit.words(),
+        "Not rented: the limit of extra machines at once is 0 - Hive rents nothing by itself"
+    );
+}
+
+/// TASK-165 items 2 and 4: `none` is its own choice - no limit at all - while 0 rents nothing;
+/// a limit refusal reads "Not rented: today's limit of 24 hours is used (12 used, this asks
+/// 13)", never "Failed".
+#[test]
+fn none_lifts_a_rental_limit_and_a_refusal_reads_not_rented() {
+    let _serial = crate::test_helpers::serial();
+    let s = new_store();
+    s.set_setting("human", "compute.max_vms", "none").unwrap();
+    s.set_setting("human", "compute.max_hours_per_day", "24")
+        .unwrap();
+    let mut caps = get_caps(&s).unwrap();
+    assert_eq!(caps.max_vms, NO_LIMIT);
+    assert_eq!(limit_words(caps.max_vms), "none");
+    caps.vms_now = 50;
+    caps.hours_today = 12;
+    let hit = caps.limit_hit(13).expect("12 + 13 is past 24");
+    assert_eq!(
+        hit.words(),
+        "Not rented: today's limit of 24 hours is used (12 used, this asks 13)"
+    );
+    assert_eq!(hit.raise_to, 25);
+    assert!(caps.limit_hit(12).is_none(), "12 + 12 fits a limit of 24");
+    s.set_setting("human", "compute.max_hours_per_day", "unlimited")
+        .unwrap();
+    let mut caps = get_caps(&s).unwrap();
+    caps.vms_now = 50;
+    caps.hours_today = 10_000;
+    assert!(caps.limit_hit(24).is_none(), "no limit refuses nothing");
+}
+
+/// TASK-165 items 1 and 2: a request a limit refused offers Rent it anyway / Rent it and raise
+/// the limit to N / Do not rent; it is among today's refusals a limit change offers again until
+/// answered, and Rent it anyway files the owner's own request, approved, raising the limit
+/// when asked.
+#[test]
+fn a_refused_request_is_rented_anyway_or_kept_off_by_the_owner() {
+    let _serial = crate::test_helpers::serial();
+    let s = new_store();
+    s.set_setting("human", "compute.max_hours_per_day", "8")
+        .unwrap();
+    let a = request_compute(&s, "demo", "demo-lead", "Standard_B2ms", 6, "fuzz").unwrap();
+    let b = request_compute(&s, "demo", "demo-lead", "Standard_B2ms", 4, "matrix").unwrap();
+    let hit = LimitHit {
+        setting: "compute.max_hours_per_day".into(),
+        limit: 8,
+        used: 6,
+        asks: 4,
+        raise_to: 10,
+    };
+    for id in [&a.id, &b.id] {
+        not_rented(&s, id, &hit, "hive").unwrap();
+    }
+    let got = get_compute(&s, &b.id).unwrap();
+    assert_eq!(
+        got.note,
+        "Not rented: today's limit of 8 hours is used (6 used, this asks 4)"
+    );
+    assert_eq!(open_limit_hit(&s, &b.id).unwrap(), Some(hit.clone()));
+    assert_eq!(refused_today(&s).unwrap().len(), 2);
+    // Do not rent: the row asks no more.
+    keep_off(&s, &a.id, "human").unwrap();
+    assert_eq!(open_limit_hit(&s, &a.id).unwrap(), None);
+    assert!(refile(&s, &a.id, false, "human").is_err());
+    // Rent it and raise the limit to 10.
+    let new = refile(&s, &b.id, true, "human").unwrap();
+    assert_eq!(
+        (
+            new.status.as_str(),
+            new.requested_by.as_str(),
+            new.hours,
+            new.project.as_str()
+        ),
+        ("approved", "human", 4, "demo")
+    );
+    assert!(new.reason.contains(&b.id), "{}", new.reason);
+    assert_eq!(s.setting("compute.max_hours_per_day", ""), "10");
+    assert!(refused_today(&s).unwrap().is_empty());
+}

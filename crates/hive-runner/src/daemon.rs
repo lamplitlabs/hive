@@ -1126,14 +1126,18 @@ pub(crate) fn auto_compute(
     if !caps.auto_approve {
         return Err(why("compute.auto_approve is off".into()));
     }
-    if caps.vms_now >= caps.max_vms {
+    // The daemon's own request stays inside the limits (TASK-165); `none` means no limit.
+    let unlimited = hive_tasks::compute::NO_LIMIT;
+    if caps.max_vms != unlimited && caps.vms_now >= caps.max_vms {
         return Err(why(format!(
             "compute.max_vms {} reached ({} in use)",
             caps.max_vms, caps.vms_now
         )));
     }
     // 0 means none, as the setting's description says and the compute worker reads it.
-    if caps.hours_today.saturating_add(AUTO_COMPUTE_HOURS) > caps.max_hours_per_day {
+    if caps.max_hours_per_day != unlimited
+        && caps.hours_today.saturating_add(AUTO_COMPUTE_HOURS) > caps.max_hours_per_day
+    {
         return Err(why(format!(
             "compute.max_hours_per_day {} would be passed ({} h today, {AUTO_COMPUTE_HOURS} h asked)",
             caps.max_hours_per_day, caps.hours_today

@@ -1,6 +1,8 @@
 "use client";
 
 import Link from "next/link";
+import { useState } from "react";
+import { toast } from "sonner";
 import { ArrowRightIcon, CheckIcon, ServerIcon, XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAnswerDialog } from "@/components/hive/use-answer-dialog";
@@ -12,9 +14,10 @@ import { StatusBadge } from "@/components/hive/status-badge";
 import { Avatar, Mono, ProjectLink, When } from "@/components/hive/who";
 import { agentName, statusWord } from "@/lib/words";
 import { writes, type ComputeCaps, type ComputeRequest } from "@/lib/api";
+import { invalidate } from "@/lib/use-api";
 import { num, plural } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
-import { ANY_PROJECT, ANY_PROJECT_WORD, meterPercent, requestReason, requestTitle } from "./compute-state";
+import { ANY_PROJECT, ANY_PROJECT_WORD, choiceLabel, limitChoices, meterPercent, requestReason, requestState, requestTitle, type LimitHit, type RentChoice } from "./compute-state";
 import { Meter } from "./meter";
 
 const CHANGES = (p: string) => p.startsWith("compute") || p.startsWith("executors") || p.startsWith("events") || p.startsWith("runner");
@@ -107,8 +110,8 @@ export function ComputeRequestCard({ r, compact, caps }: { r: ComputeRequest; co
         {r.executor ? <span>{"Runs on " + r.executor}</span> : null}
         {pending && caps ? (
           <>
-            <span>{num(caps.vms_now) + " of " + num(caps.max_vms) + " extra machines in use"}</span>
-            <span>{num(caps.hours_today) + " of " + plural(caps.max_hours_per_day, "hour") + " used today"}</span>
+            <span>{num(caps.vms_now) + (caps.max_vms < 0 ? " extra machines in use, no limit" : " of " + num(caps.max_vms) + " extra machines in use")}</span>
+            <span>{caps.max_hours_per_day < 0 ? plural(caps.hours_today, "hour") + " used today, no limit" : num(caps.hours_today) + " of " + plural(caps.max_hours_per_day, "hour") + " used today"}</span>
           </>
         ) : null}
       </ItemCardMeta>
@@ -149,7 +152,8 @@ export function ComputeRequestListRow({ r }: { r: ComputeRequest }) {
 // rows, not cards.
 export function ComputeRequestRow({ r }: { r: ComputeRequest }) {
   const note = (r.note ?? "").trim();
-  const failed = r.status === "failed";
+  const st = requestState(r);
+  const failed = st.bad;
   return (
     <li className="flex min-w-0 items-start gap-3 rounded-lg border bg-card px-3 py-2.5 text-sm" aria-label={"Request " + r.id + ": " + statusWord(r.status)}>
       <div className="min-w-0 flex-1" title={r.reason ? "Asked because: " + r.reason.trim() : undefined}>
@@ -160,15 +164,16 @@ export function ComputeRequestRow({ r }: { r: ComputeRequest }) {
           <span className="text-[13px] text-muted-foreground">{"asked by " + agentName(r.requested_by)}</span>
           <RequestProject slug={r.project} className="text-[13px] font-normal text-muted-foreground" />
           <span className="ml-auto flex items-center gap-2 text-[13px] text-muted-foreground">
-            <StatusBadge status={r.status} />
+            <StatusBadge status={st.badge} label={st.label} />
             <When d={r.at} />
           </span>
         </div>
         {note ? (
-          <p className={"mt-1 text-[13px] leading-snug anywhere " + (failed ? "text-bad" : "text-muted-foreground")}>{(failed ? "Why it failed: " : "") + note}</p>
+          <p className={"mt-1 text-[13px] leading-snug anywhere " + (failed ? "text-bad" : "text-muted-foreground")}>{st.lead + note}</p>
         ) : failed ? (
           <p className="mt-1 text-[13px] text-muted-foreground">No reason was recorded for this one.</p>
         ) : null}
+        {r.limit_hit ? <NotRentedAnswers r={r} hit={r.limit_hit} /> : null}
       </div>
     </li>
   );
@@ -176,6 +181,9 @@ export function ComputeRequestRow({ r }: { r: ComputeRequest }) {
 
 const PROVIDER: Record<string, string> = { azure: "Microsoft Azure", aws: "Amazon Web Services", gcp: "Google Cloud", google: "Google Cloud", hetzner: "Hetzner Cloud", digitalocean: "DigitalOcean", ssh: "Your own machines over SSH" };
 export const providerWord = (p?: string | null) => (p ? (PROVIDER[p.toLowerCase()] ?? p.charAt(0).toUpperCase() + p.slice(1)) : "");
+
+// A limit as the Limits card shows it: -1 is no limit, 0 is "0 - Hive rents nothing".
+const limitText = (n: number) => (n < 0 ? "no limit" : n === 0 ? "0 - Hive rents nothing" : num(n));
 
 // The limits every request must fit (spec "Machines" - Limits): one card
 // with two meters, machines in use and hours today, and the budget line.
@@ -186,8 +194,8 @@ export function CapsPanel({ caps }: { caps: ComputeCaps }) {
   return (
     <div className="grid gap-4 rounded-lg border bg-card p-4">
       <div className="grid gap-4 sm:grid-cols-2">
-        <Meter label="Machines in use" pct={meterPercent(caps.vms_now, caps.max_vms)} text={num(caps.vms_now) + " of " + num(caps.max_vms)} title="Extra machines running now, of the most allowed at once" />
-        <Meter label="Hours today" pct={meterPercent(caps.hours_today, caps.max_hours_per_day)} text={num(caps.hours_today) + " of " + num(caps.max_hours_per_day) + (full ? " · none left" : "")} title="Machine hours used today, of the most allowed per day" />
+        <Meter label="Machines in use" pct={caps.max_vms < 0 ? null : meterPercent(caps.vms_now, caps.max_vms)} text={num(caps.vms_now) + " of " + limitText(caps.max_vms)} title="Extra machines agents and the daemon may have at once; your own requests are never refused by it" />
+        <Meter label="Hours today" pct={caps.max_hours_per_day < 0 ? null : meterPercent(caps.hours_today, caps.max_hours_per_day)} text={num(caps.hours_today) + " of " + limitText(caps.max_hours_per_day) + (full ? " · none left for agents" : "")} title="Machine hours agents and the daemon may use per day; your own requests are never refused by it" />
       </div>
       <p className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-[13px] text-muted-foreground">
         <span className="text-foreground">{"Budget " + num(caps.budget_credits) + " credits"}</span>
@@ -217,8 +225,8 @@ export function ComputeInboxCard({ r, caps, here }: { r: ComputeRequest; caps?: 
       {r.reason ? <ItemCardBody clamp={3}>{"“" + r.reason.trim() + "”"}</ItemCardBody> : null}
       {caps ? (
         <ItemCardMeta>
-          <span>{num(caps.vms_now) + " of " + num(caps.max_vms) + " extra machines in use"}</span>
-          <span>{num(caps.hours_today) + " of " + plural(caps.max_hours_per_day, "hour") + " used today"}</span>
+          <span>{num(caps.vms_now) + (caps.max_vms < 0 ? " extra machines in use, no limit" : " of " + num(caps.max_vms) + " extra machines in use")}</span>
+          <span>{caps.max_hours_per_day < 0 ? plural(caps.hours_today, "hour") + " used today, no limit" : num(caps.hours_today) + " of " + plural(caps.max_hours_per_day, "hour") + " used today"}</span>
           {caps.provider ? <span title={caps.provider}>{"Runs on " + providerWord(caps.provider)}</span> : null}
         </ItemCardMeta>
       ) : null}
@@ -233,5 +241,33 @@ export function ComputeInboxCard({ r, caps, here }: { r: ComputeRequest; caps?: 
         </span>
       </ItemCardActions>
     </ItemCard>
+  );
+}
+
+// The owner's answers on a request a limit refused (TASK-165 items 1 and 4): Rent it anyway
+// (Recommended), Rent it and raise the limit to N, Do not rent - buttons, no free text.
+function NotRentedAnswers({ r, hit }: { r: ComputeRequest; hit: LimitHit }) {
+  const [busy, setBusy] = useState("");
+  const answer = async (c: RentChoice) => {
+    setBusy(c.id);
+    try {
+      if (c.id === "keep-off") await writes.keepOff(r.id);
+      else await writes.rentRefused(r.id, c.id === "raise");
+      toast.success(c.id === "keep-off" ? "Not rented." : "Asked for the machine again, as your own request.");
+      invalidate("compute");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy("");
+    }
+  };
+  return (
+    <div className="mt-2 flex flex-wrap gap-2" role="group" aria-label={"Answer request " + r.id}>
+      {limitChoices(hit).map((c) => (
+        <Button key={c.id} type="button" size="xs" variant={c.recommended ? "default" : "outline"} disabled={!!busy} title={c.detail} onClick={() => void answer(c)}>
+          {choiceLabel(c)}
+        </Button>
+      ))}
+    </div>
   );
 }
