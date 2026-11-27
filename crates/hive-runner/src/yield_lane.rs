@@ -271,33 +271,74 @@ pub(crate) fn yield_lanes_if_admitted(
         let lanes = crate::jobs::project_lanes(s, &slug);
         let narrowed = (lanes.lanes < lanes.base).then_some(lanes.lanes.max(1));
         let bound = crate::jobs::owner_work_bound(s);
+        // The lanes are a machine's (jobs::occupied_on_sql): the runs in
+        // the way are those of a machine whose lanes are held, so a run on a
+        // paired or rented machine is not asked to hold for a lane that is
+        // open here (TASK-144).
         let occupied = must_rows(
             &conn,
             &format!(
-                "SELECT k.id, k.kind, k.source FROM jobs k WHERE k.project = ? AND {}",
+                "SELECT k.id, k.kind, k.source, {} AS machine FROM jobs k WHERE k.project = ? AND {}",
+                crate::jobs::job_machine_sql("k"),
                 crate::jobs::OCCUPIED_JOB_SQL
             ),
             &[&slug],
         );
         let is_work = |k: &Row| crate::jobs::WORK_KINDS.contains(&k.str("kind").as_str());
-        let work_held = occupied.iter().filter(|k| is_work(k)).count() as i32;
-        // The owner's work past its share does not take the machine's last
+        let machine_of = |k: &Row| {
+            let m = k.str("machine");
+            if m.is_empty() {
+                crate::executor::LOCAL_EXECUTOR.to_string()
+            } else {
+                m
+            }
+        };
+        let mut by_machine: std::collections::BTreeMap<String, Vec<Row>> =
+            std::collections::BTreeMap::new();
+        for k in occupied {
+            by_machine.entry(machine_of(&k)).or_default().push(k);
+        }
+        // The lanes are held on a machine when its own work jobs reach the
+        // narrowed count or the owner's bound. A lane open here, with a slot
+        // the dispatch would offer, starts the owner's job without stopping
+        // anyone; otherwise the runs in the way are the work runs of a
+        // machine whose lanes are held, or, with no slot free anywhere,
+        // every run of the project.
+        let lanes_held = |work_held: i32| {
+            narrowed.is_some_and(|n| work_held >= n) || bound.is_some_and(|b| work_held >= b)
+        };
+        let local = crate::executor::LOCAL_EXECUTOR;
+        let here = by_machine.get(local).map(Vec::as_slice).unwrap_or(&[]);
+        // The owner's work past its share does not take this machine's last
         // free slot (jobs.rs keep_slot, counting the project's owner work
-        // jobs): a run freeing that slot is not asked to hold for it.
-        let owner_held = occupied
+        // jobs on the machine): a run freeing that slot is not asked to
+        // hold for it. The kept slot is this machine's alone
+        // (OwnerAdmission::refusal), so the count is of its own runs.
+        let owner_held = here
             .iter()
             .filter(|k| is_work(k) && crate::jobs::is_owner_driven(k))
             .count() as i32;
         let past_share = owner_held >= crate::jobs::parallel_per_project(s);
-        let lanes_held =
-            narrowed.is_some_and(|n| work_held >= n) || bound.is_some_and(|b| work_held >= b);
-        let in_the_way: Vec<Row> = if lanes_held {
-            occupied.into_iter().filter(|k| is_work(k)).collect()
-        } else if fleet_full {
-            occupied
-        } else {
+        // A lane open here is room for the owner's job only when this
+        // machine would admit it: with the load governor refusing it here,
+        // a lane held on a paired machine is still in its way.
+        let open_here = !lanes_held(here.iter().filter(|k| is_work(k)).count() as i32)
+            && admission.refusal(local, past_share).is_none();
+        if open_here && !fleet_full {
             continue;
-        };
+        }
+        let mut in_the_way: Vec<Row> = Vec::new();
+        for (_, rows) in by_machine {
+            let work_held = rows.iter().filter(|k| is_work(k)).count() as i32;
+            if lanes_held(work_held) {
+                in_the_way.extend(rows.into_iter().filter(|k| is_work(k)));
+            } else if fleet_full {
+                in_the_way.extend(rows);
+            }
+        }
+        if in_the_way.is_empty() {
+            continue;
+        }
         let mut fleet = in_the_way
             .into_iter()
             .filter(|k| !crate::jobs::is_owner_driven(k))
