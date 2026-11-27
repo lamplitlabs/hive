@@ -22,7 +22,7 @@ pub(crate) fn review_flags(fs: &mut FlagSet) {
     fs.string_var(
         "by",
         "",
-        "merge: `owner` merges for the owner, past the complexity rule",
+        "merge|changes: `owner` gives the owner's verdict (a merge past the complexity rule; changes after a hand-over); a command run outside a job is the owner's",
     );
 }
 
@@ -195,11 +195,22 @@ fn need_bottom(s: &hive_store::Store, project: &Row, number: i64) -> Result<()> 
 }
 
 /// A pull request already decided since its last push takes no second
-/// verdict: the agent issues exactly one. The owner's merge (`--by
-/// owner`) is the answer to a hand-off, so `review.owner` and
-/// `review.changes` stand open to it, and so does a reviewer's merge that
-/// waits (`review.merge-wait`); only a merge is final.
-fn need_undecided(s: &hive_store::Store, slug: &str, number: i64, owner_merge: bool) -> Result<()> {
+/// verdict from its reviewer: the agent issues exactly one. That binds the
+/// reviewer only - a hand-over (`review.owner`) asks the owner for theirs,
+/// and the owner answers it with any of merge, changes or close:
+///
+/// - the owner's merge (`--by owner`) stands open after `review.owner`,
+///   `review.changes`, `review.failed` and a reviewer's merge that waits
+///   (`review.merge-wait`);
+/// - the owner's changes after `review.owner` and `review.failed` (after a
+///   `review.changes` its follow-up job is already at work, and a waiting
+///   merge is the reviewer's go-ahead the owner answers with merge or
+///   close).
+///
+/// The owner's close is GitHub's (the delivery's poll records it as
+/// `land.pr-closed` whatever the review said). Only a merge or a close is
+/// final.
+fn need_undecided(s: &hive_store::Store, slug: &str, number: i64, by: Decider) -> Result<()> {
     let Some((_, action)) = s
         .conn()
         .ok()
@@ -207,13 +218,32 @@ fn need_undecided(s: &hive_store::Store, slug: &str, number: i64, owner_merge: b
     else {
         return Ok(());
     };
-    if action == "land.pr"
-        || (owner_merge
-            && matches!(
-                action.as_str(),
-                "review.owner" | "review.changes" | review::WAIT_ACTION
-            ))
+    if by == Decider::Reviewer
+        && let Some(job) = std::env::var("HIVE_JOB")
+            .ok()
+            .filter(|j| !j.trim().is_empty())
+        && s.conn()
+            .is_ok_and(|c| review::requeued_by(&c, slug, number, job.trim()))
     {
+        return Err(hive_cli::errorf(
+            2,
+            &format!("Pull request #{number} already has a verdict ({})", review::AGAIN_ACTION),
+            "this review could not check the head out and queued the review again; a fresh review job reads it",
+            "finish the job: hive job finish $HIVE_JOB done --result '...'",
+        )
+        .into());
+    }
+    let open_to_owner: &[&str] = match by {
+        Decider::Reviewer => &[],
+        Decider::OwnerMerge => &[
+            "review.owner",
+            "review.changes",
+            "review.failed",
+            review::WAIT_ACTION,
+        ],
+        Decider::OwnerChanges => &["review.owner", "review.failed"],
+    };
+    if action == "land.pr" || open_to_owner.contains(&action.as_str()) {
         return Ok(());
     }
     Err(hive_cli::errorf(
@@ -223,6 +253,26 @@ fn need_undecided(s: &hive_store::Store, slug: &str, number: i64, owner_merge: b
         "finish the job: hive job finish $HIVE_JOB done --result '...'",
     )
     .into())
+}
+
+/// Who gives the verdict `need_undecided` checks: the reviewing agent, or
+/// the owner answering a hand-over.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Decider {
+    Reviewer,
+    OwnerMerge,
+    OwnerChanges,
+}
+
+/// The owner gives this verdict: `--by owner`, or a command run outside
+/// any job (a job's run has `HIVE_JOB`; the owner's terminal and the hub
+/// have none).
+fn by_owner(fs: &FlagSet) -> bool {
+    crate::commands::str_flag(fs, "by").trim() == "owner"
+        || std::env::var("HIVE_JOB")
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
 }
 
 pub(crate) fn cmd_review(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
@@ -424,14 +474,10 @@ fn checkout(c: &mut Context, number: i64) -> Result<()> {
     let s = store(c)?;
     let view = fetch_view(s, &project, number)?;
     let dir = std::env::current_dir()?.display().to_string();
-    let sha = review::checkout_into(s, &project, &view, &dir).map_err(|e| {
-        hive_cli::errorf(
-            1,
-            &format!("Cannot check out pull request #{number}"),
-            &e,
-            "run it inside the job's clone",
-        )
-    })?;
+    let sha = match review::checkout_into(s, &project, &view, &dir) {
+        Ok(sha) => sha,
+        Err(e) => return Err(checkout_failed(c, &project, &view, number, &e)),
+    };
     writeln!(
         c.out,
         "{} at {} ({})",
@@ -440,6 +486,45 @@ fn checkout(c: &mut Context, number: i64) -> Result<()> {
         view.head
     )?;
     Ok(())
+}
+
+/// A checkout that failed. Inside the pull request's own review job, whose
+/// pull request is still open for review, the failure is that job's
+/// verdict: `review.again` queues a fresh review of the same head (the
+/// attempt does not count towards the owner's hand-over), and the agent
+/// finishes its job. Anywhere else it is a plain error.
+fn checkout_failed(
+    c: &Context,
+    project: &Row,
+    view: &PrView,
+    number: i64,
+    e: &str,
+) -> anyhow::Error {
+    let slug = project.str("slug");
+    let what = format!("Cannot check out pull request #{number}");
+    let requeued = store(c).is_ok_and(|s| {
+        review::requeue_after_checkout(
+            s,
+            &slug,
+            view,
+            e,
+            &crate::commands::actor_of(c),
+            &crate::commands::now_of(c),
+        )
+    });
+    if requeued {
+        return hive_cli::errorf(
+            1,
+            &what,
+            e,
+            &format!(
+                "this review's verdict is recorded ({}): the pull request is queued for a fresh review, not handed to the owner - finish the job: hive job finish $HIVE_JOB done --result 'SUMMARY: reviewed #{number}: could not check out, queued again'",
+                review::AGAIN_ACTION
+            ),
+        )
+        .into();
+    }
+    hive_cli::errorf(1, &what, e, "run it inside the job's clone").into()
 }
 
 fn merge(c: &mut Context, fs: &FlagSet, number: i64) -> Result<()> {
@@ -456,7 +541,16 @@ fn merge(c: &mut Context, fs: &FlagSet, number: i64) -> Result<()> {
         )
         .into());
     }
-    need_undecided(s, &slug, number, by == "owner")?;
+    need_undecided(
+        s,
+        &slug,
+        number,
+        if by == "owner" {
+            Decider::OwnerMerge
+        } else {
+            Decider::Reviewer
+        },
+    )?;
     need_bottom(s, &project, number)?;
     let actor = crate::commands::actor_of(c);
     let now = crate::commands::now_of(c);
@@ -542,7 +636,27 @@ fn changes(c: &mut Context, fs: &FlagSet, number: i64) -> Result<()> {
     let project = project_of(c)?;
     let s = store(c)?;
     let slug = project.str("slug");
-    need_undecided(s, &slug, number, false)?;
+    let by = crate::commands::str_flag(fs, "by").trim().to_string();
+    if !by.is_empty() && by != "owner" {
+        return Err(hive_cli::errorf(
+            2,
+            &format!("Unknown --by {by:?}"),
+            "only the owner answers a hand-over with changes",
+            "hive review changes N --note \"...\" --by owner",
+        )
+        .into());
+    }
+    let owner = by_owner(fs);
+    need_undecided(
+        s,
+        &slug,
+        number,
+        if owner {
+            Decider::OwnerChanges
+        } else {
+            Decider::Reviewer
+        },
+    )?;
     let view = fetch_view(s, &project, number)?;
     need_open(&view)?;
     let pr = known_pr(s, &slug, number, &view);
@@ -572,7 +686,7 @@ fn owner(c: &mut Context, fs: &FlagSet, number: i64) -> Result<()> {
     let project = project_of(c)?;
     let s = store(c)?;
     let slug = project.str("slug");
-    need_undecided(s, &slug, number, false)?;
+    need_undecided(s, &slug, number, Decider::Reviewer)?;
     let view = fetch_view(s, &project, number)?;
     need_open(&view)?;
     let pr = known_pr(s, &slug, number, &view);
@@ -797,6 +911,89 @@ mod tests {
         let (_, err, code) = invoke(&s, "review", "proj", &["merge", "7"]);
         assert_eq!(code, 2, "{err}");
         assert!(err.contains("already has a verdict"), "{err}");
+    }
+
+    /// TASK-147: one verdict per push binds the reviewer only. After the
+    /// hand-over (`review.owner`) the owner's own verdict stays open:
+    /// `hive review changes` from the owner's terminal queues the
+    /// follow-up job (`pr-fix:<project>:<n>`), while the reviewing job is
+    /// still refused a second verdict.
+    #[test]
+    fn the_owner_asks_for_changes_after_the_hand_over() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let (_bin, _path, log, view) = fake_gh();
+        let s = new_store();
+        let (_proj, _repo, _bare) = push_fixture(&s);
+        land_pr(&s, 7, "job", "", "JOB-a");
+        std::fs::write(
+            &view,
+            view_json(7, "hive/worker/JOB-a", &[("src/a.rs", 5, 2)], "OPEN"),
+        )
+        .unwrap();
+        let (out, err, code) = invoke(
+            &s,
+            "review",
+            "proj",
+            &["owner", "7", "--note", "touches the auth flow"],
+        );
+        assert_eq!(code, 0, "{out} {err}");
+        assert_eq!(events(&s, "review.owner").len(), 1);
+
+        // The reviewing job gave its one verdict.
+        {
+            let _job = hive_testutil::setenv("HIVE_JOB", "job-review-7");
+            let (_, err, code) = invoke(&s, "review", "proj", &["changes", "7", "--note", "x"]);
+            assert_eq!(code, 2, "{err}");
+            assert!(
+                err.contains("already has a verdict (review.owner)"),
+                "{err}"
+            );
+        }
+        assert!(job_by_source(&s, "pr-fix:proj:7").is_empty());
+
+        // The owner's changes are the answer to the hand-over.
+        let note = "keep the old token check beside the new one";
+        let (out, err, code) = invoke(&s, "review", "proj", &["changes", "7", "--note", note]);
+        assert_eq!(code, 0, "{out} {err}");
+        let jobs = job_by_source(&s, "pr-fix:proj:7");
+        assert_eq!(jobs.len(), 1, "{out}");
+        assert_eq!(jobs[0].str("kind"), "improve");
+        assert!(
+            jobs[0].str("brief").contains(note),
+            "{}",
+            jobs[0].str("brief")
+        );
+        assert!(out.contains(&jobs[0].str("id")), "{out}");
+        let ev = events(&s, "review.changes");
+        assert_eq!(ev.len(), 1);
+        assert_eq!(ev[0]["follow_up"], jobs[0].str("id"));
+        assert!(calls(&log).iter().any(|c| c == "pr review 7"));
+
+        // Its follow-up is at work: a second changes is refused, the
+        // owner's merge still stands open.
+        let (_, err, code) = invoke(
+            &s,
+            "review",
+            "proj",
+            &["changes", "7", "--note", "again", "--by", "owner"],
+        );
+        assert_eq!(code, 2, "{err}");
+        assert!(
+            err.contains("already has a verdict (review.changes)"),
+            "{err}"
+        );
+        let (_, err, code) = invoke(
+            &s,
+            "review",
+            "proj",
+            &["changes", "7", "--note", "x", "--by", "me"],
+        );
+        assert_eq!(code, 2, "{err}");
+        assert!(err.contains("Unknown --by"), "{err}");
+        let (out, err, code) = invoke(&s, "review", "proj", &["merge", "7", "--by", "owner"]);
+        assert_eq!(code, 0, "{out} {err}");
+        assert_eq!(events(&s, "review.merged").len(), 1);
     }
 
     #[test]

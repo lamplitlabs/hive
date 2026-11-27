@@ -393,7 +393,11 @@ or no sha from an older `gh`) waits for the next pass. Four outcomes:
   it (`head_sha` the old tip, `new_sha` the merge), and a `land.pr` naming
   the new tip follows, as a follow-up push writes one, so the next push onto
   the branch leases on what the pull request holds and the reviewer reads the
-  new head. Nobody is told: there was nothing to decide.
+  new head. The checkout's remote-tracking ref and its local branch of that
+  name follow the push (the local branch only when no worktree has it checked
+  out and it held the old tip or one behind it), so `hive review checkout`
+  finds the new head locally and never needs the upstream for it. Nobody is
+  told: there was nothing to decide.
 - **Conflicting, and the merge conflicts** - nothing is pushed; `land.pr-conflict`
   records the paths left unmerged (`files`) and the origin is told: a task
   through a message in its conversation (its lead reads it and plans the fix;

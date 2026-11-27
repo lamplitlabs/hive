@@ -142,6 +142,23 @@ nothing. A verdict is refused when the pull request is no longer open on the
 forge (you merged or closed it while the review ran) or already has a
 verdict since its last push: a review gives exactly one.
 
+That rule binds the reviewer, not you. After a hand-over (`review.owner`,
+or `review.failed` when the reviewer failed twice) your verdict stays open:
+`hive review merge <n> --by owner` merges it, `hive review changes <n>
+--by owner --note "…"` asks for the changes and queues the follow-up job
+(source `pr-fix:<project>:<n>`, [below](#the-follow-up-after-changes)) just
+as a reviewer's *changes* does, and closing it on GitHub ends it when the
+landing poll records `land.pr-closed`. A reviewer that tries a second verdict
+after the hand-over is still refused.
+
+A review that cannot check the pull request out (`hive review checkout`
+fails: the head is not in the project's repository and the upstream refuses
+or cannot be reached) is not the owner's problem. Run inside its own review
+job, the checkout records that review's verdict itself, `review.again` with
+`checkout: true` in its detail, and a fresh review is queued; it does not
+count as one of the reviewer's failed attempts, and the reviewer gives no
+other verdict for that run.
+
 ## The complexity rule
 
 Before the review job runs, the daemon reads the pull request's paths and
@@ -223,9 +240,9 @@ number (`7` or `#7`); `--json` gives the same as data.
 | `hive review list [--project S]` | the pull requests Hive opened that wait for a verdict, every project's when no project is given: `<project> #<n>  <title>  [task T\|job J\|experiment\|proposed]  waiting\|queued\|running\|failed (<job>)  for the owner: <reasons>` and the url on the next line; `No open Hive pull requests.` when there are none |
 | `hive review show <n>` | one pull request from the forge: title and url, `<head> -> <base>  by <author>  <state>  +<added> -<deleted>`, `Kind: Hive task T` (or job, experiment, proposed; `not a Hive pull request` for one Hive did not open), either `May be merged by the reviewer when correct, safe, in scope and green.` (followed by `Read with extra care: …` for a large or mostly-deleting change) or `For the owner (do not merge):` with the reasons, the files with their counts, and the body |
 | `hive review diff <n>` | the diff against the base, from the forge |
-| `hive review checkout <n>` | inside a job clone: fetches the pull request's head onto `review/pr-<n>` from the project's local repository, or from the upstream's `refs/pull/<n>/head` when the local branch is not at the head GitHub has, checks it out and prints `review/pr-<n> at <sha> (<head>)`; refused in the project's own checkout |
+| `hive review checkout <n>` | inside a job clone: fetches the pull request's head onto `review/pr-<n>` from the project's local repository (its branch, or its remote-tracking ref `refs/remotes/<remote>/<head>` when that holds the head GitHub has, as after a refresh), or from the upstream's `refs/pull/<n>/head` when neither is at the head GitHub has, checks it out and prints `review/pr-<n> at <sha> (<head>)`; refused in the project's own checkout |
 | `hive review merge <n> [--by owner]` | merges on the forge (`gh pr merge --merge --delete-branch`; the branch is kept while another open pull request is based on it) as the account that works for the repository and prints `Merged #<n> (<url>) as <by>`; refuses, whoever asks, a head that moved since the review was queued, a draft, a failing or pending check and a merge GitHub blocks (`mergeStateStatus` `DIRTY`, `BLOCKED`, `BEHIND`), with the reason and no `review.failed`; refuses when reasons exist unless `--by owner` (`--by` takes no other value), which is what the hub's **Merge** button comes to. `--by owner` is the answer to a hand-off, so it is accepted after `review.owner` and after `review.changes` as well as before any verdict; a merged pull request takes no second one. Records `review.merged`, or `review.failed` when `gh` could not merge; the reviewer's merge (not `--by owner`) that meets only running checks, or a 5xx, internal error, rate limit or dropped connection from GitHub (on the merge or on the read before it), keeps the verdict as `review.merge-wait` and the daemon merges it later ([When an approved merge waits](#when-an-approved-merge-waits)) |
-| `hive review changes <n> --note "…"` | asks for the changes on GitHub, queues the follow-up job and records `review.changes`; `--note` is required, since it becomes the follow-up's brief |
+| `hive review changes <n> --note "…" [--by owner]` | asks for the changes on GitHub, queues the follow-up job and records `review.changes`; `--note` is required, since it becomes the follow-up's brief; `--by owner` (`--by` takes no other value) is your answer to a hand-over, accepted after `review.owner` and `review.failed` as well as before any verdict; run from a terminal outside any job (no `HIVE_JOB`) it is yours without the flag |
 | `hive review owner <n> --note "…"` | comments the findings on the pull request and hands it to you: `review.owner`, a question on the project's board, a message on the task; `--note` is required |
 
 The forge calls go through `gh` with the account that works for the

@@ -702,7 +702,7 @@ pub(crate) fn review_brief(
         "1. `hive review show {n}` - the title, body, changed files and the reasons above."
     ));
     b.push(format!(
-        "2. `hive review checkout {n}` - puts this clone on `{}`, the pull request's head.",
+        "2. `hive review checkout {n}` - puts this clone on `{}`, the pull request's head. When it cannot, it records this review's verdict itself (`review.again`: a fresh review is queued, the owner is not asked); finish the job with what it said and give no other verdict.",
         review_branch(n)
     ));
     b.push("3. Run the project's check. A red check is never merged.".into());
@@ -808,17 +808,113 @@ fn actions_after(
 
 /// How many review jobs were queued for the pull request at its current
 /// head (`review.queued` events carrying that sha; those without a sha
-/// count when the head is unknown).
+/// count when the head is unknown). A review whose job could not check the
+/// head out ended with its own `review.again` (`checkout`): that is no
+/// failed reading of the pull request, and it never counts towards the
+/// hand-over to the owner.
 fn attempts_at(q: &(impl crate::util::Querier + ?Sized), slug: &str, pr: &OpenPr) -> i64 {
     let rows = crate::util::query_rows(
         q,
-        "SELECT COALESCE(json_extract(detail, '$.sha'), '') AS sha FROM events WHERE subject = ? AND action = 'review.queued' AND json_extract(detail, '$.number') = ?",
+        "SELECT COALESCE(json_extract(detail, '$.sha'), '') AS sha, COALESCE(json_extract(detail, '$.job'), '') AS job FROM events WHERE subject = ? AND action = 'review.queued' AND json_extract(detail, '$.number') = ?",
         &[&slug, &pr.number],
     )
     .unwrap_or_default();
+    let requeued: std::collections::BTreeSet<String> = crate::util::query_rows(
+        q,
+        "SELECT COALESCE(json_extract(detail, '$.job'), '') AS job FROM events WHERE subject = ? AND action = 'review.again' AND json_extract(detail, '$.number') = ? AND json_extract(detail, '$.checkout') = 1",
+        &[&slug, &pr.number],
+    )
+    .unwrap_or_default()
+    .iter()
+    .map(|r| r.str("job"))
+    .filter(|j| !j.is_empty())
+    .collect();
     rows.iter()
         .filter(|r| pr.sha.is_empty() || r.str("sha").is_empty() || r.str("sha") == pr.sha)
+        .filter(|r| !requeued.contains(&r.str("job")))
         .count() as i64
+}
+
+/// The review job running this command (`HIVE_JOB`) when it is the one
+/// queued for pull request `number` of `slug`.
+pub(crate) fn running_review_job(s: &hive_store::Store, slug: &str, number: i64) -> Option<Row> {
+    let id = std::env::var("HIVE_JOB").unwrap_or_default();
+    if id.trim().is_empty() {
+        return None;
+    }
+    let conn = s.conn().ok()?;
+    let job = crate::jobs::job_row(&conn, id.trim().to_string());
+    (is_review_job(&job) && job.str("source") == source_of(slug, number)).then_some(job)
+}
+
+/// A review job that could not put the pull request's head in its clone
+/// (`hive review checkout`) ends with this verdict of its own:
+/// `review.again` with `checkout: true`, the job and the error. The pull
+/// request is open for review again at the same head, the next pass queues
+/// a fresh review, and the attempt is not counted as a failed review
+/// ([`attempts_at`]): a clone that cannot fetch is the harness's trouble,
+/// never a reason to hand the pull request to the owner. Only the pull
+/// request's own review job (`HIVE_JOB`) records it, and only while the
+/// pull request is open for review; returns whether it did.
+pub(crate) fn requeue_after_checkout(
+    s: &hive_store::Store,
+    slug: &str,
+    view: &PrView,
+    error: &str,
+    actor: &str,
+    now: &str,
+) -> bool {
+    let Some(job) = running_review_job(s, slug, view.number) else {
+        return false;
+    };
+    let Some((pr, action)) = s.conn().ok().and_then(|q| pr_state(&q, slug, view.number)) else {
+        return false;
+    };
+    if action != "land.pr" {
+        return false;
+    }
+    let head = if view.head_sha.is_empty() {
+        pr.sha.clone()
+    } else {
+        view.head_sha.clone()
+    };
+    event(
+        s,
+        now,
+        actor,
+        AGAIN_ACTION,
+        slug,
+        json!({"project": slug, "number": pr.number, "url": pr.url, "head_sha": head,
+            "was": pr.sha, "checkout": true, "job": job.str("id"),
+            "note": format!("the review job could not check out the pull request's head: {}", hive_cred::redact(error, &[]))}),
+    );
+    true
+}
+
+/// Whether the newest state event of pull request `number` is a
+/// `review.again` the review job `job` recorded because it could not check
+/// the head out: that job has given its verdict.
+pub(crate) fn requeued_by(
+    q: &(impl crate::util::Querier + ?Sized),
+    slug: &str,
+    number: i64,
+    job: &str,
+) -> bool {
+    crate::util::query_rows(
+        q,
+        &format!(
+            "SELECT action, detail FROM events WHERE subject = ? AND action IN {STATE_ACTIONS} AND json_extract(detail, '$.number') = ? ORDER BY seq DESC LIMIT 1"
+        ),
+        &[&slug, &number],
+    )
+    .unwrap_or_default()
+    .first()
+    .is_some_and(|r| {
+        let d: Value = serde_json::from_str(&r.str("detail")).unwrap_or(Value::Null);
+        r.str("action") == AGAIN_ACTION
+            && d["checkout"].as_bool() == Some(true)
+            && d["job"].as_str() == Some(job)
+    })
 }
 
 fn event(s: &hive_store::Store, now: &str, actor: &str, action: &str, slug: &str, detail: Value) {
@@ -2221,7 +2317,7 @@ fn settle_finished(
         slug,
         pr.number,
         queued_seq,
-        "('review.merged', 'review.changes', 'review.owner', 'review.failed', 'review.merge-wait')",
+        "('review.merged', 'review.changes', 'review.owner', 'review.failed', 'review.merge-wait', 'review.again')",
     )
     .is_empty()
     {
@@ -2545,6 +2641,37 @@ pub(crate) fn checkout_into(
             .to_string();
         }
     }
+    if !root.is_empty()
+        && !view.head.is_empty()
+        && !view.head_sha.is_empty()
+        && have != view.head_sha
+        && let Some(tracking) = tracking_at(&root, &view.head, &view.head_sha)
+    {
+        // The local branch is behind a push the daemon made by url (a
+        // refresh that merged the base in): the checkout's remote-tracking
+        // ref holds the head, and the job needs no upstream for it.
+        let fetched = crate::util::git_timeout(
+            dir,
+            Duration::from_secs(120),
+            &[
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                &root,
+                &format!("+{tracking}:refs/heads/{branch}"),
+            ],
+        );
+        if fetched.ok() {
+            have = crate::util::git_timeout(
+                dir,
+                Duration::from_secs(10),
+                &["rev-parse", &format!("refs/heads/{branch}")],
+            )
+            .stdout
+            .trim()
+            .to_string();
+        }
+    }
     if have.is_empty() || (!view.head_sha.is_empty() && have != view.head_sha) {
         let url = upstream_url(project, &view.url);
         if url.is_empty() {
@@ -2597,6 +2724,31 @@ pub(crate) fn checkout_into(
         ));
     }
     Ok(have)
+}
+
+/// The checkout's remote-tracking ref of `head` (`refs/remotes/<remote>/
+/// <head>`, any remote) that is at `sha`, when one is.
+fn tracking_at(root: &str, head: &str, sha: &str) -> Option<String> {
+    crate::util::git_timeout(
+        root,
+        Duration::from_secs(10),
+        &[
+            "for-each-ref",
+            "--format=%(objectname) %(refname)",
+            "refs/remotes/",
+        ],
+    )
+    .stdout
+    .lines()
+    .filter_map(|l| l.trim().split_once(' '))
+    .find(|(oid, name)| {
+        *oid == sha
+            && name
+                .strip_prefix("refs/remotes/")
+                .and_then(|r| r.split_once('/'))
+                .is_some_and(|(_, b)| b == head)
+    })
+    .map(|(_, name)| name.to_string())
 }
 
 /// The url the pull request's upstream is fetched from: the default
@@ -3384,6 +3536,74 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    /// TASK-147: a review job that cannot check the pull request out ends
+    /// with its own verdict, `review.again` (`checkout`): the next pass
+    /// queues a fresh review of the same head, and however often that
+    /// happens the pull request is never handed to the owner for it.
+    #[test]
+    fn a_review_that_cannot_check_out_queues_the_review_again_never_the_owner() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let (_bin, _path, _log, _view) = fake_gh();
+        let s = new_store();
+        let (proj, _repo, _bare) = push_fixture(&s);
+        land_pr(&s, 7, "job", "", "JOB-a");
+        let tend = |s: &hive_store::Store| tend_reviews(s, std::slice::from_ref(&proj), TEST_NOW);
+        let view = view_of(7, "hive/worker/JOB-a", &[("src/a.rs", 5, 2)]);
+
+        // Outside the pull request's review job nothing is recorded.
+        assert!(!requeue_after_checkout(
+            &s, "proj", &view, "boom", "xenon", TEST_NOW
+        ));
+        for round in 1..=3 {
+            tend(&s);
+            let jobs = jobs_of(&s, "review");
+            assert_eq!(jobs.len(), round, "one fresh review per round");
+            let job = jobs
+                .iter()
+                .find(|j| j.str("status") == "queued")
+                .expect("a queued review")
+                .str("id");
+            {
+                let _job = hive_testutil::setenv("HIVE_JOB", &job);
+                assert!(requeue_after_checkout(
+                    &s,
+                    "proj",
+                    &view,
+                    "fetch of pull/7/head failed: refused (ADR-041 D4)",
+                    "xenon",
+                    TEST_NOW
+                ));
+                let conn = s.conn().unwrap();
+                assert!(requeued_by(&conn, "proj", 7, &job));
+            }
+            exec1(
+                &s,
+                "UPDATE jobs SET status = 'done', result = 'SUMMARY: could not check out' WHERE id = ?",
+                &[&job],
+            );
+            let lines = tend(&s);
+            assert!(
+                lines.iter().any(|l| l.contains("#7 queued for review")),
+                "round {round}: {lines:?}"
+            );
+        }
+        let again = events(&s, AGAIN_ACTION);
+        assert_eq!(again.len(), 3);
+        assert_eq!(again[0]["checkout"], true);
+        assert_eq!(again[0]["head_sha"], "abc123");
+        assert!(
+            again[0]["note"]
+                .as_str()
+                .unwrap()
+                .contains("could not check out"),
+            "{again:?}"
+        );
+        assert!(events(&s, "review.failed").is_empty());
+        assert!(events(&s, "review.owner").is_empty());
+        assert_eq!(jobs_of(&s, "review").len(), 4, "a fourth review is queued");
     }
 
     #[test]
