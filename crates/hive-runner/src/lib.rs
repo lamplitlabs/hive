@@ -17,6 +17,7 @@ pub mod bulk;
 pub mod capacity;
 pub(crate) mod card_proof;
 pub mod checkout;
+pub(crate) mod class_red;
 pub mod commands;
 pub mod compute;
 pub mod daemon;

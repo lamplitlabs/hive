@@ -43,6 +43,34 @@ fn one_dyn(q: &Querier, query: &str, args: &[&dyn rusqlite::ToSql]) -> Row {
 
 pub(crate) const OCCUPIED_JOB_SQL: &str = "(k.status = 'leased' OR (k.status != 'queued' AND EXISTS (SELECT 1 FROM runs r WHERE r.job_id = k.id AND r.project = k.project AND r.agent = k.lease_agent AND r.status = 'running')))";
 
+/// The machine a job `alias` holds a slot on: the executor of its running
+/// run, else the one its last lease was taken for (`job.lease` detail
+/// `executor`), else '' (this machine).
+pub(crate) fn job_machine_sql(alias: &str) -> String {
+    format!(
+        "COALESCE((SELECT r.executor FROM runs r WHERE r.job_id = {alias}.id AND r.status = 'running' ORDER BY r.started_at DESC LIMIT 1), (SELECT json_extract(e.detail, '$.executor') FROM events e WHERE e.action = 'job.lease' AND e.subject = {alias}.id AND json_valid(e.detail) ORDER BY e.seq DESC LIMIT 1), '')"
+    )
+}
+
+/// [`OCCUPIED_JOB_SQL`] narrowed to the jobs that hold a slot on
+/// `executor` ('' is this machine). A project's lanes are a machine's: its
+/// checks share that machine's verify lock and its slots. Before this, two
+/// runs of the brain on a rented Linux machine held two of the project's
+/// lanes here, and the owner's fix waited "lanes full" for an hour with
+/// local slots free (TASK-144).
+pub(crate) fn occupied_on_sql(executor: &str) -> String {
+    let machine = job_machine_sql("k");
+    let local = crate::executor::LOCAL_EXECUTOR;
+    if executor.is_empty() || executor == local {
+        format!("({OCCUPIED_JOB_SQL} AND {machine} IN ('', '{local}'))")
+    } else {
+        format!(
+            "({OCCUPIED_JOB_SQL} AND {machine} = '{}')",
+            executor.replace('\'', "''")
+        )
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct LeaseOpts {
     pub project: String,
@@ -481,8 +509,9 @@ pub(crate) fn occupied_work_jobs(s: &hive_store::Store, project: &str) -> i64 {
         one_dyn(
             &conn,
             &format!(
-                "SELECT COUNT(*) AS n FROM jobs k WHERE k.project = ? AND k.kind IN ({}) AND {OCCUPIED_JOB_SQL}",
-                work_kinds_sql()
+                "SELECT COUNT(*) AS n FROM jobs k WHERE k.project = ? AND k.kind IN ({}) AND {}",
+                work_kinds_sql(),
+                occupied_on_sql(crate::executor::LOCAL_EXECUTOR)
             ),
             &[&project],
         )
@@ -625,8 +654,12 @@ pub(crate) fn lease_job(
         // kept back (keep_slot) and the verify lock's bound
         // (owner_work_bound), both below. The share still spreads the fleet's
         // work, plans it (plan.rs) and gates research.
+        // Every count below is of the machine the lease is for
+        // (occupied_on_sql): a run on another machine uses that machine's
+        // slots and its verify lock, not these (TASK-144).
+        let occupied_here = occupied_on_sql(&o.executor);
         let mut sql = format!(
-            "SELECT j.* FROM jobs j JOIN projects p ON p.slug = j.project WHERE j.status = 'queued' AND p.status = 'active' AND ({OWNER_DRIVEN_SQL} OR (SELECT COUNT(*) FROM jobs k WHERE k.project = j.project AND {OCCUPIED_JOB_SQL}) < ?)"
+            "SELECT j.* FROM jobs j JOIN projects p ON p.slug = j.project WHERE j.status = 'queued' AND p.status = 'active' AND ({OWNER_DRIVEN_SQL} OR (SELECT COUNT(*) FROM jobs k WHERE k.project = j.project AND {occupied_here}) < ?)"
         );
         let mut vals: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(limit)];
         // A project whose checks take turns runs only as many of the fleet's
@@ -640,7 +673,7 @@ pub(crate) fn lease_job(
         let work_kinds = work_kinds_sql();
         for (slug, lanes) in &narrowed {
             sql.push_str(&format!(
-                " AND NOT (j.project = ? AND j.kind IN ({work_kinds}) AND NOT {OWNER_DRIVEN_SQL} AND (SELECT COUNT(*) FROM jobs k WHERE k.project = j.project AND k.kind IN ({work_kinds}) AND {OCCUPIED_JOB_SQL}) >= ?)"
+                " AND NOT (j.project = ? AND j.kind IN ({work_kinds}) AND NOT {OWNER_DRIVEN_SQL} AND (SELECT COUNT(*) FROM jobs k WHERE k.project = j.project AND k.kind IN ({work_kinds}) AND {occupied_here}) >= ?)"
             ));
             vals.push(Box::new(slug.clone()));
             vals.push(Box::new(lanes.lanes));
@@ -653,7 +686,7 @@ pub(crate) fn lease_job(
         // at once would each wait out the others' 23-minute checks.
         if let Some(bound) = owner_work_bound(s) {
             sql.push_str(&format!(
-                " AND NOT (j.kind IN ({work_kinds}) AND {OWNER_DRIVEN_SQL} AND (SELECT COUNT(*) FROM jobs k WHERE k.project = j.project AND k.kind IN ({work_kinds}) AND {OCCUPIED_JOB_SQL}) >= ?)"
+                " AND NOT (j.kind IN ({work_kinds}) AND {OWNER_DRIVEN_SQL} AND (SELECT COUNT(*) FROM jobs k WHERE k.project = j.project AND k.kind IN ({work_kinds}) AND {occupied_here}) >= ?)"
             ));
             vals.push(Box::new(bound));
         }
@@ -663,7 +696,7 @@ pub(crate) fn lease_job(
         // would have waited one out.
         if o.keep_slot {
             sql.push_str(&format!(
-                " AND NOT (j.kind IN ({work_kinds}) AND {OWNER_DRIVEN_SQL} AND (SELECT COUNT(*) FROM jobs k WHERE k.project = j.project AND {OCCUPIED_JOB_SQL}) >= ?)"
+                " AND NOT (j.kind IN ({work_kinds}) AND {OWNER_DRIVEN_SQL} AND (SELECT COUNT(*) FROM jobs k WHERE k.project = j.project AND {occupied_here}) >= ?)"
             ));
             vals.push(Box::new(limit));
         }
@@ -788,6 +821,14 @@ pub(crate) fn lease_job(
                         .join(",")
                 ));
             }
+            // A project whose check an end check found red on the base on
+            // this class of machine sends it no code job: nothing it did
+            // there could land (class_red.rs, TASK-144).
+            sql.push_str(&crate::class_red::lease_filter_sql(
+                q,
+                &crate::executor::executor_row(s, &o.executor),
+                &now,
+            ));
         }
         // `brain.code none` (ADR-070 rule 6): this machine clones no
         // project, so it takes only the kinds that plan from the board; the
@@ -855,7 +896,7 @@ pub(crate) fn lease_job(
             &agent,
             "job.lease",
             &r.str("id"),
-            json!({"until": until, "wait_s": wait_s}),
+            json!({"until": until, "wait_s": wait_s, "executor": o.executor}),
         );
         // Taking a job is a sign of life; the agent's heartbeat starts with the lease.
         if let Ok(at) = chrono::DateTime::parse_from_rfc3339(&now) {
@@ -1271,6 +1312,156 @@ mod tests {
         .unwrap();
         record_landing_verify(s, "proj", "2026-09-01T00:00:00Z", 600);
         assert_eq!(super::project_lanes(s, "proj").lanes, 1);
+    }
+
+    #[test]
+    fn a_project_red_on_the_base_of_a_machine_class_sends_it_no_code_job() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        crate::capacity::pin_per_project(&s, 4);
+        for name in ["aurora", "borealis", "cinder", "dawn", "ember"] {
+            join(&s, name);
+        }
+        let conn = s.conn().unwrap();
+        for (name, arch) in [
+            ("hands-a", "amd64"),
+            ("hands-b", "amd64"),
+            ("hands-c", "arm64"),
+        ] {
+            crate::util::exec1(
+                &conn,
+                "INSERT INTO executors (name, kind, address, workdir, status, created_at, os, arch) VALUES (?, 'ssh', 'hive@x', '/srv/hive', 'active', ?, 'linux', ?)",
+                &[&name, &crate::test_helpers::TEST_NOW, &arch],
+            );
+        }
+        let task = queue(&s, "proj", "task", "linux-work", 5);
+        let answer = queue(&s, "proj", "answer", "answer:proj:x", 1);
+        let lease = |agent: &str, executor: &str, job: &str| {
+            super::lease_job(
+                &s,
+                agent.into(),
+                crate::test_helpers::TEST_NOW.into(),
+                super::LeaseOpts {
+                    any_proj: true,
+                    job_id: job.into(),
+                    executor: executor.into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        // The end check of a run on hands-a found the base red there.
+        crate::class_red::mark_red(
+            &*conn,
+            crate::test_helpers::TEST_NOW,
+            "proj",
+            &crate::executor::executor_row(&s, "hands-a"),
+            "job-old",
+            "run-old",
+            "abc",
+        );
+        // No machine of that class takes the project's code job...
+        assert!(lease("aurora", "hands-b", &task).0.is_empty());
+        // ...a job that only reads still goes there...
+        assert_eq!(lease("aurora", "hands-b", &answer).str("id"), answer);
+        // ...and a machine of another class or this one takes the code job.
+        assert_eq!(lease("borealis", "hands-c", &task).str("id"), task);
+        crate::util::exec1(
+            &conn,
+            "UPDATE jobs SET status = 'queued', lease_agent = '', lease_until = '' WHERE id = ?",
+            &[&task],
+        );
+        assert_eq!(
+            lease("cinder", crate::executor::LOCAL_EXECUTOR, &task).str("id"),
+            task
+        );
+        crate::util::exec1(
+            &conn,
+            "UPDATE jobs SET status = 'queued', lease_agent = '', lease_until = '' WHERE id = ?",
+            &[&task],
+        );
+        // The job that fixes the check there names the system it needs.
+        let fix = queue(&s, "proj", "task", "task:TASK-138:linux-red", 9);
+        crate::util::exec1(
+            &conn,
+            "UPDATE jobs SET needs = 'linux' WHERE id = ?",
+            &[&fix],
+        );
+        assert_eq!(lease("dawn", "hands-b", &fix).str("id"), fix);
+        // A check that passes there again opens the class to the project.
+        crate::class_red::mark_green(
+            &*conn,
+            crate::test_helpers::TEST_NOW,
+            "proj",
+            &crate::executor::executor_row(&s, "hands-b"),
+            &fix,
+            "run-fix",
+            "def",
+        );
+        assert_eq!(lease("ember", "hands-b", &task).str("id"), task);
+    }
+
+    #[test]
+    fn a_run_on_another_machine_leaves_this_machines_lanes_open() {
+        // 2026-11-26: two runs of the brain on a rented Linux machine held
+        // two of the project's lanes here, and the fix of pull request 278
+        // waited "lanes full" for an hour with local slots free (TASK-144).
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        one_narrowed_lane(&s);
+        for name in ["aurora", "borealis", "cinder"] {
+            join(&s, name);
+        }
+        let away = queue(&s, "proj", "improve", "away-work", 9);
+        let here = queue(&s, "proj", "improve", "here-work", 5);
+        let third = queue(&s, "proj", "improve", "third-work", 1);
+        let lease = |agent: &str, executor: &str| {
+            super::lease_job(
+                &s,
+                agent.into(),
+                crate::test_helpers::TEST_NOW.into(),
+                super::LeaseOpts {
+                    any_proj: true,
+                    executor: executor.into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        // The first work job goes to the rented machine and runs there.
+        let first = lease("aurora", "hands-1");
+        assert_eq!(first.str("id"), away, "{first:?}");
+        crate::util::exec1(
+            &s.conn().unwrap(),
+            "INSERT INTO runs (id, job_id, agent, project, started_at, status, executor) VALUES ('run-away', ?, 'aurora', 'proj', ?, 'running', 'hands-1')",
+            &[&away, &crate::test_helpers::TEST_NOW],
+        );
+        // Its lane is that machine's: this machine's one lane is still open.
+        let second = lease("borealis", crate::executor::LOCAL_EXECUTOR);
+        assert_eq!(second.str("id"), here, "{second:?}");
+        // The lane here is taken now; the rented machine's is too.
+        let none_here = lease("cinder", crate::executor::LOCAL_EXECUTOR);
+        assert!(none_here.0.is_empty(), "{none_here:?}");
+        let none_there = lease("cinder", "hands-1");
+        assert!(none_there.0.is_empty(), "{none_there:?}");
+        // A leased job whose run has not started yet holds the machine it
+        // was leased for.
+        crate::util::exec1(
+            &s.conn().unwrap(),
+            "UPDATE runs SET status = 'done' WHERE id = 'run-away'",
+            &[],
+        );
+        crate::util::exec1(
+            &s.conn().unwrap(),
+            "UPDATE jobs SET status = 'done' WHERE id = ?",
+            &[&away],
+        );
+        assert_eq!(super::occupied_work_jobs(&s, "proj"), 1);
+        let on_hands = lease("cinder", "hands-1");
+        assert_eq!(on_hands.str("id"), third, "{on_hands:?}");
+        assert_eq!(super::occupied_work_jobs(&s, "proj"), 1);
     }
 
     #[test]

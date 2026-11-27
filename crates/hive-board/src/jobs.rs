@@ -355,6 +355,75 @@ fn refuse_closed_task_job(conn: &Connection, job: &Job, what: &str) -> Result<()
 /// Sets what kind of machine a queued job must run on (`hive job needs
 /// JOB_ID macos,xcode`; `-` clears it so any machine takes it). A job that
 /// already runs keeps its machine.
+/// The event `hive job stop` writes against a running run (subject: the run
+/// id; detail: `job`, `executor`, `requeue`). The run's watcher, on whatever
+/// machine the run is, reads it and stops the run as the owner's cancel does.
+pub const RUN_STOP_ACTION: &str = "run.stop";
+
+/// What [`stop_job`] asked for.
+#[derive(Debug, Clone, Serialize)]
+pub struct StopResult {
+    pub job: String,
+    pub run: String,
+    pub executor: String,
+    pub requeue: bool,
+}
+
+/// Asks the running run of `job_id` to stop, wherever it runs: this machine,
+/// a paired or a rented one (TASK-144). Before this a run on a rented
+/// machine could not be stopped: `hive harness cancel` knows the sessions
+/// of this machine only, `hive job needs` refuses a leased job and `hive
+/// executor drain` lets the runs finish. With `requeue` the job goes back
+/// to the queue, its attempt not counted; else it ends cancelled.
+pub fn stop_job(
+    s: &hive_store::Store,
+    job_id: &str,
+    requeue: bool,
+    actor: &str,
+) -> Result<StopResult> {
+    let conn = s.conn()?;
+    let job = job_by_id_conn(&conn, job_id)?
+        .ok_or_else(|| refuse(2, format!("No job {}", py_repr(job_id))))?;
+    let run: Option<(String, String)> = conn
+        .query_row(
+            "SELECT id, executor FROM runs WHERE job_id = ? AND status = 'running' ORDER BY started_at DESC, id DESC LIMIT 1",
+            [&job.id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let Some((run, executor)) = run else {
+        let hint = match job.status.as_str() {
+            "queued" | "blocked" => format!(
+                "; `hive job finish {} cancelled` cancels it before it starts",
+                job.id
+            ),
+            "leased" => "; its run is starting, try again in a moment".to_string(),
+            _ => String::new(),
+        };
+        return Err(refuse(
+            2,
+            format!(
+                "Job {} is {} with no run in flight{hint}",
+                job.id, job.status
+            ),
+        ));
+    };
+    event_conn(
+        &conn,
+        s,
+        actor,
+        RUN_STOP_ACTION,
+        &run,
+        hive_store::Detail::json(json!({"job": job.id, "executor": executor, "requeue": requeue}))?,
+    )?;
+    Ok(StopResult {
+        job: job.id,
+        run,
+        executor,
+        requeue,
+    })
+}
+
 pub fn set_job_needs(s: &hive_store::Store, job_id: &str, needs: &str, actor: &str) -> Result<Job> {
     let conn = s.conn()?;
     let job = job_by_id_conn(&conn, job_id)?
@@ -4016,5 +4085,53 @@ mod tests {
             None,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn job_stop_asks_the_running_run_wherever_it_runs() {
+        let (_dir, s, _p) = fixture();
+        let waiting = queue_job(&s, "waits", "");
+        let err = stop_job(&s, &waiting.id, false, "human").err().unwrap();
+        assert_eq!(code(Some(&err)), 2);
+        assert!(
+            what_any(&err).contains("no run in flight") && what_any(&err).contains("cancelled"),
+            "{}",
+            what_any(&err)
+        );
+        let away = queue_job(&s, "away", "");
+        lease_by_hand(&s, &away.id);
+        let lease_agent: String = s
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT lease_agent FROM jobs WHERE id = ?",
+                [&away.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        s.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO runs (id, job_id, agent, project, started_at, status, executor) VALUES ('run-away', ?, ?, 'demo', ?, 'running', 'hands-cr-1')",
+                params![away.id, lease_agent, TEST_NOW],
+            )
+            .unwrap();
+        let r = stop_job(&s, &away.id, true, "human").unwrap();
+        assert_eq!(
+            (r.run.as_str(), r.executor.as_str(), r.requeue),
+            ("run-away", "hands-cr-1", true)
+        );
+        let detail: String = s
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT detail FROM events WHERE action = ? AND subject = 'run-away'",
+                [RUN_STOP_ACTION],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let detail: Value = serde_json::from_str(&detail).unwrap();
+        assert_eq!(detail["requeue"], Value::Bool(true));
+        assert_eq!(detail["job"], Value::String(away.id.clone()));
     }
 }
