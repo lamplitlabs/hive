@@ -123,6 +123,10 @@ pub struct TaskDelivery {
     /// handed the pull request over, its review failed, or the reviewer's
     /// approved merge waits.
     pub can_merge: bool,
+    /// The head commit Hive holds for the task's pull request
+    /// ([`PrState::sha`]): the one the owner's Merge is for.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub head_sha: String,
 }
 
 /// Where one of the project's pull requests stands, whatever it carries: a
@@ -146,6 +150,11 @@ pub struct PrState {
     pub conversation: String,
     pub head: String,
     pub base: String,
+    /// The head commit Hive holds for the pull request: the one its newest
+    /// `land.pr` pushed (`to`), a waiting merge found on the forge
+    /// (`review.again`'s `head_sha`), or a review was queued at
+    /// (`review.queued`'s `sha`). The owner's Merge is for this commit.
+    pub sha: String,
     /// `pr_open`, `in_review`, `needs_owner`, `merge_asked`,
     /// `merge_waiting`, `changes_requested`, `review_failed`, `merged` or
     /// `closed` (closed
@@ -236,6 +245,7 @@ pub fn pr_state_of(events: &[LandEvent]) -> PrState {
                 ] {
                     keep(field, key);
                 }
+                keep(&mut p.sha, "to");
                 if p.opened_at.is_empty() {
                     p.opened_at = e.at.clone();
                 }
@@ -259,6 +269,7 @@ pub fn pr_state_of(events: &[LandEvent]) -> PrState {
                 p.follow_up.clear();
             }
             "review.queued" => {
+                keep(&mut p.sha, "sha");
                 p.reasons = list_of(&v, "reasons");
                 p.state = if p.reasons.is_empty() {
                     "in_review"
@@ -303,6 +314,7 @@ pub fn pr_state_of(events: &[LandEvent]) -> PrState {
             // A waiting merge whose head moved on the forge: nothing was
             // merged, and the new head is reviewed afresh.
             "review.again" => {
+                keep(&mut p.sha, "head_sha");
                 p.state = "pr_open".into();
                 p.reasons.clear();
                 p.note = text_of(&v, "note");
@@ -389,13 +401,24 @@ pub fn pr_states_for(s: &hive_store::Store, project: &str) -> Result<Vec<PrState
 /// The owner asks the daemon to merge a pull request the reviewer handed
 /// over. The daemon's next pass merges it on GitHub as the owner and
 /// answers with `review.merged`; the state reads `merge_asked` meanwhile.
+/// The ask stores the head the Merge was pressed for (`sha`): `head`, the
+/// [`PrState::sha`] the caller judged the press on, or - empty - the one
+/// Hive holds as the ask is written. The daemon lets the ask lapse when it
+/// holds another head, whichever of the two events was written first.
 pub fn ask_merge(
     s: &hive_store::Store,
     project: &str,
     number: i64,
     task: &str,
+    head: &str,
     actor: &str,
 ) -> Result<()> {
+    let head = if head.is_empty() {
+        let conn = s.conn()?;
+        pr_state_of(&pr_events(&conn, project, number)?).sha
+    } else {
+        head.to_string()
+    };
     let mut detail = serde_json::json!({
         "project": project,
         "number": number,
@@ -403,6 +426,9 @@ pub fn ask_merge(
     });
     if !task.is_empty() {
         detail["task"] = serde_json::Value::String(task.to_string());
+    }
+    if !head.is_empty() {
+        detail["sha"] = serde_json::Value::String(head);
     }
     hive_bus::emit(s, actor, MERGE_ASKED, project, detail)?;
     Ok(())
@@ -689,6 +715,7 @@ pub fn delivery_for(s: &hive_store::Store, task_id: &str) -> Result<TaskDelivery
                     d.note = pr.note;
                     d.follow_up = pr.follow_up;
                     d.can_merge = pr.can_merge;
+                    d.head_sha = pr.sha;
                     return Ok(d);
                 }
                 // Closed unmerged under a number-only event: the task is

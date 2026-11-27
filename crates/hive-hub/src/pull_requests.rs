@@ -98,9 +98,14 @@ impl Handler {
             write_error(w, 409, "Nothing to merge".to_string(), why, fix);
             return;
         }
-        if let Err(e) =
-            hive_tasks::ask_merge(store, slug, number, &pr.task, hive_store::HUMAN_AGENT)
-        {
+        if let Err(e) = hive_tasks::ask_merge(
+            store,
+            slug,
+            number,
+            &pr.task,
+            &pr.sha,
+            hive_store::HUMAN_AGENT,
+        ) {
             addition_failure(w, e.to_string());
             return;
         }
@@ -151,6 +156,7 @@ impl Handler {
             &project,
             delivery.number,
             id,
+            &delivery.head_sha,
             hive_store::HUMAN_AGENT,
         ) {
             addition_failure(w, e.to_string());
@@ -331,7 +337,8 @@ mod tests {
         let detail: Value = serde_json::from_str(&asks[0].2).unwrap();
         assert_eq!(
             detail,
-            json!({"project": "one", "number": 7, "action": "merge", "task": id})
+            json!({"project": "one", "number": 7, "action": "merge", "task": id, "sha": "abc123"}),
+            "the ask names the head the owner pressed Merge for"
         );
         // Asked once; the daemon answers before another ask is taken.
         let (status, result) = merge();
