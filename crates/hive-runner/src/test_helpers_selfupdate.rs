@@ -140,6 +140,8 @@ pub(crate) fn self_update_fixture() -> (
             local_inflight: 0,
             governor: None,
             refused_queued: String::new(),
+            restart_armed: String::new(),
+            restart_max_minutes: 0,
             version: String::new(),
             target: String::new(),
         },

@@ -8,7 +8,12 @@
 //! hold (`daemon::hold_for_restart`, `daemon.restart_hold`) as a restart
 //! asked for now holds them, so the handover waits only for runs past their
 //! harness; the console's drain without "now" waits for every run, as the
-//! owner chose. [`Restart`] holds the handover's state for the daemon
+//! owner chose. The whole handover is bounded (`daemon.restart_max_minutes`,
+//! [`restart_max`]): each owner's run started while a restart is pending
+//! anchors the window again, so a queue of the owner's work that never
+//! empties held a restart armed at 05:42Z on 2026-11-26 past noon; once the
+//! bound is up nothing new starts, the owner's work included, and the daemon
+//! leaves as the drain's end does. [`Restart`] holds the handover's state for the daemon
 //! loop; the measures its decisions rest on - how long a run of each kind
 //! is expected to take, which kinds fit the window, which runs the window
 //! follows and what the notices say - are the functions beside it, tested
@@ -57,6 +62,10 @@ pub(crate) struct Restart {
     /// the runs in flight have ended or daemon.restart_drain_minutes is up, so
     /// nothing is held or lost.
     console_drain: bool,
+    /// The bound on the whole handover (`daemon.restart_max_minutes`), read
+    /// each tick by `tend`; zero is none. The heartbeat's `until` is
+    /// `since` plus this.
+    max: Duration,
 }
 
 impl Restart {
@@ -64,6 +73,17 @@ impl Restart {
     /// is capped by daemon.hold_seconds, not the grace.
     pub(crate) fn forced(&self) -> bool {
         self.forced
+    }
+
+    /// When (store clock) the pending restart was armed; empty when none
+    /// is. The self-update build's wait for queued work the restart would
+    /// refuse counts its bound (daemon.restart_max_minutes) from here.
+    pub(crate) fn armed_at(&self) -> &str {
+        if self.pending.is_some() || self.forced {
+            &self.since
+        } else {
+            ""
+        }
     }
 
     /// Whether the owner's ask without "now" has the daemon draining.
@@ -127,6 +147,7 @@ impl Restart {
         inflight: &BTreeMap<String, Dispatch>,
         idle_log: &mut crate::idle_log::IdleLog,
     ) -> Tend {
+        self.max = restart_max(s);
         if changed {
             let drain = restart_drain(s);
             match self.pending {
@@ -159,6 +180,9 @@ impl Restart {
                         "hive changed on disk and nothing is in flight; exiting with code 3 so the service restarts it"
                             .to_string(),
                     );
+                }
+                Some(since) if bound_up(s, since) => {
+                    return Tend::Exits(bound_line(s, inflight));
                 }
                 Some(since) if since.elapsed() >= drain => {
                     let fits = kind_fits(s);
@@ -220,6 +244,9 @@ impl Restart {
                         .to_string(),
                 );
             }
+            if bound_up(s, since) {
+                return Tend::Exits(bound_line(s, inflight));
+            }
             let drain = restart_drain(s);
             if since.elapsed() >= drain {
                 return Tend::Exits(format!(
@@ -262,7 +289,11 @@ impl Restart {
         inflight: &BTreeMap<String, Dispatch>,
         dispatching: bool,
     ) -> serde_json::Value {
-        restart_beat(&self.since, inflight, &self.anchors, dispatching)
+        let mut beat = restart_beat(&self.since, inflight, &self.anchors, dispatching);
+        if let Some(until) = restart_until(&self.since, self.max) {
+            beat["until"] = serde_json::Value::String(until);
+        }
+        beat
     }
 
     /// The restart window: all kinds of run still fit it (no hold),
@@ -280,6 +311,18 @@ impl Restart {
         let Some(since) = self.pending else {
             return (None, Vec::new());
         };
+        if bound_up(s, since) {
+            // `tend` leaves on the same tick; a caller that asks first
+            // still starts nothing, the owner's work included.
+            return (
+                Some(format!(
+                    "restarting: the restart has been pending for {} (daemon.restart_max_minutes), so no new runs start; {} in flight",
+                    hive_cli::format_duration(restart_max(s)),
+                    inflight.len()
+                )),
+                Vec::new(),
+            );
+        }
         // A console drain starts nothing new: the restart is wanted,
         // not just a new build, so the runs in flight are waited out.
         if self.console_drain {
@@ -301,6 +344,14 @@ impl Restart {
             now,
             anchor_ends(s, inflight, &self.anchors, &fits),
         );
+        // Never past the bound: a fleet run admitted now must not be what
+        // the handover waits for once the bound has closed the slots.
+        let max = restart_max(s);
+        let left = if max.is_zero() {
+            left
+        } else {
+            left.min(max.saturating_sub(since.elapsed()))
+        };
         // Whole seconds, so the idle log sees one line as the countdown moves.
         let left = Duration::from_secs(left.as_secs());
         let kinds = kinds_within(&fits, left);
@@ -328,6 +379,66 @@ impl Restart {
             self.stay_since = None;
         }
     }
+}
+
+/// The bound on the whole handover (daemon.restart_max_minutes): from the
+/// moment a restart is armed, how long new runs may start at all - the
+/// drain, the stay for the owner's queued work and every owner's run that
+/// anchors the window again. Zero is no bound.
+fn restart_max(s: &hive_store::Store) -> Duration {
+    Duration::from_secs(
+        (s.setting_int("daemon.restart_max_minutes").max(0) as u64) * max_minute_secs(),
+    )
+}
+
+/// Seconds in a minute of `daemon.restart_max_minutes`: sixty, but a test
+/// of the whole daemon shortens it so a bound of one "minute" is seconds.
+#[cfg(test)]
+pub(crate) static TEST_MAX_MINUTE_SECS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(60);
+
+fn max_minute_secs() -> u64 {
+    #[cfg(test)]
+    {
+        TEST_MAX_MINUTE_SECS.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    #[cfg(not(test))]
+    {
+        60
+    }
+}
+
+/// Whether the handover armed at `since` has run past its bound.
+fn bound_up(s: &hive_store::Store, since: Instant) -> bool {
+    past_bound(since.elapsed(), restart_max(s))
+}
+
+/// Whether `elapsed` since the restart was armed is past `max` (zero: never).
+fn past_bound(elapsed: Duration, max: Duration) -> bool {
+    !max.is_zero() && elapsed >= max
+}
+
+/// The line a daemon says when the bound ends the handover: nothing new
+/// starts, the owner's work included, and it leaves once the runs in flight
+/// end or hold (daemon.restart_hold).
+fn bound_line(s: &hive_store::Store, inflight: &BTreeMap<String, Dispatch>) -> String {
+    format!(
+        "restart pending for {} (daemon.restart_max_minutes): nothing new starts, the owner's work included; exiting with code 3 after the {} run(s) in flight finish or hold, the next daemon starts the queue first",
+        hive_cli::format_duration(restart_max(s)),
+        inflight.len()
+    )
+}
+
+/// When the bound of a handover armed at `since` (ISO) is up, ISO; none
+/// without a bound or a time.
+fn restart_until(since: &str, max: Duration) -> Option<String> {
+    if max.is_zero() || since.is_empty() {
+        return None;
+    }
+    let at = crate::util::parse_iso(since).ok()?;
+    Some(crate::util::format_iso(
+        at + chrono::Duration::seconds(max.as_secs() as i64),
+    ))
 }
 
 /// How long a daemon whose binary changed on disk keeps dispatching while
@@ -1437,5 +1548,91 @@ mod tests {
             restart_note(now, &BTreeMap::new(), &anchors),
             "restarting: 0 in flight"
         );
+    }
+
+    #[test]
+    fn the_bound_ends_a_handover_the_owner_s_queue_keeps_open() {
+        let _serial = crate::test_helpers::serial();
+        let s = store_with_projects(&["proj"]);
+        crate::test_helpers_daemon::set_setting(&s, "daemon.restart_drain_minutes", "30");
+        crate::test_helpers_daemon::set_setting(&s, "daemon.restart_max_minutes", "90");
+        // Armed 89 minutes ago: the drain is long over, the owner's work is
+        // queued and its runs keep anchoring the window, so the daemon stays.
+        let mut inflight = BTreeMap::new();
+        inflight.insert(
+            "w".to_string(),
+            dispatch_of("local", "proj", "task", "task:TASK-1"),
+        );
+        queued_job(&s, "owner-next", "proj", "task", "task:TASK-2");
+        let mut r = Restart {
+            pending: Instant::now().checked_sub(Duration::from_secs(89 * 60)),
+            since: "2026-11-26T05:42:00Z".into(),
+            ..Default::default()
+        };
+        r.anchor("w", &inflight["w"].job);
+        let mut log = crate::idle_log::IdleLog::default();
+        assert!(matches!(
+            r.tend(&s, true, &inflight, &mut log),
+            Tend::Goes(_)
+        ));
+        let (hold, fits) = r.hold(&s, "2026-11-26T07:11:00Z", &inflight);
+        assert_eq!(fits, crate::jobs::owner_lane_fits(), "{hold:?}");
+        // The fleet's window never runs past what is left of the bound.
+        assert!(hold.unwrap().contains("left of the restart window"));
+        let beat = r.beat(&inflight, true);
+        assert_eq!(beat["since"], "2026-11-26T05:42:00Z");
+        assert_eq!(beat["until"], "2026-11-26T07:12:00Z");
+        // At 90 minutes the bound is up: nothing starts, the owner's work
+        // included, and the daemon leaves once the run in flight ends.
+        r.pending = Instant::now().checked_sub(Duration::from_secs(90 * 60));
+        let (hold, fits) = r.hold(&s, "2026-11-26T07:12:00Z", &inflight);
+        assert!(fits.is_empty(), "{fits:?}");
+        assert!(hold.unwrap().contains("daemon.restart_max_minutes"));
+        match r.tend(&s, true, &inflight, &mut log) {
+            Tend::Exits(line) => assert!(
+                line.starts_with("restart pending for 1h30m0s (daemon.restart_max_minutes): nothing new starts, the owner's work included"),
+                "{line}"
+            ),
+            other => panic!("{other:?}"),
+        }
+        // A console drain is bounded the same way.
+        let mut drain = Restart {
+            pending: Instant::now().checked_sub(Duration::from_secs(90 * 60)),
+            console_drain: true,
+            ..Default::default()
+        };
+        crate::test_helpers_daemon::set_setting(&s, "daemon.restart_drain_minutes", "600");
+        assert!(matches!(
+            drain.tend(&s, false, &inflight, &mut log),
+            Tend::Exits(_)
+        ));
+        // Zero is no bound: the old behaviour, the stay decides.
+        crate::test_helpers_daemon::set_setting(&s, "daemon.restart_max_minutes", "0");
+        crate::test_helpers_daemon::set_setting(&s, "daemon.restart_drain_minutes", "30");
+        r.stay_since = None;
+        assert!(matches!(
+            r.tend(&s, true, &inflight, &mut log),
+            Tend::Goes(_)
+        ));
+        assert!(r.beat(&inflight, true).get("until").is_none());
+    }
+
+    #[test]
+    fn the_bound_is_measured_from_the_arming() {
+        assert!(!past_bound(
+            Duration::from_secs(5399),
+            Duration::from_secs(5400)
+        ));
+        assert!(past_bound(
+            Duration::from_secs(5400),
+            Duration::from_secs(5400)
+        ));
+        assert!(!past_bound(Duration::from_secs(1_000_000), Duration::ZERO));
+        assert_eq!(
+            restart_until("2026-11-26T05:42:00Z", Duration::from_secs(90 * 60)).as_deref(),
+            Some("2026-11-26T07:12:00Z")
+        );
+        assert_eq!(restart_until("", Duration::from_secs(60)), None);
+        assert_eq!(restart_until("2026-11-26T05:42:00Z", Duration::ZERO), None);
     }
 }

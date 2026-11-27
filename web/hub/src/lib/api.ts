@@ -1016,6 +1016,10 @@ export interface DaemonRestart {
     job: string;
     started_at: string;
   }[];
+  // When the handover's bound (daemon.restart_max_minutes) is up: from then
+  // nothing new starts, the owner's work included. Omitted without a bound
+  // and by older daemons.
+  until?: string;
 }
 
 // The keep-awake hold (daemon.keep_awake): whether the daemon holds this

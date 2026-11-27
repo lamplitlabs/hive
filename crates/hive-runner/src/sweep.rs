@@ -2643,6 +2643,14 @@ impl Sweeper {
         if let Some(c) = SWEEP_BRANCH_RE.captures(&branch) {
             return self.job_hold(c[2].to_string());
         }
+        // Finished work a stopped check kept (unchecked.rs) waits for the
+        // job's next run to check it.
+        if let Some(c) = branch
+            .strip_suffix(crate::unchecked::UNCHECKED_SUFFIX)
+            .and_then(|b| SWEEP_BRANCH_RE.captures(b))
+        {
+            return self.job_hold(c[2].to_string());
+        }
         String::new()
     }
     pub(crate) fn sweep_branch(
