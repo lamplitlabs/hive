@@ -648,6 +648,10 @@ struct StdioTransport {
     stdin: Option<std::process::ChildStdin>,
     lines: Receiver<std::io::Result<String>>,
     stderr: Arc<Mutex<String>>,
+    /// Disconnects when the stderr collector has read the pipe to its end,
+    /// so a dead server's last words are in [`Self::stderr`] before an
+    /// error quotes them.
+    stderr_done: Receiver<()>,
     command: String,
 }
 
@@ -655,6 +659,11 @@ struct StdioTransport {
 /// closes before it is killed. Playwright shuts its browser down in that
 /// time (a kill leaves the browser and its profile behind).
 const STDIO_EXIT_GRACE: Duration = Duration::from_secs(3);
+
+/// How long a failed write or a closed output waits for the server to
+/// exit and for its stderr to be read to the end, so the error says why it
+/// died (its exit status and its own words) instead of "Broken pipe".
+const STDIO_DEATH_WAIT: Duration = Duration::from_secs(2);
 
 impl StdioTransport {
     fn spawn(server: &McpServer, wire: &Wire) -> Result<Self> {
@@ -696,7 +705,10 @@ impl StdioTransport {
         });
         let stderr = Arc::new(Mutex::new(String::new()));
         let sink = Arc::clone(&stderr);
+        let (done_tx, stderr_done) = mpsc::channel::<()>();
         thread::spawn(move || {
+            // Dropped when the pipe ends: that disconnect is the signal.
+            let _done = done_tx;
             let mut reader = BufReader::new(stderr_pipe);
             let mut buf = [0u8; 1024];
             loop {
@@ -723,6 +735,7 @@ impl StdioTransport {
             stdin: Some(stdin),
             lines: rx,
             stderr,
+            stderr_done,
             command: server.command.clone(),
         })
     }
@@ -733,10 +746,19 @@ impl StdioTransport {
         let Some(stdin) = self.stdin.as_mut() else {
             bail!("{} is closed", self.command);
         };
-        stdin
+        let Err(e) = stdin
             .write_all(line.as_bytes())
             .and_then(|()| stdin.flush())
-            .map_err(|e| anyhow!("{} closed its stdin: {e}", self.command))
+        else {
+            return Ok(());
+        };
+        // A server that died before reading (at start, say) breaks the
+        // pipe at once, often before its exit is reaped or its stderr read:
+        // give both a bounded moment, then say how it ended.
+        let why = self
+            .death(STDIO_DEATH_WAIT)
+            .unwrap_or_else(|| format!("{} closed its stdin: {e}", self.command));
+        bail!("{why}")
     }
 
     fn exited(&mut self) -> Option<String> {
@@ -744,6 +766,27 @@ impl StdioTransport {
             Ok(Some(status)) => Some(format!("{} exited ({status})", self.command)),
             _ => None,
         }
+    }
+
+    /// Waits up to `wait` for the server to exit and then, within the same
+    /// bound, for its stderr to be read to the end. "<command> exited
+    /// (<status>)" once it has exited; `None` while it still runs.
+    fn death(&mut self, wait: Duration) -> Option<String> {
+        let deadline = Instant::now() + wait;
+        let why = loop {
+            if let Some(why) = self.exited() {
+                break why;
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        // A grandchild that inherited stderr can hold it open: the bound
+        // holds then, and the error quotes what was read so far.
+        let left = deadline.saturating_duration_since(Instant::now());
+        let _ = self.stderr_done.recv_timeout(left);
+        Some(why)
     }
 }
 
@@ -767,7 +810,7 @@ impl Transport for StdioTransport {
                 Err(RecvTimeoutError::Timeout) => continue,
                 Err(RecvTimeoutError::Disconnected) => {
                     let why = self
-                        .exited()
+                        .death(STDIO_DEATH_WAIT)
                         .unwrap_or_else(|| format!("{} closed its output", self.command));
                     bail!("{why}");
                 }
@@ -1309,6 +1352,57 @@ exec sleep 300
             took >= STDIO_EXIT_GRACE && took < STDIO_EXIT_GRACE + Duration::from_secs(5),
             "{took:?}"
         );
+    }
+
+    /// A server that dies before reading its first request breaks the pipe
+    /// at once, usually before its exit is reaped and its stderr read: the
+    /// error still says how it ended and what it wrote, never only
+    /// "Broken pipe".
+    #[cfg(unix)]
+    #[test]
+    fn a_server_that_exits_before_the_first_write_reports_its_status_and_stderr() {
+        let dir = tempfile::tempdir().unwrap();
+        // Closes stdin and stdout first, so the first write fails with
+        // EPIPE, and writes its words only afterwards: the race of a
+        // loaded machine, made certain.
+        let script = dir.path().join("dies-early.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nexec 0<&- 1>&-\nsleep 0.3\necho 'cannot start: no token' >&2\nexit 3\n",
+        )
+        .unwrap();
+        // Run through /bin/sh, not exec'd itself: a file just written can
+        // still be open in a child another test thread forks (ETXTBSY).
+        let server = McpServer {
+            name: "dies-early".into(),
+            transport: "stdio".into(),
+            command: "/bin/sh".into(),
+            args: vec![script.display().to_string()],
+            ..Default::default()
+        };
+
+        // The write path itself: the pipe is closed before the request.
+        let mut t = StdioTransport::spawn(&server, &Wire::default()).unwrap();
+        thread::sleep(Duration::from_millis(100));
+        let body = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize"});
+        let err = t.request(body, 1, Duration::from_secs(10)).unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("exited ("), "{text}");
+        assert!(!text.contains("Broken pipe"), "{text}");
+        assert!(
+            t.diagnostics().contains("cannot start: no token"),
+            "{}",
+            t.diagnostics()
+        );
+        drop(t);
+
+        // End to end through connect: status and words in one error.
+        let err = Client::connect_with(&server, Wire::default(), Duration::from_secs(10))
+            .err()
+            .expect("a dead server cannot connect")
+            .to_string();
+        assert!(err.contains("exited ("), "{err}");
+        assert!(err.contains("cannot start: no token"), "{err}");
     }
 
     #[test]
