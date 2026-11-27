@@ -2821,6 +2821,7 @@ mod tests {
             "#!/bin/sh\nfor a in \"$@\"; do printf 'ARG:%s\\n' \"$a\"; done\nwhile [ $# -gt 0 ]; do [ \"$1\" = --task-file ] && cat \"$2\"; shift; done\n",
         )
         .unwrap();
+        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&worker, std::fs::Permissions::from_mode(0o755)).unwrap();
