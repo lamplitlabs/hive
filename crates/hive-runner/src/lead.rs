@@ -1400,6 +1400,20 @@ pub(crate) fn tend_lead(
     now: String,
     actor: String,
 ) -> Vec<String> {
+    let asks = owner_addressed_asks(s, slug.clone());
+    tend_lead_with(s, slug, now, actor, asks)
+}
+
+/// `tend_lead` over `asks`, the tick's `owner_addressed_asks` of `slug`:
+/// the daemon reads them once per tick for the decide role and the lead
+/// (`decide::tend_decide_with`), not once for each.
+pub(crate) fn tend_lead_with(
+    s: &hive_store::Store,
+    slug: String,
+    now: String,
+    actor: String,
+    asks: Vec<OwnerQuestion>,
+) -> Vec<String> {
     let mut lines = Vec::new();
     let (Some(lead), created) = (match ensure_lead(s, slug.clone()) {
         Ok(v) => v,
@@ -1498,7 +1512,6 @@ pub(crate) fn tend_lead(
     // run. What the role may not answer (a hard stop, an owner-only
     // proposal) is never held; what it passes or fails on comes back here
     // on a later pass.
-    let asks = owner_addressed_asks(s, slug.clone());
     let held = crate::decide::held_by_role(s, &slug, &asks, &now);
     owner_questions.extend(asks.into_iter().filter(|q| !held.contains(&q.id)));
     let mut away_question_count = 0;
