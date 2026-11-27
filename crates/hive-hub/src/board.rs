@@ -434,6 +434,24 @@ impl crate::server::Handler {
                 json!(proposal_text(&str_key(row, "body"))),
             );
             row.insert("can_decide".to_string(), json!(true));
+            // Why only the owner may decide it (the rule the lead's
+            // `decide` refuses it by): the Sessions strip lists such a
+            // proposal, the lead the others (TASK-129, PR #278 review).
+            let hard_stop = store
+                .conn()
+                .map(|conn| {
+                    hive_board::owner_only_ask(
+                        &conn,
+                        &id,
+                        &str_key(row, "kind"),
+                        &str_key(row, "summary"),
+                        &str_key(row, "body"),
+                    )
+                })
+                // The console reads an empty value as "routine, a lead
+                // decides": a store that cannot be read must not say so.
+                .unwrap_or_else(|_| "could not be checked (the store did not open)".into());
+            row.insert("hard_stop".to_string(), json!(hard_stop));
         }
         order(&mut d.proposals, &["-date", "id"]);
         d.proposals.sort_by(|a, b| {
@@ -750,6 +768,12 @@ impl BoardData {
     ) {
         let major_updates_auto =
             store.is_some_and(|s| s.setting("dependencies.major_updates", "ask") == "auto");
+        // The watcher's major-upgrade findings, read from its
+        // `security.major` events: the one test the runner uses too.
+        let majors = store
+            .and_then(|s| s.conn().ok())
+            .and_then(|c| hive_board::security_major_findings(&c, None).ok())
+            .unwrap_or_default();
         let threads = self
             .threads
             .iter()
@@ -793,9 +817,14 @@ impl BoardData {
                 // A later answer in the thread settles a question; a
                 // finding on a running thread (one security thread holds
                 // many) only its own answer or the owner's decision.
+                // The loop's flat-fixture pause is the owner's like its
+                // stop: an agent's answer does not resume the loop
+                // (hive-evolve flat_gate), so it does not fold the row away.
+                let flat = kind == "question" && summary == hive_store::EVOLUTION_FLAT_SUMMARY;
                 if decided.contains(&id)
-                    || answered.contains(&id)
-                    || (kind == "question" && later_hub_answer_date(thread_posts, i))
+                    || (!flat && answered.contains(&id))
+                    || (!flat && kind == "question" && later_hub_answer_date(thread_posts, i))
+                    || (flat && flat_pause_reviewed(thread_posts, i))
                 {
                     continue;
                 }
@@ -842,12 +871,26 @@ impl BoardData {
                 // names no answers, or none recommended, goes back to the
                 // project's lead, which writes them or decides it; only the
                 // loop's stop (a hard stop) stays the owner's whatever it says.
-                let options = hive_board::ask_options(body);
-                let decider =
-                    match question_decider(&kind, &summary, &hard_stop, major_updates_auto) {
-                        "owner" if !stop && !options.ready() => "lead",
-                        who => who,
-                    };
+                let major = majors.contains(&id);
+                if major && !major_updates_auto && hard_stop.is_empty() {
+                    hard_stop =
+                        "is a major dependency upgrade (dependencies.major_updates = ask)".into();
+                }
+                // A major-upgrade finding the watcher posted before it wrote
+                // a `Recommended:` line gets the watcher's own answers: it
+                // is the owner's and is never handed to the lead for lacking
+                // them (PR #278 review).
+                let options = hive_board::ask_options(&hive_board::with_default_owner_answers(
+                    &kind,
+                    &str_key(post, "agent"),
+                    &summary,
+                    body,
+                    major,
+                ));
+                let decider = match question_decider(&hard_stop, major, major_updates_auto) {
+                    "owner" if !stop && !options.ready() => "lead",
+                    who => who,
+                };
                 rows.push(object(
                     "id thread_key area thread kind agent name session date summary body on_post stop stale thread_last decider hard_stop options recommended_why needs_options",
                     vec![
@@ -1113,18 +1156,14 @@ impl BoardData {
 }
 
 /// Who answers an ask addressed to the owner. A security finding about a
-/// major upgrade that `dependencies.major_updates = auto` queues itself is a
-/// `setting`'s call; an ask at a hard stop (`hard_stop` names why, from
+/// major upgrade (`major`: the watcher's `security.major` event names it) is
+/// the `setting`'s call under `dependencies.major_updates = auto`, and the
+/// owner's under `ask` (its `hard_stop` says so); an ask at a hard stop (`hard_stop` names why, from
 /// [`hive_board::hard_stop_ask`]) waits for the `owner`; every other ask is
 /// routine and the project's `lead` decides it on the owner's behalf,
 /// whatever `owner.presence` says (TASK-129).
-fn question_decider(
-    kind: &str,
-    summary: &str,
-    hard_stop: &str,
-    major_updates_auto: bool,
-) -> &'static str {
-    if kind == "finding" && major_updates_auto && summary.contains("major upgrade") {
+fn question_decider(hard_stop: &str, major: bool, major_updates_auto: bool) -> &'static str {
+    if major && major_updates_auto {
         return "setting";
     }
     if !hard_stop.is_empty() {
@@ -1392,6 +1431,24 @@ pub(crate) fn later_hub_kind(posts: &[&PostRow], index: usize, kinds: &[&str]) -
     posts[index + 1..]
         .iter()
         .any(|post| want.contains(str_key(post, "kind").as_str()))
+}
+
+/// Whether an answer that resumes the loop's flat-fixture pause follows the
+/// question at `index`: the owner's, or the loop's own heal or self-review
+/// (the same rule as hive-evolve flat_gate's review).
+fn flat_pause_reviewed(posts: &[&PostRow], index: usize) -> bool {
+    let date = str_key(posts[index], "date");
+    let id = str_key(posts[index], "id");
+    posts[index + 1..].iter().any(|post| {
+        let agent = str_key(post, "agent");
+        let summary = str_key(post, "summary");
+        str_key(post, "kind") == "answer"
+            && (str_key(post, "date") > date || str_key(post, "on_post") == id)
+            && (hive_store::human_actor(&agent)
+                || summary.starts_with("Evolution healed:")
+                || summary.starts_with("Evolution resumed:")
+                || summary.starts_with("Reviewed by the loop:"))
+    })
 }
 
 pub(crate) fn later_hub_answer_date(posts: &[&PostRow], index: usize) -> bool {
@@ -1883,6 +1940,59 @@ mod tests {
             "## Proposal for the human: ship the fix\n\nIt is ready."
         );
         assert_eq!(data.proposals[0]["proposal_text"], "ship the fix");
+        assert_eq!(
+            data.proposals[0]["hard_stop"], "",
+            "a routine proposal is the lead's"
+        );
+        // Every proposal row says whether only the owner may decide it, by
+        // the rule the lead's `decide` refuses it by: the console's strip
+        // (asks-state.test.mjs) reads this mark, no word list of its own.
+        for (thread, summary, body, want) in [
+            (
+                "helper",
+                "Delete the unused helper",
+                "Fix the production build warning too.",
+                "",
+            ),
+            ("adr", "Adopt ADR-080", "Accept it.", "names ADR-080"),
+            (
+                "ci",
+                "Cache modules in CI",
+                "Edit .github/workflows/ci.yml",
+                "points at .github/",
+            ),
+            (
+                "spend",
+                "Let compute start itself",
+                "Set compute.auto_approve to on.",
+                "changes compute.auto_approve",
+            ),
+            (
+                "seat",
+                "Seat a lead",
+                "lead-role: docs\n",
+                "authorizes a command (ADR-021)",
+            ),
+        ] {
+            post(
+                "result",
+                thread,
+                "alpha",
+                false,
+                summary,
+                &format!("## Proposal for the human: {summary}\n\n{body}\n"),
+                "",
+                "agreed",
+                "2026-09-06T08:03:00Z",
+            );
+            let data = h.snapshot("one", "").unwrap();
+            let row = data
+                .proposals
+                .iter()
+                .find(|r| r["summary"] == summary)
+                .unwrap_or_else(|| panic!("{summary} listed"));
+            assert_eq!(row["hard_stop"], want, "{summary}");
+        }
 
         let detail = h.post_detail(&data, &ask.id).unwrap();
         assert_eq!(detail["body"], "Pick one.");
@@ -2629,6 +2739,31 @@ mod tests {
             "Dependabot #20.\n\nYes: Upgrade it\nNo: Leave it to me\nRecommended: No - the checks have not run on 17",
             "2026-09-06T08:03:00Z",
         );
+        // An older major-upgrade finding names no answers; a finding that
+        // only says "major upgrade" without the watcher's event is not one.
+        let older = post(
+            "finding",
+            "dependabot-old",
+            "react needs 19.0.0 to fix #7, a major upgrade from 18.3.1: your call",
+            "Dependabot #7 in package-lock.json.",
+            "2026-09-06T08:04:00Z",
+        );
+        let lookalike = post(
+            "finding",
+            "notes",
+            "Plan the major upgrade of the build tool next quarter",
+            "Nothing urgent.\n\nYes: Plan it\nNo: Leave it\nRecommended: No - not yet",
+            "2026-09-06T08:05:00Z",
+        );
+        for (p, n) in [(&setting, 20), (&older, 7)] {
+            s.event(
+                "daemon",
+                "security.major",
+                "one",
+                hive_store::Detail::json(serde_json::json!({"post": p.id, "number": n})).unwrap(),
+            )
+            .unwrap();
+        }
 
         let h = http::handler(&s);
         let view_of = |data: BoardData| crate::read::ProjectView {
@@ -2655,15 +2790,33 @@ mod tests {
                     )
                 })
                 .collect();
-            assert_eq!(by_id.len(), 4, "{presence}: {:#?}", data.questions);
+            assert_eq!(by_id.len(), 6, "{presence}: {:#?}", data.questions);
             assert_eq!(
                 by_id[&own.id],
                 ("owner".to_string(), "is about publication".to_string()),
                 "{presence}"
             );
-            for id in [&routine.id, &lead.id, &setting.id] {
+            // Under `ask` a major upgrade is the owner's (PR #278 review),
+            // the older one too, with the watcher's answers.
+            let major = "is a major dependency upgrade (dependencies.major_updates = ask)";
+            for id in [&setting.id, &older.id] {
+                assert_eq!(
+                    by_id[id],
+                    ("owner".to_string(), major.to_string()),
+                    "{presence}"
+                );
+            }
+            for id in [&routine.id, &lead.id, &lookalike.id] {
                 assert_eq!(by_id[id], ("lead".to_string(), String::new()), "{presence}");
             }
+            let old_row = data
+                .questions
+                .iter()
+                .find(|q| str_key(q, "id") == older.id)
+                .unwrap();
+            assert_eq!(old_row["options"][0]["label"], "Upgrade it");
+            assert_eq!(old_row["options"][0]["recommended"], true);
+            assert_eq!(old_row["needs_options"], "");
             assert_eq!(
                 data.questions_meta["agents_deciding"]["count"],
                 serde_json::json!(3),
@@ -2671,7 +2824,7 @@ mod tests {
             );
             assert_eq!(
                 h.summary(&view_of(data))["owner_questions"],
-                1,
+                3,
                 "{presence}"
             );
         }
@@ -2690,9 +2843,11 @@ mod tests {
         assert_eq!(by_id[&routine.id], "lead");
         assert_eq!(by_id[&lead.id], "lead");
         assert_eq!(by_id[&setting.id], "setting");
+        assert_eq!(by_id[&older.id], "setting");
+        assert_eq!(by_id[&lookalike.id], "lead");
         assert_eq!(
             data.questions_meta["agents_deciding"]["count"],
-            serde_json::json!(3)
+            serde_json::json!(5)
         );
         let view = view_of(data);
         assert_eq!(h.summary(&view)["owner_questions"], 1);

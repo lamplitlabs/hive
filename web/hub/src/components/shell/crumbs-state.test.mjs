@@ -13,7 +13,7 @@ test("home and plain pages name themselves", () => {
   assert.deepEqual(defaultCrumbs("/", q()), [{ label: "Sessions", href: "/chat/" }], "the console opens on Sessions");
   assert.deepEqual(defaultCrumbs("/records/", q()), [{ label: "Records", href: "/records/" }]);
   assert.deepEqual(defaultCrumbs("/records", q()), [{ label: "Records", href: "/records/" }], "a missing trailing slash is the same page");
-  assert.deepEqual(defaultCrumbs("/for-you/", q()), [{ label: "Page not found" }], "For you is gone");
+  assert.deepEqual(defaultCrumbs("/for-you/", q()), [{ label: "Sessions", href: "/chat/" }], "For you is gone: its address forwards to Sessions");
   assert.deepEqual(defaultCrumbs("/insights/", q()), [{ label: "Insights", href: "/insights/" }]);
   assert.deepEqual(defaultCrumbs("/settings/", q()), [{ label: "Settings", href: "/settings/" }]);
   assert.deepEqual(defaultCrumbs("/harness/", q()).map((c) => c.label), ["Runs"]);
@@ -68,6 +68,10 @@ test("every page the console exports has crumbs other than the 404 page", async 
     const search = route === "/project/" ? q("slug=demo-app") : q();
     assert.notDeepEqual(defaultCrumbs(route, search, projects), [{ label: "Page not found" }], route + " has no default crumbs");
   }
+});
+
+test("the old For you address shows Sessions, where it forwards", () => {
+  assert.deepEqual(defaultCrumbs("/for-you/", q()), [{ label: "Sessions", href: "/chat/" }]);
 });
 
 test("a route the console doesn't have is the 404 page", () => {

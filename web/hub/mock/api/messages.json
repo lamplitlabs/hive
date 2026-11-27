@@ -72,7 +72,9 @@
         },
         {
           "label": "Wait for the changelog note",
-          "action": "reply"
+          "action": "reply",
+          "recommended": true,
+          "note": "the release notes name every change"
         },
         {
           "label": "Good enough, close it",

@@ -35,8 +35,9 @@ const OUTAGE_COUNT_META: &str = "decide.outage_fallbacks";
 const FAILED_ACTION: &str = "decide.failed";
 const RETRY_MINUTES: i64 = 60;
 const MAX_TRIES: i64 = 3;
-/// The role's reason is one line of at most this many characters: it goes
-/// into the decision, the result post and the job brief.
+/// The role's reason is one line of at most this many bytes, cut at a
+/// character boundary, plus "..." when cut: it goes into the decision, the
+/// result post and the job brief.
 const REASON_CHARS: usize = 300;
 /// How much of a post body and of the thread the call carries.
 const BODY_CHARS: usize = 4000;
@@ -46,7 +47,36 @@ const THREAD_CHARS: usize = 8000;
 struct DecideRuns {
     inflight: bool,
     lines: Vec<String>,
+    /// Passes in a row that panicked, and the daemon time before which no
+    /// pass starts after them (`PANIC_BACKOFF_MINUTES`). A pass that ends
+    /// normally resets both.
+    panics: usize,
+    retry_at: String,
 }
+
+/// The wait after the second, third and later panics of the pass in a row:
+/// while the store refuses writes every pass calls the provider before its
+/// first write panics, so each tick would cost one call for nothing. The
+/// first panic waits for nothing: the next tick tries again.
+const PANIC_BACKOFF_MINUTES: [i64; 3] = [1, 5, 15];
+
+fn panic_backoff(panics: usize) -> Option<i64> {
+    match panics {
+        0 | 1 => None,
+        n => Some(PANIC_BACKOFF_MINUTES[(n - 2).min(PANIC_BACKOFF_MINUTES.len() - 1)]),
+    }
+}
+
+/// How long the provider's default model, once resolved for an empty
+/// `decide_model`, is reused before the list is fetched again.
+const MODEL_CACHE: Duration = Duration::from_secs(3600);
+
+/// The resolved default model by store home and provider, with when it
+/// was resolved: an empty `decide_model` fetched the provider's whole model
+/// list on every pass that had asks.
+type ResolvedModels = BTreeMap<(String, String), (String, std::time::Instant)>;
+static DEFAULT_MODELS: LazyLock<parking_lot::Mutex<ResolvedModels>> =
+    LazyLock::new(|| parking_lot::Mutex::new(ResolvedModels::new()));
 
 static DECIDE_RUNS: LazyLock<parking_lot::Mutex<BTreeMap<String, DecideRuns>>> =
     LazyLock::new(|| parking_lot::Mutex::new(BTreeMap::new()));
@@ -57,16 +87,35 @@ static DECIDE_RUNS: LazyLock<parking_lot::Mutex<BTreeMap<String, DecideRuns>>> =
 /// until the daemon restarted, no outage was on record, and `held_by_role`
 /// kept the role's asks out of the lead's brief all that time.
 struct PassEnd {
-    slug: String,
+    /// `run_key` of the pass.
+    key: String,
+    now: String,
     lines: Vec<String>,
+    panicked: bool,
 }
 
 impl Drop for PassEnd {
     fn drop(&mut self) {
         let mut runs = DECIDE_RUNS.lock();
-        let run = runs.entry(std::mem::take(&mut self.slug)).or_default();
+        let run = runs.entry(std::mem::take(&mut self.key)).or_default();
         run.inflight = false;
         run.lines.append(&mut self.lines);
+        if !self.panicked {
+            run.panics = 0;
+            run.retry_at.clear();
+            return;
+        }
+        run.panics += 1;
+        run.retry_at.clear();
+        if let Some(wait) = panic_backoff(run.panics) {
+            if let Ok(at) = crate::util::parse_iso(&self.now) {
+                run.retry_at = crate::util::format_iso(at + chrono::Duration::minutes(wait));
+            }
+            run.lines.push(format!(
+                "decide: the pass panicked {} times in a row; the next pass waits {wait} min",
+                run.panics
+            ));
+        }
     }
 }
 
@@ -93,45 +142,80 @@ pub(crate) struct DecideAnswer {
 /// when the role is on (or in shadow) and an ask waits,
 /// and returns the lines the last finished pass wrote. A pass may wait up to
 /// `decide.timeout_seconds` per ask, so it never holds the daemon's loop.
+#[cfg(test)]
 pub(crate) fn tend_decide(s: &hive_store::Store, slug: &str, now: &str) -> Vec<String> {
+    tend_decide_with(
+        s,
+        slug,
+        now,
+        &crate::lead::owner_addressed_asks(s, slug.to_string()),
+    )
+}
+
+/// `tend_decide` over `questions`, the tick's `lead::owner_addressed_asks`
+/// of `slug`: the daemon reads them once per tick and hands the same list
+/// to the lead's pass (`lead::tend_lead_with`), and the pass started here
+/// works from it too.
+pub(crate) fn tend_decide_with(
+    s: &hive_store::Store,
+    slug: &str,
+    now: &str,
+    questions: &[crate::lead::OwnerQuestion],
+) -> Vec<String> {
     let mut runs = DECIDE_RUNS.lock();
-    let run = runs.entry(slug.to_string()).or_default();
+    let run = runs.entry(run_key(s, slug)).or_default();
     let mut lines = std::mem::take(&mut run.lines);
-    if run.inflight || !role_due(s) || decide_asks(s, slug, now).is_empty() {
+    if run.inflight || !role_due(s) || (!run.retry_at.is_empty() && now < run.retry_at.as_str()) {
+        return lines;
+    }
+    let asks = role_asks(s, questions.to_vec(), now);
+    if asks.is_empty() {
         return lines;
     }
     run.inflight = true;
-    let (s, pass_slug, now) = (s.clone(), slug.to_string(), now.to_string());
-    let spawned = std::thread::Builder::new()
-        .name("hive-decide".into())
-        .spawn(move || {
-            let slug = pass_slug;
-            // Dropped when this thread ends, by a return or by a panic.
-            let mut end = PassEnd {
-                slug: slug.clone(),
-                lines: Vec::new(),
-            };
-            // A panic must not leave the pass marked in flight, which would
-            // keep the role off until the daemon restarts: it is an outage,
-            // said once, and the next pass tries again.
-            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                decide_pass(&s, &slug, &now)
-            })) {
-                Ok(lines) => end.lines = lines,
-                Err(panic) => {
-                    let reason = format!("the decide pass panicked: {}", panic_text(&panic));
-                    // The line is kept before the outage is written: a store
-                    // that refuses writes is what makes a pass panic, and
-                    // then this write panics too. `end` still says the line
-                    // and takes the mark off.
+    let (s, pass_slug, pass_now) = (s.clone(), slug.to_string(), now.to_string());
+    let home = s.home.clone();
+    let spawned = spawn_pass(&home, move || {
+        let slug = pass_slug;
+        let now = pass_now;
+        // Dropped when this thread ends, by a return or by a panic.
+        let mut end = PassEnd {
+            key: run_key(&s, &slug),
+            now: now.clone(),
+            lines: Vec::new(),
+            panicked: false,
+        };
+        // A panic must not leave the pass marked in flight, which would
+        // keep the role off until the daemon restarts: it is an outage,
+        // said once, and the next pass tries again.
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            decide_pass_over(&s, &slug, &now, asks)
+        })) {
+            Ok(lines) => end.lines = lines,
+            Err(panic) => {
+                end.panicked = true;
+                let reason = format!("the decide pass panicked: {}", panic_text(&panic));
+                // The line is kept before the outage is written: a store
+                // that refuses writes is what makes a pass panic, and then
+                // this write fails too. `end` still says the line and takes
+                // the mark off.
+                end.lines = vec![format!(
+                    "decide {slug}: {reason}; the next pass tries again"
+                )];
+                let by = role_by(&s);
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    fallback(&s, &now, &slug, "", &by, &reason)
+                }));
+                // Only an outage on record gives the asks back to the lead
+                // (`held_by_role`); without one the next pass tries again.
+                if outage_open(&s) {
                     end.lines = vec![format!(
                         "decide {slug}: {reason}; the asks stay with the lead"
                     )];
-                    let by = role_by(&s);
-                    fallback(&s, &now, &slug, "", &by, &reason);
                 }
             }
-        });
+        }
+    });
     if let Err(e) = spawned {
         // No thread, no pass: the mark comes off and the next tick tries.
         run.inflight = false;
@@ -140,6 +224,34 @@ pub(crate) fn tend_decide(s: &hive_store::Store, slug: &str, now: &str) -> Vec<S
         ));
     }
     lines
+}
+
+/// Starts the pass thread. Tests make it fail for one store home.
+fn spawn_pass(
+    home: &str,
+    f: impl FnOnce() + Send + 'static,
+) -> std::io::Result<std::thread::JoinHandle<()>> {
+    #[cfg(test)]
+    if tests::SPAWN_FAILS.lock().unwrap().contains(home) {
+        return Err(std::io::Error::other("no thread for the test"));
+    }
+    let _ = home;
+    std::thread::Builder::new()
+        .name("hive-decide".into())
+        .spawn(f)
+}
+
+/// The key of a project's pass state: one store's project, so the state of
+/// one hub never reaches another's (tests open many stores in one process).
+fn run_key(s: &hive_store::Store, slug: &str) -> String {
+    format!("{}\n{slug}", s.home)
+}
+
+fn outage_open(s: &hive_store::Store) -> bool {
+    !s.meta(OUTAGE_META)
+        .map(|(v, _)| v)
+        .unwrap_or_default()
+        .is_empty()
 }
 
 /// Whether the role runs at all now: `decide.mode` is not off. The lead
@@ -201,6 +313,7 @@ pub(crate) fn held_by_role(
 }
 
 /// The asks of `slug` the role may answer now, oldest first.
+#[cfg(test)]
 pub(crate) fn decide_asks(s: &hive_store::Store, slug: &str, now: &str) -> Vec<DecideAsk> {
     role_asks(
         s,
@@ -304,9 +417,24 @@ fn role_asks(
 /// A call that fails (no answer, a late or an unreadable one) records one
 /// `decide.failed` try on that ask, which then waits `RETRY_MINUTES` and is
 /// the lead's for good after `MAX_TRIES`, so the asks behind it reach the
-/// role. A provider error or a timeout ends the pass (the provider is out,
-/// each further call would only wait again); an unreadable answer does not.
+/// role. A provider error or a timeout ends the pass and opens the
+/// store-wide outage (`decide.fallback`): the provider is out, each further
+/// call would only wait again, and every project's asks go to its lead
+/// until an answer comes back. An unreadable answer is that ask's alone: it
+/// is a failed try, the pass goes on and no outage opens.
+#[cfg(test)]
 pub(crate) fn decide_pass(s: &hive_store::Store, slug: &str, now: &str) -> Vec<String> {
+    decide_pass_over(s, slug, now, decide_asks(s, slug, now))
+}
+
+/// `decide_pass` over `asks`, the role's asks of `slug` as the tick read
+/// them (`tend_decide_with`).
+fn decide_pass_over(
+    s: &hive_store::Store,
+    slug: &str,
+    now: &str,
+    asks: Vec<DecideAsk>,
+) -> Vec<String> {
     if !role_due(s) {
         return Vec::new();
     }
@@ -315,7 +443,6 @@ pub(crate) fn decide_pass(s: &hive_store::Store, slug: &str, now: &str) -> Vec<S
         Ok(Some(a)) if a.kind == "lead" && a.status == "active" => {}
         _ => return Vec::new(),
     }
-    let asks = decide_asks(s, slug, now);
     if asks.is_empty() {
         return Vec::new();
     }
@@ -357,12 +484,14 @@ pub(crate) fn decide_pass(s: &hive_store::Store, slug: &str, now: &str) -> Vec<S
             Err(e) => {
                 let reason = crate::run::err_message(&e);
                 failed(s, now, slug, &ask.id, &by, &reason);
-                fallback(s, now, slug, &ask.id, &by, &reason);
                 lines.push(format!(
                     "decide {slug}: {} left to the lead: {reason}",
                     ask.id
                 ));
+                // Only a provider that is out opens the outage; an
+                // unreadable answer is this ask's failed try alone.
                 if out {
+                    fallback(s, now, slug, &ask.id, &by, &reason);
                     break;
                 }
                 continue;
@@ -428,9 +557,10 @@ pub(crate) fn decide_pass(s: &hive_store::Store, slug: &str, now: &str) -> Vec<S
             )),
             Err(e) => {
                 let why = crate::run::err_message(&e);
-                // A refusal because the owner came back or the mode moved
-                // between the check and the write is not the ask's: it is
-                // not recorded, so the role may answer it on a later away.
+                // A refusal because the role was turned off, or the mode
+                // moved, between the check and the write is not the ask's:
+                // it is not recorded, so the role may answer it on a later
+                // pass.
                 if !role_due(s) || s.decide_mode() != "on" {
                     lines.push(format!("decide {slug}: {} not decided: {why}", ask.id));
                     break;
@@ -507,7 +637,8 @@ fn event(
 /// `measure_model`, `light_model` nor `worker_model`: the shipped default)
 /// is resolved here to the provider's default chat model, and `by.model`
 /// names it, so the call never sends an empty model and the decision
-/// records the model that answered.
+/// records the model that answered. The resolved name is kept for
+/// `MODEL_CACHE` (an hour): the list is not fetched on every pass.
 fn open_role(
     s: &hive_store::Store,
     by: &mut hive_board::DecidedBy,
@@ -522,6 +653,13 @@ fn open_role(
         },
     )?;
     if by.model.trim().is_empty() {
+        let key = (s.home.clone(), by.provider.clone());
+        if let Some((model, at)) = DEFAULT_MODELS.lock().get(&key)
+            && at.elapsed() < MODEL_CACHE
+        {
+            by.model = model.clone();
+            return Ok(p);
+        }
         let cancel = hive_provider::CancelToken::new().with_timeout(timeout);
         let models = p.models(&cancel)?;
         let chosen = models
@@ -535,6 +673,9 @@ fn open_role(
                 )
             })?;
         by.model = chosen.id.clone();
+        DEFAULT_MODELS
+            .lock()
+            .insert(key, (by.model.clone(), std::time::Instant::now()));
     }
     Ok(p)
 }
@@ -653,7 +794,8 @@ fn clip(text: &str, max: usize) -> String {
 
 /// Reads `{"answer":"yes"|"no"|"pass","reason":"..."}` out of the reply; a
 /// code fence around it is allowed. The reason becomes one line (its
-/// whitespace runs folded to one space) of at most `REASON_CHARS`: it goes
+/// whitespace runs folded to one space) of at most `REASON_CHARS` bytes,
+/// cut at a character boundary, plus "..." when cut: it goes
 /// into the decision, the result post and the job brief. Anything else, an
 /// answer outside the three, or a yes or no without a reason, cannot be
 /// read.
@@ -681,7 +823,9 @@ pub(crate) fn read_answer(text: &str) -> Option<DecideAnswer> {
 }
 
 /// A fallback: the first of an outage writes one `decide.fallback` event
-/// with its reason; later ones are only counted.
+/// with its reason; later ones are only counted. An outage opened while
+/// the events table refused the insert has its meta and no event: the next
+/// fallback writes the event then.
 fn fallback(
     s: &hive_store::Store,
     now: &str,
@@ -696,25 +840,47 @@ fn fallback(
         .map(|(v, _)| v.parse::<i64>().unwrap_or(0))
         .unwrap_or(0);
     let _ = s.set_meta(OUTAGE_COUNT_META, &(count + 1).to_string());
-    if !open.is_empty() {
+    if !open.is_empty() && fallback_said(s) {
         return;
     }
-    let _ = s.set_meta(OUTAGE_META, reason);
+    let reason = if open.is_empty() {
+        let _ = s.set_meta(OUTAGE_META, reason);
+        reason.to_string()
+    } else {
+        open
+    };
     if let Ok(conn) = s.conn() {
-        crate::util::event_at(
-            &conn,
-            now,
-            "daemon",
-            "decide.fallback",
-            post,
-            json!({
-                "project": slug,
-                "reason": reason,
-                "decided_model": by.model,
-                "decided_provider": by.provider,
-            }),
+        let _ = conn.execute(
+            "INSERT INTO events (at, actor, action, subject, detail) VALUES (?, ?, ?, ?, ?)",
+            rusqlite::params![
+                now,
+                "daemon",
+                "decide.fallback",
+                post,
+                crate::util::py_json(json!({
+                    "project": slug,
+                    "reason": reason,
+                    "decided_model": by.model,
+                    "decided_provider": by.provider,
+                })),
+            ],
         );
     }
+}
+
+/// Whether the open outage has its `decide.fallback` event: one written
+/// after the last `decide.recovered`.
+fn fallback_said(s: &hive_store::Store) -> bool {
+    let Ok(conn) = s.conn() else {
+        return true;
+    };
+    conn.query_row(
+        "SELECT COALESCE(MAX(seq), 0) > COALESCE((SELECT MAX(seq) FROM events WHERE action = 'decide.recovered'), 0) \
+         FROM events WHERE action = 'decide.fallback'",
+        [],
+        |r| r.get::<_, bool>(0),
+    )
+    .unwrap_or(true)
 }
 
 /// A readable answer after an outage writes one `decide.recovered` event
@@ -768,7 +934,13 @@ mod tests {
         /// The provider's model list; `models` panics when `panic` is set.
         list: Vec<String>,
         panic: bool,
+        /// How often the model list was asked for.
+        list_calls: usize,
     }
+
+    /// Store homes whose pass thread cannot be started (`spawn_pass`).
+    pub(super) static SPAWN_FAILS: LazyLock<Mutex<std::collections::BTreeSet<String>>> =
+        LazyLock::new(|| Mutex::new(std::collections::BTreeSet::new()));
 
     /// What happens in the store while a call of the store's fake waits:
     /// the world moving on between the list and the write.
@@ -848,12 +1020,12 @@ mod tests {
             &self,
             _cancel: &hive_provider::CancelToken,
         ) -> anyhow::Result<Vec<hive_provider::Model>> {
-            let f = FAKES
-                .lock()
-                .unwrap()
-                .get(&self.home)
-                .cloned()
-                .unwrap_or_default();
+            let f = {
+                let mut fakes = FAKES.lock().unwrap();
+                let f = fakes.entry(self.home.clone()).or_default();
+                f.list_calls += 1;
+                f.clone()
+            };
             if f.panic {
                 panic!("the fake's model list broke");
             }
@@ -1074,20 +1246,55 @@ mod tests {
         assert_eq!(calls(&s).calls, 1, "a passed ask is the lead's");
     }
 
+    /// TASK-148 item 1: an unreadable answer is a failed try of that ask
+    /// alone. Before, it opened the store-wide outage, which handed every
+    /// project's asks to its lead until the next readable answer.
     #[test]
-    fn prose_is_a_fallback_said_once_and_recovery_is_said_once() {
+    fn an_unreadable_answer_is_that_asks_try_and_opens_no_outage() {
         let _serial = serial();
-        let s = decide_store("Yes, I think this is a good idea.");
+        let s = decide_store(r#"{"answer":"yes","reason":"small and reversible"}"#);
+        fake(&s, |f| {
+            f.replies = vec![(
+                "prose-ask".into(),
+                "Yes, I think this is a good idea.".into(),
+            )]
+        });
         let first = ask(&s, "prose-ask");
+        decide_pass(&s, "proj", TEST_NOW);
+        assert_left_to_lead(&s, &first);
+        let tries = events(&s, FAILED_ACTION);
+        assert_eq!(tries.len(), 1);
+        assert!(
+            detail(&tries[0])["reason"]
+                .as_str()
+                .unwrap()
+                .contains("unreadable answer"),
+            "{:?}",
+            tries[0]
+        );
+        assert!(events(&s, "decide.fallback").is_empty(), "no outage");
+        assert!(!outage_open(&s));
+        // The role still holds the other asks: the lead does not get them.
+        let other = ask(&s, "other-ask");
+        let asks = crate::lead::owner_addressed_asks(&s, "proj".into());
+        assert!(held_by_role(&s, "proj", &asks, TEST_NOW).contains(&other));
+        decide_pass(&s, "proj", TEST_NOW);
+        assert_decided(&s, &other, "yes");
+        assert!(events(&s, "decide.recovered").is_empty());
+    }
+
+    #[test]
+    fn an_outage_is_said_once_and_its_recovery_once() {
+        let _serial = serial();
+        let s = decide_store("");
+        fake(&s, |f| f.err = "502 bad gateway".into());
+        let first = ask(&s, "out-ask");
         decide_pass(&s, "proj", TEST_NOW);
         assert_left_to_lead(&s, &first);
         let fb = events(&s, "decide.fallback");
         assert_eq!(fb.len(), 1);
         let v = detail(&fb[0]);
-        assert!(
-            v["reason"].as_str().unwrap().contains("unreadable answer"),
-            "{v}"
-        );
+        assert!(v["reason"].as_str().unwrap().contains("502"), "{v}");
         assert_eq!(v["decided_model"], "decide-small");
         assert_eq!(v["decided_provider"], "decidefake");
         // Still out, once the ask may be tried again: counted, not said
@@ -1098,6 +1305,7 @@ mod tests {
         assert_eq!(s.meta(OUTAGE_COUNT_META).unwrap().0, "2");
         // An answer it can read: one recovered event, and the ask decided.
         fake(&s, |f| {
+            f.err.clear();
             f.reply = r#"{"answer":"yes","reason":"small and reversible"}"#.into()
         });
         let later = crate::util::plus_minutes(&later, RETRY_MINUTES as f64 + 1.0);
@@ -1106,7 +1314,7 @@ mod tests {
         let rec = events(&s, "decide.recovered");
         assert_eq!(rec.len(), 1);
         assert_eq!(detail(&rec[0])["fallbacks"], 2);
-        let second = ask(&s, "prose-ask-2");
+        let second = ask(&s, "out-ask-2");
         decide_pass(&s, "proj", &later);
         assert_decided(&s, &second, "yes");
         assert_eq!(events(&s, "decide.recovered").len(), 1);
@@ -1291,6 +1499,22 @@ mod tests {
     }
 
     /// The lead's jobs whose brief names `post`.
+    /// Waits (up to 10s) until no pass of `proj` is in flight, without
+    /// starting one.
+    fn wait_idle(s: &hive_store::Store) {
+        let busy = || {
+            DECIDE_RUNS
+                .lock()
+                .get(&run_key(s, "proj"))
+                .is_some_and(|r| r.inflight)
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while busy() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!busy(), "the pass is still in flight");
+    }
+
     fn lead_jobs_naming(s: &hive_store::Store, post: &str) -> usize {
         crate::util::must_rows(
             &s.conn().unwrap(),
@@ -1458,17 +1682,11 @@ mod tests {
         set(&s, "decide_model", "");
         fake(&s, |f| f.panic = true);
         let post = ask(&s, "panic-ask");
-        let wait_lines = |s: &hive_store::Store, now: &str| {
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
-            let mut lines = tend_decide(s, "proj", now);
-            while lines.is_empty() && std::time::Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(20));
-                lines = tend_decide(s, "proj", now);
-            }
-            lines
-        };
-        let lines = wait_lines(&s, TEST_NOW);
-        assert!(lines.iter().any(|l| l.contains("panicked")), "{lines:?}");
+        assert!(tend_decide(&s, "proj", TEST_NOW).is_empty());
+        // The call that hands over the panicked pass's lines also starts the
+        // next pass: the fake is flipped before it, never after (the review
+        // of pull request 278 saw the second pass read panic = true).
+        wait_idle(&s);
         let fb = events(&s, "decide.fallback");
         assert_eq!(fb.len(), 1);
         assert!(
@@ -1485,7 +1703,15 @@ mod tests {
             f.panic = false;
             f.list = vec!["small".into(), "fake-default".into()];
         });
-        let lines = wait_lines(&s, TEST_NOW);
+        let lines = tend_decide(&s, "proj", TEST_NOW);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("panicked") && l.contains("the asks stay with the lead")),
+            "{lines:?}"
+        );
+        wait_idle(&s);
+        let lines = tend_decide(&s, "proj", TEST_NOW);
         assert!(lines.iter().any(|l| l.contains(&post)), "{lines:?}");
         let d = decision(&s, &post);
         assert_eq!(d.str("answer"), "yes", "{d:?}");
@@ -1511,7 +1737,12 @@ mod tests {
                  BEGIN SELECT RAISE(ABORT, 'the store refuses the write'); END;",
             )
             .unwrap();
-        let inflight = || DECIDE_RUNS.lock().get("proj").is_some_and(|r| r.inflight);
+        let inflight = || {
+            DECIDE_RUNS
+                .lock()
+                .get(&run_key(&s, "proj"))
+                .is_some_and(|r| r.inflight)
+        };
         assert!(tend_decide(&s, "proj", TEST_NOW).is_empty());
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while inflight() && std::time::Instant::now() < deadline {
@@ -1612,6 +1843,306 @@ mod tests {
         decide_pass(&s, "proj", TEST_NOW);
         assert_decided(&s, &first, "yes");
         assert_decided(&s, &second, "yes");
+    }
+
+    /// TASK-148 item 5: a switch to shadow mid-pass does not stop the pass:
+    /// it keeps calling and only records from then on.
+    #[test]
+    fn shadow_mid_pass_keeps_calling_and_only_records() {
+        let _serial = serial();
+        let s = decide_store(r#"{"answer":"yes","reason":"fine"}"#);
+        let first = ask(&s, "shadow-1");
+        let second = ask(&s, "shadow-2");
+        let store = (*s).clone();
+        during(&s, move || {
+            store
+                .set_setting(crate::util::HUMAN_AGENT, "decide.mode", "shadow")
+                .unwrap();
+        });
+        let lines = decide_pass(&s, "proj", TEST_NOW);
+        assert_eq!(calls(&s).calls, 2, "the pass went on: {lines:?}");
+        assert!(is_nil_row(&decision(&s, &first)));
+        assert!(is_nil_row(&decision(&s, &second)));
+        let shadow = events(&s, "decide.shadow");
+        assert_eq!(shadow.len(), 2, "{lines:?}");
+        assert!(events(&s, "decide").is_empty());
+    }
+
+    /// TASK-148 item 5: a call that errors is one failed try of the ask it
+    /// was about, besides the outage; the asks behind it get none.
+    #[test]
+    fn a_call_error_is_one_try_of_that_ask() {
+        let _serial = serial();
+        let s = decide_store("");
+        fake(&s, |f| f.err = "502 bad gateway".into());
+        let first = ask(&s, "try-1");
+        let second = ask(&s, "try-2");
+        decide_pass(&s, "proj", TEST_NOW);
+        let tries = events(&s, FAILED_ACTION);
+        assert_eq!(tries.len(), 1);
+        assert_eq!(tries[0].str("subject"), first);
+        assert!(
+            detail(&tries[0])["reason"]
+                .as_str()
+                .unwrap()
+                .contains("502")
+        );
+        assert_left_to_lead(&s, &second);
+    }
+
+    /// TASK-148 item 5: an ask `hive_board::decide` refuses is recorded as
+    /// refused, never put to the role again, and is the lead's.
+    #[test]
+    fn a_refused_ask_goes_to_the_lead() {
+        let _serial = serial();
+        let s = decide_store(r#"{"answer":"yes","reason":"fine"}"#);
+        let post = ask(&s, "refused-then-lead");
+        // A compute request filed on the ask while the role thinks makes it
+        // money: `hive_board::decide` refuses the role's answer.
+        let store = (*s).clone();
+        let id = post.clone();
+        during(&s, move || {
+            store
+                .conn()
+                .unwrap()
+                .execute(
+                    "INSERT OR IGNORE INTO compute_requests \
+                     (id, project, requested_by, size, hours, proposal_post, at, updated_at) \
+                     VALUES ('CR-001', 'proj', 'daemon', 'small', 1, ?, '', '')",
+                    [&id],
+                )
+                .unwrap();
+        });
+        let lines = decide_pass(&s, "proj", TEST_NOW);
+        assert!(lines.iter().any(|l| l.contains("refused")), "{lines:?}");
+        assert_eq!(events(&s, "decide.refused").len(), 1);
+        assert!(is_nil_row(&decision(&s, &post)));
+        let later = crate::util::plus_minutes(TEST_NOW, RETRY_MINUTES as f64 + 1.0);
+        assert!(decide_asks(&s, "proj", &later).is_empty());
+        decide_pass(&s, "proj", &later);
+        assert_eq!(calls(&s).calls, 1, "not asked again");
+        crate::lead::tend_lead(&s, "proj".into(), later, "daemon".into());
+        assert_eq!(lead_jobs_naming(&s, &post), 1);
+    }
+
+    /// TASK-148 item 5: with the owner at hand, an ask the role passed, one
+    /// it failed on and one an outage left reach the lead all the same.
+    #[test]
+    fn passed_failed_and_outage_asks_reach_the_lead_with_the_owner_present() {
+        let _serial = serial();
+        let s = decide_store(r#"{"answer":"pass","reason":""}"#);
+        set(&s, "owner.presence", "present");
+        fake(&s, |f| {
+            f.replies = vec![("bad-one".into(), "maybe".into())];
+        });
+        let passed = ask(&s, "pass-one");
+        let bad = ask(&s, "bad-one");
+        decide_pass(&s, "proj", TEST_NOW);
+        assert_eq!(events(&s, "decide.pass").len(), 1);
+        assert_eq!(events(&s, FAILED_ACTION).len(), 1);
+        crate::lead::tend_lead(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        assert_eq!(lead_jobs_naming(&s, &passed), 1, "the passed ask");
+        assert_eq!(lead_jobs_naming(&s, &bad), 1, "the failed ask");
+
+        let s = decide_store("");
+        set(&s, "owner.presence", "present");
+        fake(&s, |f| f.err = "502 bad gateway".into());
+        let out = ask(&s, "outage-one");
+        decide_pass(&s, "proj", TEST_NOW);
+        assert!(outage_open(&s));
+        crate::lead::tend_lead(&s, "proj".into(), TEST_NOW.into(), "daemon".into());
+        assert_eq!(lead_jobs_naming(&s, &out), 1, "the outage's ask");
+    }
+
+    /// TASK-148 item 2: an empty `decide_model` resolves the provider's
+    /// default once, not on every pass that has asks.
+    #[test]
+    fn the_resolved_default_model_is_kept_between_passes() {
+        let _serial = serial();
+        let s = decide_store(r#"{"answer":"no","reason":"stale"}"#);
+        set(&s, "decide_model", "");
+        fake(&s, |f| f.list = vec!["first".into(), "fake-default".into()]);
+        ask(&s, "cache-1");
+        decide_pass(&s, "proj", TEST_NOW);
+        ask(&s, "cache-2");
+        decide_pass(&s, "proj", TEST_NOW);
+        let f = calls(&s);
+        assert_eq!(f.calls, 2);
+        assert_eq!(f.models, vec!["fake-default".to_string(); 2]);
+        assert_eq!(f.list_calls, 1, "the model list was fetched again");
+    }
+
+    /// TASK-148 item 7: while every pass panics (a store that refuses
+    /// writes) the passes back off 1, 5 and 15 minutes from the second
+    /// panic in a row, and a pass that ends normally resets the wait.
+    #[test]
+    fn repeated_panics_of_the_pass_back_off() {
+        let _serial = serial();
+        let s = decide_store(r#"{"answer":"pass","reason":""}"#);
+        ask(&s, "backoff-ask");
+        refuse_events(&s);
+        let tick = |at: &str| {
+            let lines = tend_decide(&s, "proj", at);
+            wait_idle(&s);
+            lines
+        };
+        tick(TEST_NOW);
+        assert_eq!(calls(&s).calls, 1);
+        // The first panic waits for nothing.
+        tick(TEST_NOW);
+        assert_eq!(calls(&s).calls, 2);
+        // The second waits a minute.
+        let lines = tick(TEST_NOW);
+        assert_eq!(calls(&s).calls, 2, "no pass inside the wait");
+        assert!(lines.iter().any(|l| l.contains("waits 1 min")), "{lines:?}");
+        tick(&crate::util::plus_minutes(TEST_NOW, 0.5));
+        assert_eq!(calls(&s).calls, 2);
+        tick(&crate::util::plus_minutes(TEST_NOW, 1.5));
+        assert_eq!(calls(&s).calls, 3);
+        // The third waits five.
+        tick(&crate::util::plus_minutes(TEST_NOW, 5.0));
+        assert_eq!(calls(&s).calls, 3);
+        tick(&crate::util::plus_minutes(TEST_NOW, 7.0));
+        assert_eq!(calls(&s).calls, 4);
+        // The fourth and later fifteen.
+        tick(&crate::util::plus_minutes(TEST_NOW, 20.0));
+        assert_eq!(calls(&s).calls, 4);
+        // The store takes writes again: the pass ends normally and the next
+        // tick runs at once.
+        s.conn()
+            .unwrap()
+            .execute_batch("DROP TRIGGER no_events")
+            .unwrap();
+        tick(&crate::util::plus_minutes(TEST_NOW, 23.0));
+        assert_eq!(calls(&s).calls, 5);
+        let second = ask(&s, "backoff-ask-2");
+        tick(&crate::util::plus_minutes(TEST_NOW, 23.0));
+        tick(&crate::util::plus_minutes(TEST_NOW, 23.0));
+        assert_eq!(calls(&s).calls, 6, "no wait after a pass that ended");
+        assert_eq!(events(&s, "decide.pass").len(), 2, "{second}");
+    }
+
+    /// TASK-148 item 8: an outage opened while the events table refused the
+    /// insert gets its `decide.fallback` event on its next fallback.
+    #[test]
+    fn an_outage_opened_without_its_event_gets_it_later() {
+        let _serial = serial();
+        let s = decide_store("");
+        let by = role_by(&s);
+        refuse_events(&s);
+        fallback(&s, TEST_NOW, "proj", "P-1", &by, "502 bad gateway");
+        assert!(outage_open(&s));
+        s.conn()
+            .unwrap()
+            .execute_batch("DROP TRIGGER no_events")
+            .unwrap();
+        assert!(events(&s, "decide.fallback").is_empty());
+        fallback(&s, TEST_NOW, "proj", "P-2", &by, "a later reason");
+        let fb = events(&s, "decide.fallback");
+        assert_eq!(fb.len(), 1);
+        assert_eq!(detail(&fb[0])["reason"], "502 bad gateway");
+        fallback(&s, TEST_NOW, "proj", "P-3", &by, "502 bad gateway");
+        assert_eq!(events(&s, "decide.fallback").len(), 1, "said once");
+        assert_eq!(s.meta(OUTAGE_COUNT_META).unwrap().0, "3");
+        // After a recovery the next outage is said again.
+        recovered(&s, TEST_NOW, &by);
+        fallback(&s, TEST_NOW, "proj", "P-4", &by, "timeout");
+        assert_eq!(events(&s, "decide.fallback").len(), 2);
+    }
+
+    /// TASK-148 item 9: a store that refuses every write (events and meta):
+    /// the pass ends, no outage could be recorded, so the line says the next
+    /// pass tries again, not that the lead has the asks.
+    #[test]
+    fn every_write_refused_ends_the_pass_and_says_the_next_pass_tries() {
+        let _serial = serial();
+        let s = decide_store(r#"{"answer":"pass","reason":""}"#);
+        let post = ask(&s, "refused-ask");
+        refuse_events(&s);
+        s.conn()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER no_meta BEFORE INSERT ON meta \
+                 BEGIN SELECT RAISE(ABORT, 'the store refuses the write'); END; \
+                 CREATE TRIGGER no_meta_update BEFORE UPDATE ON meta \
+                 BEGIN SELECT RAISE(ABORT, 'the store refuses the write'); END;",
+            )
+            .unwrap();
+        tend_decide(&s, "proj", TEST_NOW);
+        wait_idle(&s);
+        assert!(!outage_open(&s));
+        let lines = tend_decide(&s, "proj", TEST_NOW);
+        wait_idle(&s);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("panicked") && l.contains("the next pass tries again")),
+            "{lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains("stay with the lead")),
+            "{lines:?}"
+        );
+        assert!(is_nil_row(&decision(&s, &post)));
+    }
+
+    /// TASK-148 item 9: a pass thread that cannot start leaves no mark in
+    /// flight; the next tick starts the pass.
+    #[test]
+    fn a_pass_thread_that_cannot_start_is_tried_on_the_next_tick() {
+        let _serial = serial();
+        let s = decide_store(r#"{"answer":"yes","reason":"fine"}"#);
+        let post = ask(&s, "spawn-ask");
+        SPAWN_FAILS.lock().unwrap().insert(s.home.clone());
+        let lines = tend_decide(&s, "proj", TEST_NOW);
+        SPAWN_FAILS.lock().unwrap().remove(&s.home);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("could not start") && l.contains("the next pass tries again")),
+            "{lines:?}"
+        );
+        assert_eq!(calls(&s).calls, 0);
+        tend_decide(&s, "proj", TEST_NOW);
+        wait_idle(&s);
+        assert_decided(&s, &post, "yes");
+    }
+
+    /// TASK-148 item 10: the daemon reads a project's asks once per tick
+    /// and hands the same list to the role and to the lead.
+    #[test]
+    fn the_role_and_the_lead_work_from_the_asks_they_are_handed() {
+        let _serial = serial();
+        let s = decide_store(r#"{"answer":"yes","reason":"fine"}"#);
+        set(&s, "owner.presence", "present");
+        let post = ask(&s, "handed");
+        // Handed no asks, neither starts work on the waiting one.
+        assert!(tend_decide_with(&s, "proj", TEST_NOW, &[]).is_empty());
+        wait_idle(&s);
+        assert_eq!(calls(&s).calls, 0);
+        set(&s, "decide.mode", "off");
+        crate::lead::tend_lead_with(
+            &s,
+            "proj".into(),
+            TEST_NOW.into(),
+            "daemon".into(),
+            Vec::new(),
+        );
+        assert_eq!(lead_jobs_naming(&s, &post), 0);
+        // Handed the tick's reading, the lead sits for it.
+        let asks = crate::lead::owner_addressed_asks(&s, "proj".into());
+        crate::lead::tend_lead_with(&s, "proj".into(), TEST_NOW.into(), "daemon".into(), asks);
+        assert_eq!(lead_jobs_naming(&s, &post), 1);
+    }
+
+    fn refuse_events(s: &hive_store::Store) {
+        s.conn()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER no_events BEFORE INSERT ON events \
+                 BEGIN SELECT RAISE(ABORT, 'the store refuses the write'); END;",
+            )
+            .unwrap();
     }
 
     /// TASK-129: presence plays no part, so an owner who returns while the

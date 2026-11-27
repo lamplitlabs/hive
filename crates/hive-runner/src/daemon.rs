@@ -1659,6 +1659,20 @@ pub(crate) fn daemon(
     for line in crate::selfupdate::check_restored(s, self_env.clone()) {
         say(&o, line);
     }
+    // PR #278 review, point 5: once per store, the open asks that name no
+    // answers to pick go to their leads (counted in the log).
+    if !o.dry_run {
+        let slugs = s
+            .conn()
+            .map(|c| crate::util::must_rows(&c, "SELECT slug FROM projects ORDER BY slug", &[]))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| r.str("slug"))
+            .collect::<Vec<_>>();
+        for line in crate::lead::hand_bare_asks_once(s, &slugs, &s.now(), &actor) {
+            say(&o, line);
+        }
+    }
     let compute = crate::compute::new_compute_worker(
         &compute_ctx,
         s,
@@ -2161,14 +2175,22 @@ pub(crate) fn daemon(
                     stages.mark("records");
                     // The decide role (ADR-072) answers the routine asks
                     // it can before the lead's pass reads what is left.
+                    // Both work from one reading of the project's asks:
+                    // it reads every marked post's thread.
+                    let asks = crate::lead::owner_addressed_asks(s, slug.clone());
                     if !o.dry_run {
-                        for line in crate::decide::tend_decide(s, &slug, &now) {
+                        for line in crate::decide::tend_decide_with(s, &slug, &now, &asks) {
                             say(&o, line);
                         }
                     }
                     stages.mark("decide");
-                    for line in crate::lead::tend_lead(s, slug.clone(), now.clone(), actor.clone())
-                    {
+                    for line in crate::lead::tend_lead_with(
+                        s,
+                        slug.clone(),
+                        now.clone(),
+                        actor.clone(),
+                        asks,
+                    ) {
                         say(&o, line);
                     }
                     for line in crate::lead_roles::tend_role_leads(s, &slug, &now, &actor) {

@@ -299,7 +299,7 @@ const SETTING_LABELS: Record<string, { on?: string; off?: string; choices?: Reco
   "landing.ui_report": { choices: { require: "Wait for the report", warn: "Merge, and say it has none", off: "Don't ask for one" } },
   "landing.auto_stash": { choices: ON_OFF },
   "dependencies.security_updates": { on: "On: agents fix the alerts, one small update at a time", off: "Off: the alerts wait for me" },
-  "dependencies.major_updates": { choices: { ask: "Ask me: a major upgrade waits in For you with Yes / No", auto: "Automatic: agents do major upgrades like any other fix" } },
+  "dependencies.major_updates": { choices: { ask: "Ask me: a major upgrade waits on the Sessions strip with Upgrade it / Leave it to me", auto: "Automatic: agents do major upgrades like any other fix" } },
   "pipeline.watch": { choices: { off: "Off: I watch the checks myself", watch: "Tell me when a check fails", fix: "Tell me and have an agent fix it" } },
   "review.merge": { choices: { auto: "Agents merge safe pull requests themselves", ask: "Ask me: every merge waits for me" } },
   "compute.provider": { choices: { azure: "Azure", aws: "AWS", gcp: "Google Cloud", multipass: "Multipass (on this computer)" } },

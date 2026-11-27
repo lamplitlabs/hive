@@ -105,7 +105,7 @@ nothing when nothing does:
   its buttons (**Approve**/**Deny** for a compute request, **Accept** and
   **Decline** for a decision record or a proposal, one button per answer for
   a question with the **Recommended** one first; `hive decide <post>
-  yes|no|<answer>` from the terminal).
+  yes|no`, or `--option '<answer>'`, from the terminal).
   A decision record opens in a side panel with its three answers: accept,
   defer or decline with your own words - the same `hive record accept` the
   terminal runs, recorded as `human` with the words in the record's history.
@@ -160,8 +160,9 @@ the evolution loop's "Evolution stopped; owner review needed" stops. Every
 question shows its answers as buttons - **Yes** and **No** (or the post's
 words for them), or one per `Option:` line - with the one the asker
 recommends first and marked **Recommended**; nothing needs typing, and a
-note is optional (`hive decide <post> yes|no|<answer> --words '...'` from
-the terminal). The hard stops among them are also on the Sessions strip,
+note is optional (`hive decide <post> yes|no --words '...'`, or
+`hive decide <post> --option '<answer>'`, from the terminal). An `Option:`
+pick is recorded as that pick, never as a yes. The hard stops among them are also on the Sessions strip,
 with the same buttons. A hard stop with no answers, or none recommended,
 never reaches you: it goes to the project's lead, which asks again with the
 answers written out. Among the questions the stops come first; a decision

@@ -292,7 +292,9 @@ function ComputeActions({ r, caps, register }: { r: ReturnType<typeof useInbox>[
   return (
     <>
       <Pair yes={yes} no={no} yesLabel="Approve" noLabel="Deny" />
+      {/* One dialog for both answers: the key mounts it anew for each, so the words Deny opens with are never sent with an Approve. */}
       <ConfirmDialog
+        key={which ?? "closed"}
         open={which !== null}
         onOpenChange={(v) => !v && setWhich(null)}
         title={approve ? "Approve the extra machine?" : "Deny the extra machine?"}
@@ -305,7 +307,7 @@ function ComputeActions({ r, caps, register }: { r: ReturnType<typeof useInbox>[
         }
         action={approve ? "Approve" : "Deny"}
         destructive={!approve}
-        words={{ label: approve ? "A note for the agent (optional)" : "Tell the agent why", placeholder: approve ? "Approved: needed for the load test." : "Not now. Use the machines you have.", required: !approve }}
+        words={{ label: approve ? "A note for the agent (optional)" : "Tell the agent why", placeholder: approve ? "Approved: needed for the load test." : "Not now. Use the machines you have.", required: !approve, initial: approve ? "" : "Not now. Use the machines you have." }}
         success={approve ? "Approved. Hive will start the machine." : "Denied. The agent will see your note."}
         onConfirm={(w) => (approve ? writes.approveCompute(r.id, w) : writes.denyCompute(r.id, w))}
         invalidates={COMPUTE_CHANGES}
