@@ -53,8 +53,36 @@ console tab is open.
 ## 2. Read what waits
 
 The strip on **Sessions** marks each row with its hard stop: **Money**,
-**Can't be undone**, **Credentials** or **Publication**. A project's **For
-you** tab holds these kinds of row:
+**Can't be undone**, **Credentials** or **Publication**, or **Only you**
+for the rest (a Tier 2 decision, the project goal, the constitution, the
+self-improvement loop's stop or pause).
+
+How Hive knows an ask is at a hard stop:
+
+- An ask that carries a line `Hard stop: <class>` (money, credentials,
+  publication, deletion, goal, constitution, tier 2) is always yours,
+  whatever else it says. The briefs tell workers and leads to write that
+  line whenever an ask touches one of these.
+- Without the line, a word list is the net: amounts (`$26/month`,
+  `40 USD`), buying, renting or a paid tier; tokens, keys and `*_API_KEY`
+  names, or rotating one; publishing, production, making a repository
+  public, cutting a release or sending e-mail; deleting branches, tags,
+  releases or data, dropping a table or force-pushing; the project goal,
+  the constitution, a licence change, *Tier 2* or *owner-only*. The net
+  can miss an ask worded around it; the explicit line cannot.
+- The self-improvement loop's stop and its flat-fixture pause are yours:
+  only your answer, or the loop's own review when `evolve.flat_wait_hours`
+  allows it, lets the loop run again.
+
+Some gates hold in code whatever an ask's words say: a change to an
+owner-only path (`docs/decisions/`, `.github/`, the constitution, the
+evaluators) is not landed without you; a `pair:` or `onboard:` marker, and
+any other command an ask would authorize, takes only your **Yes**; a
+compute request is money and waits for you unless `compute.auto_approve`
+and the caps pre-authorize it; and the project goal is set by you alone
+(`hive goal set`).
+
+A project's **For you** tab holds these kinds of row:
 
 | Kind | What waits | Buttons on the row |
 | --- | --- | --- |
@@ -106,7 +134,7 @@ of its answers:
 ```bash
 hive show 20261123T042647Z-quartz-14
 hive decide 20261123T042647Z-quartz-14 yes --words 'Yes, and cap the total wait at ten seconds.'
-hive decide 20261123T042647Z-cinder-3 'A local fake'
+hive decide 20261123T042647Z-cinder-3 --option 'A local fake'
 ```
 
 ```text
@@ -115,7 +143,11 @@ queued job-20261123T042652Z-85dbad: Act on the human's yes: Retry upstream calls
 ```
 
 A pick records the answer, what it does and whether it was the
-recommended one; `--words` adds your note.
+recommended one; `--words` adds your note. A pick of an `Option:` answer
+is recorded as that pick, never as a yes: the job it queues does what the
+picked answer says. An ask whose yes runs a command (a `pair:` or
+`onboard:` line, say) takes **Yes** or **No** only, so declining it can
+never authorize the command.
 
 ## 4. Answer a lead on a task
 

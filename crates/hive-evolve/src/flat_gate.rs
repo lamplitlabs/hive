@@ -5,7 +5,8 @@
 //! every further cycle costs a worker run and a measurement and teaches
 //! nothing. The gate pauses the loop with one owner question on the project's
 //! `evolution/loop-gate` thread. A fixture enabled since the streak began, or
-//! an answer or decision on that question, lets the loop run again; after a
+//! the owner's answer or yes on that question (never an agent's: the pause
+//! is the owner's like the stop), lets the loop run again; after a
 //! review, `evolve.flat_cycles` new tied cycles must accumulate before it asks
 //! again. The gate is a pure read: `plan` posts the question, the way it posts
 //! the failed-experiment gate's.
@@ -26,7 +27,7 @@ use rusqlite::{OptionalExtension, params};
 
 /// Summary of the owner question the gate asks for. The board coalesces open
 /// owner questions by summary and the gate finds its own by it.
-pub const FLAT_SUMMARY: &str = "Evolution paused: the fixtures do not tell variants apart";
+pub const FLAT_SUMMARY: &str = hive_store::EVOLUTION_FLAT_SUMMARY;
 
 /// The setting that sizes the window: tied cycles in a row before the gate
 /// fires; 0 turns the gate off and anything below 2 counts as 2.
@@ -62,12 +63,18 @@ pub struct FlatStreak {
 
 const QUESTION_SQL: &str = "q.project = ? AND q.kind = 'question' AND q.summary = ?";
 
-/// The owner reviewed the question: decided it, answered it, or answered
-/// later in its thread (the hub inbox folds the question away on any of
-/// these, so the gate must not wait on a question nobody sees).
-const REVIEWED_SQL: &str = "(EXISTS (SELECT 1 FROM decisions d WHERE d.post_id = q.id)
+/// The owner reviewed the question: said yes to it, answered it, or answered
+/// later in its thread. The pause is the owner's like the loop's stop
+/// (PR #278 review): only a human's answer counts, or the loop's own
+/// heal and self-review answers (`evolve.heal`, `evolve.flat_wait_hours`,
+/// which the owner sets); an agent's answer or a `no` leaves it paused.
+const REVIEWED_SQL: &str =
+    "(EXISTS (SELECT 1 FROM decisions d WHERE d.post_id = q.id AND d.answer = 'yes')
 	OR EXISTS (SELECT 1 FROM posts a WHERE a.kind = 'answer' AND a.project = q.project
-		AND (a.on_post = q.id OR (a.area = q.area AND a.thread = q.thread AND a.date > q.date))))";
+		AND (a.on_post = q.id OR (a.area = q.area AND a.thread = q.thread AND a.date > q.date))
+		AND (a.agent = 'human' OR a.agent LIKE 'human:%'
+			OR a.summary LIKE 'Evolution healed:%' OR a.summary LIKE 'Evolution resumed:%'
+			OR a.summary LIKE 'Reviewed by the loop:%')))";
 
 /// The review happened inside the window: the question itself, the decision
 /// on it, or the answer to it is dated at or after the window's oldest cycle.
@@ -75,9 +82,12 @@ const REVIEWED_SQL: &str = "(EXISTS (SELECT 1 FROM decisions d WHERE d.post_id =
 /// must accumulate before the gate asks again, whichever question it lands
 /// on (the gate coalesces onto an open question however old).
 const REVIEWED_SINCE_SQL: &str = "(q.date >= ?3
-	OR EXISTS (SELECT 1 FROM decisions d WHERE d.post_id = q.id AND d.decided_at >= ?3)
+	OR EXISTS (SELECT 1 FROM decisions d WHERE d.post_id = q.id AND d.answer = 'yes' AND d.decided_at >= ?3)
 	OR EXISTS (SELECT 1 FROM posts a WHERE a.kind = 'answer' AND a.project = q.project AND a.date >= ?3
-		AND (a.on_post = q.id OR (a.area = q.area AND a.thread = q.thread AND a.date > q.date))))";
+		AND (a.on_post = q.id OR (a.area = q.area AND a.thread = q.thread AND a.date > q.date))
+		AND (a.agent = 'human' OR a.agent LIKE 'human:%'
+			OR a.summary LIKE 'Evolution healed:%' OR a.summary LIKE 'Evolution resumed:%'
+			OR a.summary LIKE 'Reviewed by the loop:%')))";
 
 /// Closed without a review: the owner-inbox retire sweep ends a duplicate
 /// question with a `result` post.
@@ -604,6 +614,10 @@ pub fn flat_fixture_question_body(s: &hive_store::Store, project: &str) -> Resul
          (QUESTION_ID is this post's id).\n\
          - hive settings set evolve.flat_cycles 0 turns this gate off.\n"
     ));
+    // The owner answers with one pick (TASK-129); without answers the
+    // console would not show the pause to the owner at all.
+    body.push('\n');
+    body.push_str(hive_board::FLAT_PAUSE_ANSWERS);
     if crate::heal::heal_enabled(s) {
         let wait = crate::heal::flat_wait_hours(s);
         body.push_str(&format!(
@@ -675,6 +689,16 @@ mod tests {
     }
 
     fn gate_post(s: &hive_store::Store, kind: &str, on: &str, offset: i64) -> String {
+        gate_post_as(s, kind, on, offset, "human")
+    }
+
+    fn gate_post_as(
+        s: &hive_store::Store,
+        kind: &str,
+        on: &str,
+        offset: i64,
+        answerer: &str,
+    ) -> String {
         hive_board::create_post(
             s,
             hive_board::PostInput {
@@ -683,7 +707,11 @@ mod tests {
                 area: "evolution".into(),
                 thread: "loop-gate".into(),
                 for_owner: kind == "question",
-                agent: "tester".into(),
+                agent: if kind == "question" {
+                    "tester".into()
+                } else {
+                    answerer.into()
+                },
                 summary: if kind == "question" {
                     FLAT_SUMMARY.into()
                 } else {
@@ -1286,6 +1314,11 @@ mod tests {
         tie(&s, "B-002", -20);
         tie(&s, "B-003", -10);
         let question = gate_post(&s, "question", "", -9);
+        // The pause is the owner's like the stop: an agent's answer does
+        // not resume the loop (PR #278 review, point 4).
+        gate_post_as(&s, "answer", &question, -9, "tester");
+        let (found, _) = flat_fixture_gate(&s, "demo").unwrap();
+        assert_eq!(found, question, "an agent's answer resumed the loop");
         gate_post(&s, "answer", &question, -8);
         let (found, reason) = flat_fixture_gate(&s, "demo").unwrap();
         assert!(
@@ -1314,12 +1347,32 @@ mod tests {
         tie(&s, "B-002", -20);
         tie(&s, "B-003", -10);
         let question = gate_post(&s, "question", "", -9);
-        hive_board::decide(&s, &question, "no", "keep going", "human").unwrap();
+        hive_board::decide(&s, &question, "yes", "keep going", "human").unwrap();
         let (found, reason) = flat_fixture_gate(&s, "demo").unwrap();
         assert!(
             found.is_empty() && reason.is_empty(),
             "a decided question did not clear the gate: {found} {reason}"
         );
+    }
+
+    #[test]
+    fn the_owners_no_keeps_the_loop_paused() {
+        let _serial = crate::test_helpers::serial();
+        let s = gate_store("3");
+        tie(&s, "B-001", -30);
+        tie(&s, "B-002", -20);
+        tie(&s, "B-003", -10);
+        let question = gate_post(&s, "question", "", -9);
+        // The pause asks with answers, so the owner sees it with one pick.
+        let body = flat_fixture_question_body(&s, "demo").unwrap();
+        assert!(hive_board::ask_options(&body).ready(), "{body}");
+        assert_eq!(
+            hive_board::hard_stop_ask("question", FLAT_SUMMARY, "gate"),
+            "the evolution loop paused (flat fixtures)"
+        );
+        hive_board::decide(&s, &question, "no", "keep it paused", "human").unwrap();
+        let (_, reason) = flat_fixture_gate(&s, "demo").unwrap();
+        assert!(!reason.is_empty(), "a no resumed the loop");
     }
 
     #[test]

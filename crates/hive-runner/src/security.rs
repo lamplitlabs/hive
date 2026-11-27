@@ -1334,7 +1334,7 @@ impl Pass<'_> {
             a.number, a.severity, a.ghsa, a.name
         );
         let body = format!(
-            "{} in {manifest} of {} is vulnerable ({}) and the advisory names no fixed version. Hive queues the update the moment one is published and at least {} days old.\n\nYes: Look for a way around it\nNo: Keep watching\nRecommended: No - hive queues the fix itself once a patched version is published\n\nYes queues a job that looks for a replacement or a safe pin for {} within the project's checks and reports what it finds; No leaves it to the advisory. Either way the alert can be dismissed on GitHub; hive answers this finding itself once the alert closes.",
+            "{} in {manifest} of {} is vulnerable ({}) and the advisory names no fixed version. Hive queues the update the moment a fixed version is out and at least {} days old.\n\nYes: Look for a way around it\nNo: Keep watching\nRecommended: No - hive queues the fix itself once a patched version is out\n\nYes queues a job that looks for a replacement or a safe pin for {} within the project's checks and reports what it finds; No leaves it to the advisory. Either way the alert can be dismissed on GitHub; hive answers this finding itself once the alert closes.",
             a.name, self.repo, a.range, self.min_days, a.name
         );
         if let Some(post) = self.tell(summary, body) {
@@ -2116,6 +2116,15 @@ mod tests {
             unfixable
                 .str("body")
                 .contains("\nYes: Look for a way around it\nNo: Keep watching\nRecommended: No - "),
+            "{}",
+            unfixable.str("body")
+        );
+        // A routine ask: the lead (or the decide role) answers it. Its words
+        // must not read as a hard stop - "published" once made every such
+        // finding the owner's (second review of pull request 278).
+        assert_eq!(
+            hive_board::hard_stop_ask("finding", &unfixable.str("summary"), &unfixable.str("body")),
+            "",
             "{}",
             unfixable.str("body")
         );

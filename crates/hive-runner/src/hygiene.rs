@@ -143,8 +143,11 @@ pub(crate) fn post_daemon_owner_question(
     ask: DaemonQuestionAsk,
 ) -> Result<Option<Row>> {
     let mut ask = ask;
-    ask.body = with_default_answers(&ask.body);
+    // The key is the ask's own words, before the answers are appended: an
+    // open question posted before the answers existed coalesces with it
+    // (PR #278 review, point 5).
     let key = daemon_question_key(&ask.project, &ask.ask_kind, &ask.summary, &ask.body);
+    ask.body = with_default_answers(&ask.body);
     if let Some(existing) = open_daemon_question_with_key(s, &ask.project, &key) {
         note_coalesced_skip(s, &ask.now, &ask.actor, &key, &existing.str("id"));
         return Ok(None);
@@ -155,6 +158,7 @@ pub(crate) fn post_daemon_owner_question(
         "coalesce_kind".to_string(),
         serde_json::json!(ask.ask_kind.clone()),
     );
+    let (now, actor) = (ask.now.clone(), ask.actor.clone());
     crate::board::create_post(
         s,
         ask.now.clone(),
@@ -172,25 +176,31 @@ pub(crate) fn post_daemon_owner_question(
             ..Default::default()
         },
     )
-    .map(Some)
+    .map(|post| {
+        // The board folded it onto an open owner question with the same
+        // summary: that question already asks, so nothing new was posted
+        // and the caller says nothing new (no `*-wanted` event again).
+        if post.get("deduped").and_then(|v| v.as_bool()) == Some(true) {
+            note_coalesced_skip(s, &now, &actor, &key, &post.str("id"));
+            None
+        } else {
+            Some(post)
+        }
+    })
 }
 
 /// The answers a daemon question offers when its body names none
-/// (TASK-129: the owner answers every question with one pick, the
-/// recommended one first). The daemon asks about this machine - a login, a
-/// hand, a held drain - which a person fixes on the machine, so the
-/// question stays the owner's with these two answers.
+/// ([`hive_board::daemon_default_answers`]; the hub shows an older one with
+/// the same).
 pub(crate) fn with_default_answers(body: &str) -> String {
     if hive_board::ask_options(body).ready() {
         return body.to_string();
     }
-    let mut out = body.trim_end().to_string();
-    out.push_str(
-        "\n\nYes: Hand it to an agent - a job looks into what it names and reports back\n\
-No: I handle it - the question closes; the daemon asks again if it still holds\n\
-Recommended: No - it is about this machine; do what the post says on it\n",
-    );
-    out
+    format!(
+        "{}\n\n{}",
+        body.trim_end(),
+        hive_board::daemon_default_answers(body)
+    )
 }
 
 #[cfg(test)]
@@ -799,5 +809,56 @@ mod tests {
             ),
             2
         );
+    }
+
+    #[test]
+    fn daemon_owner_question_from_before_the_answers_coalesces_and_keeps_them() {
+        let _serial = serial();
+        let s = new_store();
+        new_bare_repo(&s);
+        // An open daemon question posted before every owner question had
+        // to carry answers: no answers in its body, no coalesce key.
+        let old = crate::board::create_post(
+            &s,
+            crate::util::plus_minutes(TEST_NOW, -30.0),
+            crate::board::PostOpts {
+                kind: "question".into(),
+                project: "proj".into(),
+                area: "runner".into(),
+                thread: "login-old".into(),
+                summary: "Login wanted".into(),
+                body: "Sign in with GitHub before queued jobs can run.".into(),
+                for_owner: true,
+                agent: crate::board::actor_agent(&s, "daemon".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!hive_board::ask_options(&old.str("body")).ready());
+        // Asking again finds it: nothing new is posted, so the caller
+        // raises no second `*-wanted` event.
+        assert!(
+            post_daemon_owner_question(&s, ask("Login wanted", "proj", "login"))
+                .unwrap()
+                .is_none()
+        );
+        // The same summary under other words folds onto it on the board
+        // (create_post's dedupe): still nothing new for the caller.
+        let mut other = ask("Login wanted", "proj", "login-2");
+        other.body = "Sign in again: the token expired.".into();
+        assert!(post_daemon_owner_question(&s, other).unwrap().is_none());
+        assert_eq!(
+            crate::test_helpers::count(
+                &s,
+                "SELECT COUNT(*) AS n FROM posts WHERE kind = 'question'",
+                &[]
+            ),
+            1
+        );
+        // A new one carries the daemon's answers, one recommended.
+        let mut fresh = ask("Tool wanted", "proj", "tool");
+        fresh.ask_kind = "toolkit".into();
+        let post = post_daemon_owner_question(&s, fresh).unwrap().unwrap();
+        assert!(hive_board::ask_options(&post.str("body")).ready());
     }
 }

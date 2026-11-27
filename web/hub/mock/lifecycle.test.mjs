@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { projectLifecycle, taskLifecycle } from "./lifecycle.mjs";
 
 const task = (over) => ({ id: "TASK-1", project: "demo", status: "open", lead: "", created_at: "2026-11-26T10:00:00Z", ...over });
@@ -41,4 +44,21 @@ test("the mock groups a project's tasks by phase", () => {
   assert.deepEqual(p.phases.find((x) => x.phase === "done").tasks, ["TASK-2"]);
   assert.equal(p.phases.length, 8);
   assert.equal(p.tasks.length, 2);
+});
+
+// The cases crates/hive-hub/src/phases.rs runs through the hub's own
+// derivation: the mock places every one where the hub does.
+const here = dirname(fileURLToPath(import.meta.url));
+const { cases } = JSON.parse(readFileSync(join(here, "lifecycle-cases.json"), "utf8"));
+
+test("the mock places every shared case where the hub does", () => {
+  assert.ok(cases.length >= 20);
+  for (const c of cases) {
+    const l = taskLifecycle({
+      task: task({ ...c.task, id: "TASK-007" }),
+      jobs: c.jobs.map((j) => ({ created_at: "2026-11-26T10:00:00Z", finished_at: "", branch: "", ...j })),
+      delivery: c.delivery ? { url: "", at: "2026-11-26T11:00:00Z", note: "", ...c.delivery } : null,
+    });
+    assert.deepEqual([l.phase, l.waits_on], [c.phase, c.waits_on], c.name);
+  }
 });

@@ -1252,7 +1252,7 @@ fn compute_request_says_how_many_machine_runs_landed() {
         "{line}"
     );
     assert!(line.contains("did not come back"), "{line}");
-    let r = request_compute(&s, "demo", "demo-lead", "Standard_B2ms", 100, "a big run").unwrap();
+    let r = request_compute(&s, "demo", "demo-lead", "Standard_B2ms", 4, "a big run").unwrap();
     let body: String = conn
         .query_row(
             "SELECT body FROM posts WHERE id = ?",
@@ -1548,6 +1548,87 @@ fn no_hours_a_day_approves_nothing() {
         .unwrap();
     let r = request_compute(&s, "demo", "demo-lead", "", 1, "one allowed").unwrap();
     assert_eq!(r.status, "approved", "{r:?}");
+}
+
+/// `hive compute request --hours 2147483647` with an hour already counted today wrapped the
+/// day's sum round to a negative number in a release build, was approved on its own, and the
+/// worker's cap let a machine with no hour limit be rented. It is refused at the door now, with
+/// the most a request may ask in the error.
+#[test]
+fn a_request_for_more_hours_than_a_day_allows_is_refused() {
+    let _serial = crate::test_helpers::serial();
+    let s = new_store();
+    for (k, v) in [
+        ("compute.auto_approve", "1"),
+        ("compute.max_vms", "2"),
+        ("compute.max_hours_per_day", "8"),
+    ] {
+        s.set_setting("human", k, v).unwrap();
+    }
+    let first = request_compute(&s, "demo", "demo-lead", "", 1, "one hour").unwrap();
+    assert_eq!(first.status, "approved", "{first:?}");
+    let err = request_compute(&s, "demo", "demo-lead", "", i32::MAX, "forever")
+        .expect_err("an absurd request is refused");
+    let said = format!("{err:#}");
+    assert!(
+        said.contains("2147483647 hours") && said.contains("(8)"),
+        "{said}"
+    );
+    let err = request_compute(&s, "demo", "demo-lead", "", 9, "past the cap").expect_err("refused");
+    assert!(format!("{err:#}").contains("(8)"), "{err:#}");
+    // A cap above a day still lets one request ask no more than a day.
+    s.set_setting("human", "compute.max_hours_per_day", "100")
+        .unwrap();
+    let err = request_compute(&s, "demo", "demo-lead", "", 25, "past a day").expect_err("refused");
+    assert!(format!("{err:#}").contains("(24)"), "{err:#}");
+    let fine = request_compute(&s, "demo", "demo-lead", "", 24, "a day").unwrap();
+    assert_eq!(fine.status, "approved", "{fine:?}");
+    // Nothing of the refused ones was recorded.
+    let n: i64 = s
+        .conn()
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM compute_requests", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 2);
+}
+
+/// A day whose sum passes what an i32 holds (rows written before the door refused such asks)
+/// counts as over every cap; it never wraps round to a small or negative number.
+#[test]
+fn a_day_sum_past_i32_counts_as_over_the_cap() {
+    let _serial = crate::test_helpers::serial();
+    let s = new_store();
+    let conn = s.conn().unwrap();
+    for id in ["CR-001", "CR-002"] {
+        conn.execute(
+            "INSERT INTO compute_requests(id,project,requested_by,size,hours,reason,status,decided_by,executor,at,updated_at) VALUES(?,'demo','demo-lead','Standard_B2ms',?,'more hands','approved','hive','',?,?)",
+            params![id, i32::MAX, "2026-09-06T20:00:00Z", "2026-09-06T20:00:00Z"],
+        )
+        .unwrap();
+    }
+    drop(conn);
+    let caps = get_caps(&s).unwrap();
+    assert_eq!(caps.hours_today, i32::MAX);
+    for (k, v) in [
+        ("compute.auto_approve", "1"),
+        ("compute.max_vms", "5"),
+        ("compute.max_hours_per_day", "24"),
+    ] {
+        s.set_setting("human", k, v).unwrap();
+    }
+    let r = request_compute(&s, "demo", "demo-lead", "", 1, "one more").unwrap();
+    assert_eq!(r.status, "pending", "{r:?}");
+}
+
+/// The day's hours are counted from the store's clock; one that does not read is an error, so
+/// nothing is rented on a count of zero.
+#[test]
+fn a_clock_that_does_not_read_counts_no_hours() {
+    let _serial = crate::test_helpers::serial();
+    let s = new_store();
+    let conn = s.conn().unwrap();
+    let err = hours_today(&conn, "not a time").expect_err("no count from a bad clock");
+    assert!(format!("{err:#}").contains("does not read"), "{err:#}");
 }
 
 #[test]
@@ -6439,14 +6520,30 @@ fn lifecycle_for_reads_the_tasks_rows() {
         .unwrap()
         .execute("UPDATE runs SET status = 'done' WHERE id = 'run-1'", [])
         .unwrap();
+    // The job's own column is empty (a landing or a rebase job took it):
+    // the run's branch is what Verify left, but nothing waits to be opened.
+    let l = lifecycle_for(&s, &t.id).unwrap();
+    assert_eq!(
+        (l.phase, l.waits_on),
+        (Phase::Shape, WaitsOn::Lead),
+        "{l:?}"
+    );
+    let verify = l.steps.iter().find(|p| p.phase == Phase::Verify).unwrap();
+    assert_eq!(verify.left[0].id, "hive/worker/J-1");
+    // With its branch in the job's column the step delivers.
+    s.conn()
+        .unwrap()
+        .execute(
+            "UPDATE jobs SET branch = 'hive/worker/J-1' WHERE id = 'J-1'",
+            [],
+        )
+        .unwrap();
     let l = lifecycle_for(&s, &t.id).unwrap();
     assert_eq!(
         (l.phase, l.waits_on),
         (Phase::Review, WaitsOn::Runner),
         "{l:?}"
     );
-    let verify = l.steps.iter().find(|p| p.phase == Phase::Verify).unwrap();
-    assert_eq!(verify.left[0].id, "hive/worker/J-1");
 
     let opened = serde_json::json!({"project": "demo", "task": t.id, "number": 41, "url": "https://github.com/o/r/pull/41", "kind": "task"});
     hive_bus::emit(&s, "daemon", "land.pr", "demo", opened.clone()).unwrap();
@@ -6477,4 +6574,132 @@ fn lifecycle_for_reads_the_tasks_rows() {
     assert_eq!(all.len(), 1);
     assert_eq!(all[0].phase, Phase::Done);
     assert_eq!(by_phase(&all)[&Phase::Done], vec![t.id.clone()]);
+}
+
+thread_local! {
+    static STATEMENTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn count_statement(e: rusqlite::trace::TraceEvent<'_>) {
+    if let rusqlite::trace::TraceEvent::Stmt(..) = e {
+        STATEMENTS.with(|c| c.set(c.get() + 1));
+    }
+}
+
+/// The statements one read of a project's lifecycles runs on `conn`.
+fn lifecycle_statements(s: &hive_store::Store, project: &str) -> (usize, Vec<TaskLifecycle>) {
+    let conn = s.conn().unwrap();
+    STATEMENTS.with(|c| c.set(0));
+    conn.trace_v2(
+        rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+        Some(count_statement),
+    );
+    let all = crate::lifecycle::project_lifecycles(&conn, project).unwrap();
+    conn.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+    (STATEMENTS.with(std::cell::Cell::get), all)
+}
+
+/// Adds `n` open tasks to `demo`, each with a lead, two steps (one with a
+/// run) and an open pull request with a review, plus one done task.
+fn busy_tasks(s: &hive_store::Store, n: usize) {
+    for i in 0..n {
+        let t = new(s, "demo", &format!("Task {i}"), "", 0, "human").unwrap();
+        set_lead(s, &t.id, "demo-lead", "", "daemon").ok();
+        let conn = s.conn().unwrap();
+        for (k, status, branch) in [("a", "done", "hive/w/a"), ("b", "leased", "")] {
+            let id = format!("J-{}-{k}", t.id);
+            conn.execute(
+                "INSERT INTO jobs (id, project, kind, title, source, status, branch, created_at, finished_at) \
+                 VALUES (?, 'demo', 'task', 'T', ?, ?, ?, '2026-09-06T21:01:00Z', '')",
+                params![id, format!("task:{}:{k}", t.id), status, branch],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO runs (id, job_id, agent, project, started_at, status, branch) \
+                 VALUES (?, ?, 'w', 'demo', '2026-09-06T21:02:00Z', 'done', ?)",
+                params![format!("run-{id}"), id, branch],
+            )
+            .unwrap();
+        }
+        drop(conn);
+        let number = 100 + i as i64;
+        hive_bus::emit(
+            s,
+            "daemon",
+            "land.pr",
+            "demo",
+            serde_json::json!({"project": "demo", "task": t.id, "number": number, "kind": "task"}),
+        )
+        .unwrap();
+        hive_bus::emit(
+            s,
+            "reviewer",
+            "review.queued",
+            "demo",
+            serde_json::json!({"project": "demo", "number": number}),
+        )
+        .unwrap();
+    }
+    let done = new(s, "demo", "Old", "", 0, "human").unwrap();
+    s.conn()
+        .unwrap()
+        .execute("UPDATE tasks SET status = 'done' WHERE id = ?", [&done.id])
+        .unwrap();
+}
+
+/// The project view reads a fixed number of statements however many tasks
+/// the project holds (PR #280 review: one read per task was 457 to 607
+/// statements a request for 150 tasks).
+#[test]
+fn project_lifecycles_read_a_fixed_number_of_statements() {
+    let small = new_store();
+    busy_tasks(&small, 2);
+    let (few, all) = lifecycle_statements(&small, "demo");
+    assert_eq!(all.len(), 3);
+    let big = new_store();
+    busy_tasks(&big, 30);
+    let (many, all) = lifecycle_statements(&big, "demo");
+    assert_eq!(all.len(), 31);
+    assert_eq!(few, many, "the statements grew with the tasks");
+    assert!(many <= 5, "{many} statements");
+    // Each open task still reads its own rows: Build, its pull request
+    // under review behind the step at work.
+    let open: Vec<_> = all.iter().filter(|l| l.phase != Phase::Done).collect();
+    assert_eq!(open.len(), 30);
+    assert!(
+        open.iter()
+            .all(|l| (l.phase, l.waits_on) == (Phase::Build, WaitsOn::Agent)),
+        "{open:?}"
+    );
+    // The done task is placed by its status alone.
+    assert_eq!(all.iter().filter(|l| l.phase == Phase::Done).count(), 1);
+}
+
+/// Measures the project view on a copy of a real store (never the live
+/// one): `HIVE_LIFECYCLE_HOME=<dir holding hive.sqlite> HIVE_LIFECYCLE_PROJECT=<slug>
+/// cargo test -p hive-tasks --lib -- --ignored project_lifecycles_on_a_store_copy --nocapture`.
+#[test]
+#[ignore = "reads a copy of a real store named by HIVE_LIFECYCLE_HOME"]
+fn project_lifecycles_on_a_store_copy() {
+    let home = std::env::var("HIVE_LIFECYCLE_HOME").expect("HIVE_LIFECYCLE_HOME");
+    let project = std::env::var("HIVE_LIFECYCLE_PROJECT").expect("HIVE_LIFECYCLE_PROJECT");
+    let s = hive_store::Store::open(hive_store::Options {
+        home,
+        read_only: true,
+        ..hive_store::Options::default()
+    })
+    .unwrap();
+    for round in 0..3 {
+        let started = Instant::now();
+        let (statements, all) = lifecycle_statements(&s, &project);
+        let open = all
+            .iter()
+            .filter(|l| !matches!(l.phase, Phase::Done | Phase::Cancelled))
+            .count();
+        println!(
+            "round {round}: {} tasks ({open} open) in {:?}, {statements} statements",
+            all.len(),
+            started.elapsed()
+        );
+    }
 }

@@ -163,13 +163,18 @@ pub(crate) fn redact_secrets(text: &str) -> String {
         })
         .to_string()
 }
+/// Records a request's machine. `now` stamps `created_at` only the first time: the row is saved
+/// again when the machine is ready and when the sweep releases it as a leftover, and its hours
+/// (the day's cap, `hive_tasks::compute::hours_today`; when its hours are up, `hours_up`) count
+/// from when the provider made it. Moving the stamp to the ready step dropped the spin-up, and
+/// moving it to the sweep made a leftover's run zero hours.
 pub(crate) fn save_machine(s: &hive_store::Store, request_id: &str, m: &Machine, now: &str) {
     let detail =
         hive_store::gojson::to_string(&json!({"tags": m.tags, "detail": m.detail})).unwrap();
     let conn = s.conn().unwrap();
     crate::util::exec1(
         &conn,
-        "INSERT INTO compute_machines (request_id, provider, name, executor, address, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(request_id) DO UPDATE SET provider = excluded.provider, name = excluded.name, executor = excluded.executor, address = excluded.address, detail = excluded.detail, created_at = excluded.created_at, released_at = '', attempts = 0, note = ''",
+        "INSERT INTO compute_machines (request_id, provider, name, executor, address, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(request_id) DO UPDATE SET provider = excluded.provider, name = excluded.name, executor = excluded.executor, address = excluded.address, detail = excluded.detail, created_at = CASE WHEN compute_machines.created_at = '' THEN excluded.created_at ELSE compute_machines.created_at END, released_at = '', attempts = 0, note = ''",
         &[
             &request_id,
             &m.provider,
@@ -637,7 +642,13 @@ impl ComputeWorker {
         if !kept.is_empty() {
             return String::new();
         }
-        let mut last = ready_at;
+        // Idle is counted from when the machine came up ready (the request's last change), not
+        // from when it was made: a spin-up longer than the idle minutes is not idleness.
+        let mut last = if req.updated_at > ready_at {
+            req.updated_at.clone()
+        } else {
+            ready_at
+        };
         if !executor.is_empty() {
             let conn = self.s.conn().unwrap();
             let r = crate::util::must_one(
@@ -953,7 +964,8 @@ impl ComputeWorker {
     }
     fn release_orphan(&self, p: Arc<dyn Provider>, req: hive_tasks::ComputeRequest, m: Machine) {
         let now = self.s.now();
-        // remembered first, so a failed release is retried as a leftover and counted
+        // remembered first, so a failed release is retried as a leftover and counted; a row
+        // already there keeps the time its machine was made, so the hours it ran still count
         save_machine(&self.s, &req.id, &m, &now);
         let rctx = hive_bus::CancellationToken::new().with_timeout(COMPUTE_RELEASE_BUDGET);
         match p.release(&rctx, &m) {
@@ -1039,8 +1051,8 @@ impl Leftover {
         }
     }
 }
-/// The executor a ready request's machine runs as and when it became ready: the machine row's
-/// word, else the request's own.
+/// The executor a ready request's machine runs as and when it was made (its hours count from
+/// then): the machine row's word, else the request's own.
 fn rented(s: &hive_store::Store, req: &hive_tasks::ComputeRequest) -> (String, String) {
     let (m, mrow) = load_machine(s, &req.id);
     let mut ready_at = req.updated_at.clone();
@@ -1062,7 +1074,8 @@ fn kept_jobs(kept: &[crate::executor::KeptClone]) -> String {
         .collect::<Vec<_>>()
         .join(", ")
 }
-/// Whether the hours a ready request asked for are over, counted from when its machine was ready.
+/// Whether the hours a ready request asked for are over, counted from when its machine was made
+/// (`save_machine` keeps that stamp), as the day's cap counts them.
 fn hours_up(req: &hive_tasks::ComputeRequest, ready_at: &str, now: &str) -> bool {
     !ready_at.is_empty()
         && req.hours > 0
@@ -1251,6 +1264,36 @@ pub(crate) fn forget_machine_ssh(hub_home: &str, m: &Machine) -> Vec<String> {
     }
     lines
 }
+/// The event that says when the release of a request's machine began, written once per request
+/// (before its first attempt). `released_at` is stamped after the provider's delete returns, up
+/// to `COMPUTE_RELEASE_BUDGET` later; whether a machine ran past its hours is measured to this
+/// (`daemon::ran_past_hours`), so a slow teardown is not an overrun.
+pub(crate) const RELEASE_BEGAN_ACTION: &str = "compute.releasing";
+fn release_began(
+    s: &hive_store::Store,
+    actor: &str,
+    req: &hive_tasks::ComputeRequest,
+    m: &Machine,
+) {
+    let conn = s.conn().unwrap();
+    let seen = crate::util::must_one(
+        &conn,
+        "SELECT COUNT(*) AS n FROM events WHERE action = ? AND subject = ?",
+        &[&RELEASE_BEGAN_ACTION, &req.id],
+    )
+    .int("n");
+    if seen > 0 {
+        return;
+    }
+    crate::util::event_at(
+        &conn,
+        &s.now(),
+        actor,
+        RELEASE_BEGAN_ACTION,
+        &req.id,
+        json!({"project": req.project, "provider": m.provider, "name": m.name}),
+    );
+}
 pub(crate) fn release_compute(
     s: &hive_store::Store,
     actor: &str,
@@ -1268,6 +1311,7 @@ pub(crate) fn release_compute(
     if !m.name.is_empty()
         && let Some(p) = provider_named(&m.provider)
     {
+        release_began(s, actor, &req, &m);
         let rctx = hive_bus::CancellationToken::new().with_timeout(COMPUTE_RELEASE_BUDGET);
         if let Err(e) = p.release(&rctx, &m) {
             let msg = crate::run::err_message(&e);

@@ -1126,9 +1126,11 @@ setting any more: every machine works out its own slots from its hardware - the
 smaller of its physical cores and one run per 3 GB of RAM, never under one (a
 12-core 16 GB laptop: five; a 32-core 64 GB box: twenty-one) - and each paired
 machine does the same from the cores and memory its hands report on every
-probe. The fleet's total is the sum over the active machines, and a project may
-have `ceil(total / projects with work)` jobs in flight, so a lone busy project
-uses every slot and several share them fairly; `hive status` shows it as
+probe. The fleet's total is the sum over the active machines, and the fleet's
+own work of a project may have `ceil(total / projects with work)` jobs in
+flight, so a lone busy project uses every slot and several share them fairly;
+the owner's work is not held to that share (see the express lane below), but
+the last free slot of a machine is kept back from it; `hive status` shows it as
 `slots 18 = this machine 10 + vm-1 8, per project 6`. The one optional override is
 `capacity` (auto by default; a number caps this machine, 0 keeps it idle), and
 `hive daemon --max-jobs N` overrides both for one daemon; `hive stop` pauses.
@@ -1193,15 +1195,17 @@ pressure keeps it shut. A fleet run is asked to yield only when the owner's job
 could then start. [owner-reservation.md](owner-reservation.md) explains how
 this works and why.
 
-A free slot is not a free lane, though: a project's own work lanes
+A free slot was not a free lane, though: a project's own work lanes
 (the fleet's per-project share, narrowed to what fits the commit cap while its checks
-take turns) count the fleet's runs and the owner's alike, so an owner's task
+take turns) counted the fleet's runs and the owner's alike, so an owner's task
 queued behind one long fleet `improve` job in its project waited four hours
 while the daemon leased fifty runs in other projects around it. Now the owner's
 work goes first in its own project: while an owner-driven work job (`task:`,
 `security:`) is queued in a project, the fleet's work jobs of that project stay
-in the queue, and when every lane the owner's job needs is held and some by the
-fleet's runs, the daemon asks the youngest of those runs to hold at its current
+in the queue, and when the lanes in the owner's job's way are held and some by
+the fleet's runs - the narrowed lanes (fewer than the share), the owner's own
+bound under the verify lock (below), or every slot of the fleet - the daemon
+asks the youngest of those runs to hold at its current
 step - the same hold the restart uses: the clone and its commits stay, the job
 goes back to the queue costing it no attempt, and the same agent carries it on
 from its harness session once the owner's run has a lane. The daemon says
@@ -1216,10 +1220,18 @@ lane of five is open, and the jobs the lead planned from the owner's tasks -
 one and a half to two and a half hours each - serialised behind each other
 through that one lane: four of them sat queued ten to thirteen hours with no
 attempt, and the yield could not help, since the run in the lane was the
-owner's own. So the owner's work (a lead's sitting, an answer, the jobs planned
-from the owner's tasks, `task:…`, the security updates) takes a lane beyond the
-narrowed count at once, bounded by the plain `parallel_per_project` alone, and
-its run's commit cap is widened to cover the checks it shares the lock with -
+owner's own. And the share itself starved the owner: eight projects holding one
+idle job each made it one lane of five, and on 2026-11-26 the brain ran eight
+owner tasks one at a time while the other slots went to idle work elsewhere. So
+the owner's work (a lead's sitting, an answer, the jobs planned from the owner's
+tasks, `task:…`, the security updates) takes any free slot, past the narrowed
+count and past the share, with two bounds. The last free local slot of a tick is
+kept back from the owner's work past its project's share, so a lead's sitting
+for the owner's message, an answer, a review or another project's owner task
+does not wait for one of the tasks to end. And while `verify.lock` is on, a
+project runs at most its share plus one work jobs of the owner's: a run's commit
+cap is fixed when it starts, and a later run would queue one more check in front
+of its commit. Each such run's commit cap is widened to cover the checks it shares the lock with -
 `n × the verify median + harness.step_timeout` for `n` work runs in the
 project, never below the configured cap; with the default five-minute step the
 run log says `commit cap widened to 51 min: 2 checks share the verify lock on
@@ -1392,8 +1404,9 @@ answers keep the plain limit. The project's idle line says so: `2 of 4 work
 lanes open: the check takes ~10 min and 2 in a row fit the 25 min commit cap
 (harness.commit_timeout)`. A quicker check, a longer commit cap, or
 `verify.lock off` opens the lanes again. The lanes are the fleet's: the owner's
-work takes one beyond the count at once, with its commit cap widened to cover
-the checks it then shares the lock with (see the express lane above).
+work takes one beyond the count at once, up to the share plus one, with its
+commit cap widened to cover the checks it then shares the lock with - at a
+share of one too (see the express lane above).
 
 When the deadline still lands on a worker's `git commit` - the change finished,
 the pre-commit check did not - the runner does not discard the tree: if the
@@ -1720,7 +1733,10 @@ with one sentence on what to do:
 After a retry over ssh the sentence follows what ssh said.
 
 Two more pushes hold an ssh key and follow the same rule, read by the same
-code (`hive_gitenv::forge`), so the three cannot drift apart:
+code (`hive_gitenv::forge`: the url's ssh form, GitHub's question, and
+whether the repository's config sends the url elsewhere, asked with the
+push's own environment and given up after 10 seconds), so the three cannot
+drift apart:
 
 - the probe of `hive cred set` makes a dry-run push to each project's
   remote with the key alone. On a GitHub https url it is made once more

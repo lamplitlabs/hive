@@ -9,9 +9,10 @@
 //! The daemon's own pushes and fetches (`hive-runner`'s `forge`), the push
 //! a paired machine makes with the key the brain leased it (`hive-hand`)
 //! and the probe `hive cred set` runs before it saves a key all read the
-//! url and git's answer through these two functions, so the three cannot
-//! drift apart. Both read strictly, because a push must never go anywhere
-//! but where the url points.
+//! url, git's answer and the repository's config through these functions
+//! ([`ssh_form`], [`credential_asked`], [`asks_as_given`]), so the three
+//! cannot drift apart. They read strictly, because a push must never go
+//! anywhere but where the url points.
 
 /// GitHub's web address: the forge whose ssh form is known, and the one a
 /// caller names unless a test points it at its own server.
@@ -96,31 +97,80 @@ pub fn web() -> String {
         .unwrap_or_else(|| GITHUB_WEB.to_string())
 }
 
+/// How long [`asks_as_given`] waits for git: it reads the config and calls
+/// nobody, so ten seconds are only a bound for a git that hangs.
+pub const ASKS_AS_GIVEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Whether git in `repo` asks `url` as it is given, and not another the
+/// repository's own config puts in its place (`url.*.insteadOf`): what `git
+/// ls-remote --get-url` answers, which reads the config and calls nobody.
+/// It runs with the environment the command it guards ran with
+/// ([`crate::env`] and then `env`, the push's own variables), so it reads
+/// the config that command read, and it is given up after
+/// [`ASKS_AS_GIVEN_TIMEOUT`]: no answer is no. A host such a url is sent to
+/// could send git on to the forge, and the forge's question would then be
+/// git's whole answer although the command went elsewhere first. The
+/// daemon's pushes, a hand's push and the probe of `hive cred set` all ask
+/// this one function.
+pub fn asks_as_given(repo: &str, env: &[String], url: &str) -> bool {
+    use std::io::Read;
+    let mut vars = crate::env();
+    vars.extend(env.iter().filter(|kv| !crate::hook_var(kv)).cloned());
+    let mut cmd = std::process::Command::new(crate::git_program());
+    cmd.args([
+        "-c",
+        "core.fsmonitor=false",
+        "-C",
+        repo,
+        "ls-remote",
+        "--get-url",
+        url,
+    ])
+    .env_clear()
+    .envs(vars.into_iter().filter_map(|kv| {
+        kv.split_once('=')
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+    }))
+    .stdin(std::process::Stdio::null())
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::null());
+    let Ok(mut child) = cmd.spawn() else {
+        return false;
+    };
+    let start = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if start.elapsed() < ASKS_AS_GIVEN_TIMEOUT => {
+                std::thread::sleep(std::time::Duration::from_millis(10))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    };
+    let mut out = String::new();
+    if let Some(mut stdout) = child.stdout.take() {
+        let _ = stdout.read_to_string(&mut out);
+    }
+    status.success() && out.trim() == url
+}
+
 /// The url to make a failed git command again against with an ssh key, or
 /// None to leave it where it failed: when all git said (`said`) is that
 /// the forge ([`web`]) asked for a credential git had none to give
 /// ([`credential_asked`]), `url` has an ssh form ([`ssh_form`]) and git in
-/// `repo` asks `url` as it is given - the repository's own config does not
-/// put another in its place (`url.*.insteadOf`), which `git ls-remote
-/// --get-url` tells without calling anybody. A host such a url is sent to
-/// could send git on to the forge, and the forge's question would then be
-/// git's whole answer although the command went elsewhere first.
-pub fn ssh_retry_url(repo: &str, url: &str, said: &str) -> Option<String> {
+/// `repo`, with the command's `env`, asks `url` as it is given
+/// ([`asks_as_given`]).
+pub fn ssh_retry_url(repo: &str, env: &[String], url: &str, said: &str) -> Option<String> {
     let web = web();
     if !credential_asked(&web, said) {
         return None;
     }
     let ssh = ssh_form(&web, url)?;
-    let asked = std::process::Command::new(crate::git_program())
-        .args(["-C", repo, "ls-remote", "--get-url", url])
-        .env_clear()
-        .envs(crate::env().into_iter().filter_map(|kv| {
-            kv.split_once('=')
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-        }))
-        .output()
-        .ok()?;
-    (asked.status.success() && String::from_utf8_lossy(&asked.stdout).trim() == url).then_some(ssh)
+    asks_as_given(repo, env, url).then_some(ssh)
 }
 
 #[cfg(test)]
@@ -145,6 +195,51 @@ mod tests {
         ] {
             assert_eq!(ssh_form(GITHUB_WEB, url), None, "{url}");
         }
+    }
+
+    /// A url the repository's config puts another in place of is not asked
+    /// as given; one it leaves alone is. The push's own variables are read:
+    /// a config they name decides too.
+    #[test]
+    fn asks_as_given_reads_the_config_the_command_reads() {
+        // another test of this crate points PATH elsewhere while it holds this lock
+        let _guard = hive_testutil::env_lock();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let repo = dir.path().to_str().expect("utf-8 path");
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new(crate::git_program())
+                .args(["-C", repo])
+                .args(args)
+                .status()
+                .expect("git")
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        let url = "https://github.com/owner/repo";
+        assert!(asks_as_given(repo, &[], url));
+        let other = dir.path().join("other.config");
+        std::fs::write(
+            &other,
+            "[url \"https://example.org/\"]\n\tinsteadOf = https://github.com/\n",
+        )
+        .expect("config");
+        let env = [
+            "GIT_CONFIG_COUNT=1".to_string(),
+            "GIT_CONFIG_KEY_0=include.path".to_string(),
+            format!("GIT_CONFIG_VALUE_0={}", other.display()),
+        ];
+        assert!(
+            !asks_as_given(repo, &env, url),
+            "the push's env names a config"
+        );
+        git(&[
+            "config",
+            "url.https://example.org/.insteadOf",
+            "https://github.com/",
+        ]);
+        assert!(!asks_as_given(repo, &[], url));
+        assert!(!asks_as_given(&format!("{repo}/missing"), &[], url));
     }
 
     #[test]

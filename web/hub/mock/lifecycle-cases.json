@@ -1,0 +1,28 @@
+{
+  "about": "Where a task stands, one case each: the task's status and lead, its jobs and its pull request's delivery state, as the mock reads a task detail (web/hub/mock/lifecycle.mjs), with the phase and who it waits on that crates/hive-tasks/src/lifecycle.rs derives. Read by crates/hive-hub/src/phases.rs (the hub's derivation) and web/hub/mock/lifecycle.test.mjs (the mock's), so the two cannot drift.",
+  "cases": [
+    { "name": "a new task waits for the lead", "task": { "status": "open", "lead": "" }, "jobs": [], "delivery": null, "phase": "intake", "waits_on": "lead" },
+    { "name": "taken up, no job yet", "task": { "status": "in_progress", "lead": "lead-a" }, "jobs": [], "delivery": null, "phase": "shape", "waits_on": "lead" },
+    { "name": "the lead's own job plans it", "task": { "status": "in_progress", "lead": "lead-a" }, "jobs": [{ "id": "J0", "kind": "lead", "status": "leased" }], "delivery": null, "phase": "shape", "waits_on": "lead" },
+    { "name": "a step at work", "task": { "status": "in_progress", "lead": "lead-a" }, "jobs": [{ "id": "J1", "kind": "task", "status": "leased" }], "delivery": null, "phase": "build", "waits_on": "agent" },
+    { "name": "a step waits for a slot", "task": { "status": "in_progress", "lead": "lead-a" }, "jobs": [{ "id": "J1", "kind": "task", "status": "queued" }], "delivery": null, "phase": "build", "waits_on": "runner" },
+    { "name": "a blocked step", "task": { "status": "in_progress", "lead": "lead-a" }, "jobs": [{ "id": "J1", "kind": "task", "status": "blocked" }], "delivery": null, "phase": "build", "waits_on": "runner" },
+    { "name": "a finished step with a branch and no pull request yet", "task": { "status": "in_progress", "lead": "lead-a" }, "jobs": [{ "id": "J1", "kind": "task", "status": "done", "branch": "hive/w/J1" }], "delivery": null, "phase": "review", "waits_on": "runner" },
+    { "name": "a finished step without a branch", "task": { "status": "in_progress", "lead": "lead-a" }, "jobs": [{ "id": "J1", "kind": "task", "status": "done" }], "delivery": null, "phase": "shape", "waits_on": "lead" },
+    { "name": "a failed step", "task": { "status": "in_progress", "lead": "lead-a" }, "jobs": [{ "id": "J1", "kind": "task", "status": "failed" }], "delivery": null, "phase": "shape", "waits_on": "lead" },
+    { "name": "a pull request that could not be opened", "task": { "status": "in_progress", "lead": "lead-a" }, "jobs": [{ "id": "J1", "kind": "task", "status": "done", "branch": "hive/w/J1" }], "delivery": { "state": "held", "number": 0 }, "phase": "review", "waits_on": "runner" },
+    { "name": "a pull request open for review", "task": { "status": "in_progress", "lead": "lead-a" }, "jobs": [{ "id": "J1", "kind": "task", "status": "done" }], "delivery": { "state": "pr_open", "number": 12 }, "phase": "review", "waits_on": "reviewer" },
+    { "name": "a pull request under review", "task": { "status": "in_progress", "lead": "lead-a" }, "jobs": [{ "id": "J1", "kind": "task", "status": "done" }], "delivery": { "state": "in_review", "number": 12 }, "phase": "review", "waits_on": "reviewer" },
+    { "name": "a pull request handed to the owner", "task": { "status": "in_progress", "lead": "lead-a" }, "jobs": [{ "id": "J1", "kind": "task", "status": "done" }], "delivery": { "state": "needs_owner", "number": 12 }, "phase": "review", "waits_on": "owner" },
+    { "name": "a review that failed", "task": { "status": "in_progress", "lead": "lead-a" }, "jobs": [{ "id": "J1", "kind": "task", "status": "done" }], "delivery": { "state": "review_failed", "number": 12 }, "phase": "review", "waits_on": "owner" },
+    { "name": "the reviewer asked for changes", "task": { "status": "in_progress", "lead": "lead-a" }, "jobs": [{ "id": "J1", "kind": "task", "status": "done" }], "delivery": { "state": "changes_requested", "number": 12 }, "phase": "review", "waits_on": "lead" },
+    { "name": "the merge waits for GitHub", "task": { "status": "in_progress", "lead": "lead-a" }, "jobs": [{ "id": "J1", "kind": "task", "status": "done" }], "delivery": { "state": "merge_waiting", "number": 12 }, "phase": "deliver", "waits_on": "github" },
+    { "name": "the owner asked for the merge", "task": { "status": "in_progress", "lead": "lead-a" }, "jobs": [{ "id": "J1", "kind": "task", "status": "done" }], "delivery": { "state": "merge_asked", "number": 12 }, "phase": "deliver", "waits_on": "runner" },
+    { "name": "a merged pull request", "task": { "status": "in_progress", "lead": "lead-a" }, "jobs": [{ "id": "J1", "kind": "task", "status": "done" }], "delivery": { "state": "merged", "number": 12 }, "phase": "done", "waits_on": "nobody" },
+    { "name": "a pull request closed unmerged", "task": { "status": "in_progress", "lead": "lead-a" }, "jobs": [{ "id": "J1", "kind": "task", "status": "done" }], "delivery": { "state": "closed", "number": 12 }, "phase": "shape", "waits_on": "lead" },
+    { "name": "the lead asked the owner", "task": { "status": "review", "lead": "lead-a" }, "jobs": [{ "id": "J1", "kind": "task", "status": "failed" }], "delivery": null, "phase": "shape", "waits_on": "owner" },
+    { "name": "a done task", "task": { "status": "done", "lead": "lead-a" }, "jobs": [], "delivery": null, "phase": "done", "waits_on": "nobody" },
+    { "name": "a cancelled task", "task": { "status": "cancelled", "lead": "" }, "jobs": [], "delivery": null, "phase": "cancelled", "waits_on": "nobody" },
+    { "name": "a cancelled task with a merged pull request", "task": { "status": "cancelled", "lead": "lead-a" }, "jobs": [{ "id": "J1", "kind": "task", "status": "done" }], "delivery": { "state": "merged", "number": 12 }, "phase": "cancelled", "waits_on": "nobody" }
+  ]
+}

@@ -212,7 +212,8 @@ export interface PhaseColumn<T> {
 // way work moves. `tasks` is the page's list after its search and filters:
 // a task the hub placed but the page filtered out is left out, and one the
 // page shows but the hub has not placed yet (filed after the read) waits
-// in Intake.
+// in Intake. Each column puts the owner's waits first, then the rest by who
+// they wait on (WAITS_ORDER); the hub's order, newest first, holds within.
 export function phaseColumns<T extends { id: string }>(p: ProjectLifecycle | null | undefined, tasks: T[]): PhaseColumn<T>[] {
   const byId = new Map(tasks.map((t) => [t.id, t]));
   const rows = new Map((p?.tasks ?? []).map((r) => [r.task, r]));
@@ -228,6 +229,7 @@ export function phaseColumns<T extends { id: string }>(p: ProjectLifecycle | nul
       const r = rows.get(id);
       list.push({ task, waits: waitsOnWord(r?.waits_on ?? ""), note: r?.note ?? "", rework: !!r?.rework });
     }
+    list.sort((a, b) => waitsRank(a.waits) - waitsRank(b.waits));
     return { phase, label: phaseLabel(phase, info), gate: info?.find((x) => x.phase === phase)?.gate ?? "", tasks: list };
   });
   if (p) {
@@ -235,6 +237,15 @@ export function phaseColumns<T extends { id: string }>(p: ProjectLifecycle | nul
     for (const t of tasks) if (!placed.has(t.id)) intake.tasks.push({ task: t, waits: "", note: "not placed yet", rework: false });
   }
   return columns.filter((c) => c.phase !== "cancelled" || c.tasks.length > 0);
+}
+
+// Who a task waits on, the owner first: what only the owner can move, then
+// the agents' turns, the runner and GitHub, and last a task nobody waits on.
+export const WAITS_ORDER: LifecycleWaitsOn[] = ["owner", "lead", "reviewer", "agent", "runner", "github", "nobody"];
+
+function waitsRank(word: string): number {
+  const i = WAITS_ORDER.findIndex((w) => WAITS_ON_WORDS[w] === word);
+  return i < 0 ? WAITS_ORDER.length : i;
 }
 
 // One sentence over the Phases view: where the open work sits.
