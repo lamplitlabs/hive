@@ -38,6 +38,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -174,6 +175,7 @@ fn stopped_to_restart(messages: &[hive_store::ConversationMessage]) -> Option<Ve
                 .get("report")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+            from_child: false,
         });
     }
     Some(waiting)
@@ -189,6 +191,17 @@ const UNSENT_LINE: &str =
     "Hive stopped to restart before this message reached the agent. Send it again.";
 /// The same where the owner stopped the turn the message waited behind.
 const UNSENT_STOPPED_LINE: &str = "You stopped the turn before this message reached the agent. Send it again if you still want it.";
+/// The same where `hive harness cancel` stopped it (a parent's agent, a
+/// script, the owner in a terminal).
+const UNSENT_CANCELLED_LINE: &str = "`hive harness cancel` stopped the turn before this message reached the agent. Send it again if you still want it.";
+/// The transcript's note and the parent's report for a turn stopped with
+/// the console's Stop.
+const STOPPED_BY_OWNER_LINE: &str = "You stopped this turn with Stop.";
+const STOPPED_BY_OWNER_REPORT: &str = "The owner stopped its turn with Stop in the console.";
+/// The same for a turn stopped with `hive harness cancel SESSION`: only
+/// that turn; what waited behind it is noted as never sent.
+const CANCELLED_LINE: &str = "`hive harness cancel` stopped this turn.";
+const CANCELLED_REPORT: &str = "`hive harness cancel` stopped its turn (not the console's Stop).";
 /// The same where the conversation was finished or archived first.
 const UNSENT_CLOSED_LINE: &str =
     "The conversation was closed before this message reached the agent. Send it again to carry on.";
@@ -948,6 +961,10 @@ struct Queued {
     /// row is a note (the page shows who it is from), not a message of
     /// the owner's.
     report: bool,
+    /// A sub-session's report ([`Manager::deliver_report`]): the turn that
+    /// takes it up takes the reports queued directly behind it too, so
+    /// reports that waited behind a turn arrive in one.
+    from_child: bool,
 }
 
 impl From<String> for Queued {
@@ -957,6 +974,7 @@ impl From<String> for Queued {
             images: Vec::new(),
             row: None,
             report: false,
+            from_child: false,
         }
     }
 }
@@ -1002,19 +1020,29 @@ fn steered_extra(extra: &Value) -> Value {
 enum Unsent {
     /// The hub went down (restart, shutdown).
     Shutdown,
-    /// The owner stopped the turn it waited behind.
-    Stopped,
+    /// The turn it waited behind was stopped, and by whom.
+    Stopped(StoppedBy),
     /// The conversation was finished or put away first.
     Closed,
     /// The agent could not start.
     NoAgent,
 }
 
+/// Who stopped a turn: the owner with the console's Stop
+/// ([`Manager::cancel`]), or `hive harness cancel` on the turn's session (a
+/// parent's agent, a script, the owner in a terminal).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StoppedBy {
+    Owner,
+    HarnessCancel,
+}
+
 impl Unsent {
     fn line(self) -> &'static str {
         match self {
             Unsent::Shutdown => UNSENT_LINE,
-            Unsent::Stopped => UNSENT_STOPPED_LINE,
+            Unsent::Stopped(StoppedBy::Owner) => UNSENT_STOPPED_LINE,
+            Unsent::Stopped(StoppedBy::HarnessCancel) => UNSENT_CANCELLED_LINE,
             Unsent::Closed => UNSENT_CLOSED_LINE,
             Unsent::NoAgent => UNSENT_NO_AGENT_LINE,
         }
@@ -1205,6 +1233,7 @@ impl Runtime {
             images: Vec::new(),
             row: Some((shown, extra)),
             report: true,
+            from_child: false,
         });
     }
 
@@ -1371,6 +1400,15 @@ impl Runtime {
                     st.unsent.extend(dropped.into_iter().map(|q| (q, why)));
                 }
                 let next = st.queued.pop_front();
+                // A sub-session's report takes the reports queued directly
+                // behind it along: reports that waited behind a turn
+                // arrive in one turn, not one turn each.
+                let mut more = Vec::new();
+                if next.as_ref().is_some_and(|q| q.from_child) {
+                    while st.queued.front().is_some_and(|q| q.from_child) {
+                        more.extend(st.queued.pop_front());
+                    }
+                }
                 let mut finished = None;
                 if next.is_none() && !st.closed {
                     // A finish that found no turn to end (the owner closed
@@ -1388,7 +1426,7 @@ impl Runtime {
                 if let Some(f) = finished {
                     self.record_finished(&f);
                 }
-                next
+                next.map(|first| self.join_reports(first, more))
             };
             match next {
                 Some(message) => self.turn(message),
@@ -1405,6 +1443,37 @@ impl Runtime {
             let mut st = self.shared.lock();
             st.worker = false;
             self.shared.bump(&mut st);
+        }
+    }
+
+    /// One message for a sub-session's report and the reports queued
+    /// directly behind it ([`Runtime::work`]): their rows go to the
+    /// transcript now, in order, and the agent reads them in one prompt,
+    /// numbered oldest first, each with the time it was written. A lone
+    /// report is returned as it is.
+    fn join_reports(&self, first: Queued, more: Vec<Queued>) -> Queued {
+        if more.is_empty() {
+            return first;
+        }
+        let all: Vec<Queued> = std::iter::once(first).chain(more).collect();
+        let mut text = format!(
+            "{} reports from your sub-sessions waited for you; here they are together, oldest first. Read them all before you act, and answer once.",
+            all.len()
+        );
+        for (i, q) in all.iter().enumerate() {
+            if let Some((shown, extra)) = &q.row {
+                let _ = self
+                    .store
+                    .chat_add_message(&self.id, q.role(), shown, extra);
+            }
+            text.push_str(&format!("\n\n{}. {}", i + 1, q.text));
+        }
+        Queued {
+            text,
+            images: Vec::new(),
+            row: None,
+            report: true,
+            from_child: true,
         }
     }
 
@@ -1519,18 +1588,39 @@ impl Runtime {
             self.shared.bump(&mut st);
         }
         let _ = self.store.chat_set_status(&self.id, "running", "");
+        // `hive harness cancel` on this session stops this turn and no
+        // later one. A request left from before the turn (asked while the
+        // conversation sat idle, or as the last turn ended) had no turn to
+        // stop, so it goes; a request during the turn stops it and is
+        // withdrawn once it has.
+        let _ = self.store.clear_harness_cancel(&session_id);
+        let asked = Arc::new(AtomicBool::new(false));
         let stop_watch = self
             .started
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
-            .and_then(|s| s.prepared.watch_cancel(&cancel, None));
+            .and_then(|s| s.prepared.watch_cancel_asked(&cancel, asked.clone()));
         let outcome = agent
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .turn_with_images(&cancel, &message, images);
         if let Some(stop) = stop_watch {
             stop();
+        }
+        let cancelled_by_harness = asked.load(Ordering::SeqCst);
+        let mut not_sent = 0;
+        if cancelled_by_harness {
+            // Stopped with `hive harness cancel`: what waited behind the
+            // turn is dropped as the console's Stop drops it (noted after
+            // the stop note as never sent), and the request is withdrawn,
+            // so the session's next turn runs instead of stopping at its
+            // first step. One stop, one note, one report.
+            let _ = self.store.clear_harness_cancel(&session_id);
+            let mut st = self.shared.lock();
+            not_sent = st.queued.len();
+            Self::drop_queue(&mut st, Unsent::Stopped(StoppedBy::HarnessCancel));
+            self.shared.bump(&mut st);
         }
         // A steer that arrived after the agent's last step never reached
         // it: it runs as the next turn, its row already in the transcript.
@@ -1542,6 +1632,7 @@ impl Runtime {
                 images,
                 row: None,
                 report: false,
+                from_child: false,
             })
             .collect();
         {
@@ -1587,10 +1678,23 @@ impl Runtime {
                         STOPPED_TO_RESTART_LINE.to_string()
                     } else if matches!(st.finish, Some(Finished::Owner)) {
                         "The turn stopped here: you finished the conversation.".to_string()
+                    } else if cancelled_by_harness {
+                        drop(st);
+                        let text = match not_sent {
+                            0 => CANCELLED_REPORT.to_string(),
+                            1 => format!(
+                                "{CANCELLED_REPORT} The message queued behind it was not sent."
+                            ),
+                            n => format!(
+                                "{CANCELLED_REPORT} The {n} messages queued behind it were not sent."
+                            ),
+                        };
+                        report = Some((REPORT_STOPPED, text));
+                        CANCELLED_LINE.to_string()
                     } else {
                         drop(st);
-                        report = Some((REPORT_STOPPED, "The owner stopped its turn.".to_string()));
-                        "You stopped this turn.".to_string()
+                        report = Some((REPORT_STOPPED, STOPPED_BY_OWNER_REPORT.to_string()));
+                        STOPPED_BY_OWNER_LINE.to_string()
                     }
                 } else if error.is_empty() {
                     let line = format!("The turn stopped: {why}.");
@@ -2117,7 +2221,7 @@ impl Runtime {
     /// dropped messages reach the transcript after the stopped turn's note.
     fn cancel(&self) {
         let mut st = self.shared.lock();
-        Self::drop_queue(&mut st, Unsent::Stopped);
+        Self::drop_queue(&mut st, Unsent::Stopped(StoppedBy::Owner));
         if let Some(c) = &st.cancel {
             c.cancel();
         }
@@ -2646,6 +2750,7 @@ impl Manager {
             images: Vec::new(),
             row: Some((text.to_string(), json!({"from": parent}))),
             report: true,
+            from_child: false,
         });
         Ok(())
     }
@@ -2666,10 +2771,14 @@ impl Manager {
             return;
         }
         let text = text.trim();
+        // When it was written: a report that waited behind a long turn of
+        // the parent's is old news by the time it is read, and says so.
+        let at = self.store.now();
         let prompt = format!(
-            "Report from sub-session {:?} ({}) - {}:\n{}\n\n(Steer it with the chat tool: action send, id {}; read it: action read, id {}. It works in your workspace.)",
+            "Report from sub-session {:?} ({}), written {} - {}:\n{}\n\n(Steer it with the chat tool: action send, id {}; read it: action read, id {}. It works in your workspace.)",
             child.title,
             child.id,
+            at,
             report_phrase(kind),
             text,
             child.id,
@@ -2680,9 +2789,10 @@ impl Manager {
             images: Vec::new(),
             row: Some((
                 text.to_string(),
-                json!({"report": {"child": child.id, "title": child.title, "kind": kind}}),
+                json!({"report": {"child": child.id, "title": child.title, "kind": kind, "at": at}}),
             )),
             report: true,
+            from_child: true,
         });
     }
 
@@ -2893,6 +3003,7 @@ impl Manager {
                 images: shown,
                 row: Some((text, extra)),
                 report: false,
+                from_child: false,
             },
         ))
     }
@@ -2919,6 +3030,7 @@ impl Manager {
             images: Vec::new(),
             row: Some((line, json!({"wake": {"from": from}}))),
             report: true,
+            from_child: false,
         });
         Ok(())
     }
@@ -6726,7 +6838,7 @@ mod tests {
         assert_eq!(
             tail,
             vec![
-                ("note", "You stopped this turn."),
+                ("note", STOPPED_BY_OWNER_LINE),
                 ("user", "three"),
                 ("note", UNSENT_STOPPED_LINE),
             ],
@@ -7111,6 +7223,206 @@ mod tests {
         assert!(one.contains("[you] Also check the README."), "{one}");
         assert!(m.read_children(&pid, &gid).is_err(), "not this one's child");
         wait_idle(&m, &pid);
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("HIVE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    /// `hive harness cancel` on a sub-session stops the turn it was asked
+    /// of and no later one: one stop note naming it, one report to the
+    /// parent, and the two messages the parent queued behind the turn are
+    /// in the child's transcript once each, noted as never sent. The
+    /// request is withdrawn, so the next message runs a turn of its own.
+    #[test]
+    fn a_harness_cancel_stops_one_turn_and_reports_once() {
+        let _env = hive_testutil::env_lock();
+        hive_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        // The parent answers every report with a line.
+        let parent_script = home.path().join("parent.json");
+        std::fs::write(
+            &parent_script,
+            json!({"replies": [{"content": "Ok."}], "loop_replies": true}).to_string(),
+        )
+        .unwrap();
+        unsafe { std::env::set_var("HIVE_HARNESS_FAKE_SCRIPT", &parent_script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let pid = m.create("", "", true, "plan", "owner").expect("create").id;
+        wait_idle(&m, &pid);
+        // The child works long enough to be cancelled, then answers.
+        let child_script = script(
+            home.path(),
+            json!([{"command": "sleep 5"}, {"content": "Carried on."}]),
+        );
+        unsafe { std::env::set_var("HIVE_HARNESS_FAKE_SCRIPT", &child_script) };
+        let cid = m
+            .create_child(&pid, "Long check", "Run the long check.")
+            .expect("child")
+            .id;
+        wait_status(&m, &cid, &["running"]);
+        m.send_from_parent(&cid, &pid, "Also A.").expect("send A");
+        m.send_from_parent(&cid, &pid, "Also B.").expect("send B");
+        let session = m.row(&cid).unwrap().session_id;
+        assert!(!session.is_empty());
+        assert!(s.request_harness_cancel(&session).expect("cancel"));
+        wait_idle(&m, &cid);
+        wait_settled(&m, &pid);
+        thread::sleep(Duration::from_millis(300));
+        wait_settled(&m, &pid);
+
+        let msgs = s.chat_messages(&cid, 0).unwrap();
+        let count = |text: &str| msgs.iter().filter(|x| x.content == text).count();
+        assert_eq!(count(CANCELLED_LINE), 1, "one stop note: {msgs:#?}");
+        assert_eq!(count(STOPPED_BY_OWNER_LINE), 0, "{msgs:#?}");
+        assert_eq!(count("Also A."), 1, "{msgs:#?}");
+        assert_eq!(count("Also B."), 1, "{msgs:#?}");
+        assert_eq!(count(UNSENT_CANCELLED_LINE), 2, "{msgs:#?}");
+        let at = msgs
+            .iter()
+            .position(|x| x.content == CANCELLED_LINE)
+            .unwrap();
+        let tail: Vec<&str> = msgs[at..].iter().map(|x| x.content.as_str()).collect();
+        assert_eq!(
+            tail,
+            vec![
+                CANCELLED_LINE,
+                "Also A.",
+                UNSENT_CANCELLED_LINE,
+                "Also B.",
+                UNSENT_CANCELLED_LINE
+            ],
+            "the queued messages follow the stop note, each noted as never sent"
+        );
+        let reports: Vec<_> = s
+            .chat_messages(&pid, 0)
+            .unwrap()
+            .into_iter()
+            .filter(|x| x.extra["report"]["child"] == cid.as_str())
+            .collect();
+        assert_eq!(reports.len(), 1, "one stop, one report: {reports:#?}");
+        assert_eq!(reports[0].extra["report"]["kind"], REPORT_STOPPED);
+        assert_eq!(
+            reports[0].content,
+            format!("{CANCELLED_REPORT} The 2 messages queued behind it were not sent.")
+        );
+        assert_eq!(
+            s.harness_session_head(&session)
+                .unwrap()
+                .unwrap()
+                .cancel_requested_at,
+            "",
+            "the request is withdrawn once it stopped its turn"
+        );
+
+        // The next message runs: the cancel stopped one turn, not the session.
+        m.send_from_parent(&cid, &pid, "Carry on.").expect("send");
+        wait_note(&s, &pid, |x| {
+            x["report"]["child"] == cid.as_str() && x["report"]["kind"] == REPORT_REPLIED
+        });
+        let msgs = s.chat_messages(&cid, 0).unwrap();
+        assert_eq!(msgs.last().unwrap().content, "Carried on.", "{msgs:#?}");
+        assert_eq!(
+            msgs.iter().filter(|x| x.content == CANCELLED_LINE).count(),
+            1
+        );
+        wait_settled(&m, &pid);
+        thread::sleep(Duration::from_millis(100));
+        unsafe { std::env::remove_var("HIVE_HARNESS_FAKE_SCRIPT") };
+    }
+
+    /// Reports that wait behind a parent's turn arrive together: the
+    /// parent finishes, then runs one turn - reopened once - whose prompt
+    /// holds all three reports in order, each with the time it was written.
+    #[test]
+    fn reports_queued_behind_a_turn_arrive_in_one_turn() {
+        let _env = hive_testutil::env_lock();
+        hive_provider_fake::register();
+        let home = tempfile::tempdir().unwrap();
+        let s = store(home.path());
+        let script = script(
+            home.path(),
+            json!([
+                {"command": "sleep 2"},
+                {"tool": "finish", "args": {"summary": "Planned."}},
+                {"content": "Closing."},
+                {"content": "Read all three."},
+                {"content": "A second turn."}
+            ]),
+        );
+        unsafe { std::env::set_var("HIVE_HARNESS_FAKE_SCRIPT", &script) };
+        let m = Manager::new(&home.path().display().to_string(), s.clone())
+            .with_provider("fake", "fake-1");
+        let pid = m.create("", "", true, "plan", "owner").expect("create").id;
+        wait_status(&m, &pid, &["running"]);
+        let child = |n: &str| Row {
+            id: format!("chat-child-{n}"),
+            title: format!("Part {n}"),
+            parent: pid.clone(),
+            ..Row::default()
+        };
+        m.deliver_report(&child("a"), REPORT_REPLIED, "Report one.");
+        m.deliver_report(&child("b"), REPORT_STOPPED, "Report two.");
+        m.deliver_report(&child("c"), REPORT_FINISHED, "Report three.");
+        assert_eq!(m.live(&m.row(&pid).unwrap()).queued.len(), 3);
+        wait_settled(&m, &pid);
+        thread::sleep(Duration::from_millis(300));
+        let row = wait_idle(&m, &pid);
+
+        let msgs = s.chat_messages(&pid, 0).unwrap();
+        let replies: Vec<&str> = msgs
+            .iter()
+            .filter(|x| x.role == "assistant")
+            .map(|x| x.content.as_str())
+            .collect();
+        assert_eq!(
+            replies,
+            vec!["Closing.", "Read all three."],
+            "one turn for three reports: {msgs:#?}"
+        );
+        let closed = msgs
+            .iter()
+            .position(|x| x.extra.get("closed").is_some())
+            .expect("the finish note");
+        let notes: Vec<&str> = msgs[closed + 1..]
+            .iter()
+            .filter(|x| x.extra.get("report").is_some())
+            .map(|x| x.content.as_str())
+            .collect();
+        assert_eq!(notes, vec!["Report one.", "Report two.", "Report three."]);
+        for x in msgs.iter().filter(|x| x.extra.get("report").is_some()) {
+            assert_eq!(x.extra["report"]["at"], "2026-10-19T10:00:00Z", "{x:?}");
+        }
+
+        let traj = read_trajectory(&home.path().display().to_string(), &row.session_id)
+            .expect("trajectory");
+        let prompts: Vec<&str> = traj
+            .messages
+            .iter()
+            .filter(|x| x.role == hive_provider::Role::User)
+            .map(|x| x.content.as_str())
+            .filter(|c| c.contains("Report from sub-session"))
+            .collect();
+        assert_eq!(prompts.len(), 1, "one prompt holds them all: {prompts:#?}");
+        let prompt = prompts[0];
+        assert!(
+            prompt.starts_with("3 reports from your sub-sessions"),
+            "{prompt}"
+        );
+        let at = |text: &str| {
+            prompt
+                .find(text)
+                .unwrap_or_else(|| panic!("{text} in {prompt}"))
+        };
+        assert!(at("1. Report from sub-session \"Part a\"") < at("Report one."));
+        assert!(at("Report one.") < at("2. Report from sub-session \"Part b\""));
+        assert!(at("Report two.") < at("3. Report from sub-session \"Part c\""));
+        assert!(at("Report two.") < at("Report three."));
+        assert_eq!(
+            prompt.matches("written 2026-10-19T10:00:00Z").count(),
+            3,
+            "each with its time: {prompt}"
+        );
         thread::sleep(Duration::from_millis(100));
         unsafe { std::env::remove_var("HIVE_HARNESS_FAKE_SCRIPT") };
     }

@@ -321,9 +321,35 @@ impl Prepared {
         cancel: &CancelToken,
         hold: Option<Arc<AtomicBool>>,
     ) -> Option<impl FnOnce() + use<>> {
-        self.st
-            .as_ref()
-            .map(|s| watch_harness_cancel(s.clone(), self.session_id.clone(), cancel.clone(), hold))
+        self.st.as_ref().map(|s| {
+            watch_harness_cancel(
+                s.clone(),
+                self.session_id.clone(),
+                cancel.clone(),
+                hold,
+                None,
+            )
+        })
+    }
+
+    /// [`Prepared::watch_cancel`] for one turn of a session that runs many
+    /// (a conversation's): `asked` is raised when the cancel came from the
+    /// store (`hive harness cancel ID`), so the turn can say who stopped it
+    /// and withdraw the request once it has stopped this turn.
+    pub(crate) fn watch_cancel_asked(
+        &self,
+        cancel: &CancelToken,
+        asked: Arc<AtomicBool>,
+    ) -> Option<impl FnOnce() + use<>> {
+        self.st.as_ref().map(|s| {
+            watch_harness_cancel(
+                s.clone(),
+                self.session_id.clone(),
+                cancel.clone(),
+                None,
+                Some(asked),
+            )
+        })
     }
 }
 
@@ -3019,6 +3045,7 @@ fn watch_harness_cancel(
     session_id: String,
     cancel: CancelToken,
     hold: Option<Arc<AtomicBool>>,
+    asked: Option<Arc<AtomicBool>>,
 ) -> impl FnOnce() {
     // The stop closure drops the sender; the watch wakes at once instead
     // of finishing its sleep (a chat turn ends when the model answers).
@@ -3027,6 +3054,9 @@ fn watch_harness_cancel(
         loop {
             if let Ok(Some(h)) = st.harness_session_head(&session_id) {
                 if !h.cancel_requested_at.is_empty() {
+                    if let Some(asked) = &asked {
+                        asked.store(true, Ordering::SeqCst);
+                    }
                     cancel.cancel();
                     return;
                 }
