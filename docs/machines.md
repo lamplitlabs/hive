@@ -112,7 +112,14 @@ linux`), such as the one that fixes the check there. A check that passes on
 a machine of the class lifts it (`class.base-green`); with no run to say so
 it lapses after 24 hours. A compute request is not made for such a project
 either, and its reason counts only the jobs the rented machine could take
-(`4 job(s) waited 31 min …; 1 of them a rented linux/amd64 machine can run`).
+(`1 job(s) a rented linux/amd64 machine could run waited 31 min with every
+slot on this machine busy or held (4 queued in all); JOB (task) is first in
+line`). The idle line of a machine of the class names the code jobs kept off
+it and why (`kept off linux/amd64: 2 of PROJECT code job(s), the project's
+check was red on the base on a linux/amd64 machine ...`). A check that passes
+there on a tree carrying a job's own commits says nothing about the base
+until that job lands: its `class.base-green` lifts the mark only once a
+landing names the job.
 
 **Stopping a run anywhere.** `hive job stop JOB` stops the job's run on
 whatever machine it runs - this one, a paired or a rented one - within a few

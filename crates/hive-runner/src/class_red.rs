@@ -54,15 +54,13 @@ fn mark(
     job: &str,
     run: &str,
     base: &str,
+    changed: bool,
 ) {
-    crate::util::event_at(
-        q,
-        now,
-        "runner",
-        action,
-        project,
-        json!({"class": class_of(exrow), "executor": exrow.str("name"), "job": job, "run": run, "base": base}),
-    );
+    let mut detail = json!({"class": class_of(exrow), "executor": exrow.str("name"), "job": job, "run": run, "base": base});
+    if changed {
+        detail["changed"] = json!(true);
+    }
+    crate::util::event_at(q, now, "runner", action, project, detail);
 }
 
 /// Writes down that `project`'s base tree is red on the class of `exrow`.
@@ -76,11 +74,16 @@ pub(crate) fn mark_red(
     run: &str,
     base: &str,
 ) {
-    mark(q, now, RED_EVENT, project, exrow, job, run, base);
+    mark(q, now, RED_EVENT, project, exrow, job, run, base, false);
 }
 
 /// Writes down that `project`'s check passed on the class of `exrow`, when
 /// the class was marked red: one event per recovery, none on every green run.
+/// `changed` says the tree checked carries the job's own commits: it passed
+/// with the job's change, not on the base, so the mark lifts only once a
+/// landing names the job (TASK-169 item 6); until then the base there is
+/// as red as it was.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn mark_green(
     q: &(impl Querier + ?Sized),
     now: &str,
@@ -89,17 +92,24 @@ pub(crate) fn mark_green(
     job: &str,
     run: &str,
     base: &str,
+    changed: bool,
 ) {
     if latest(q, project, &class_of(exrow)).str("action") == RED_EVENT {
-        mark(q, now, GREEN_EVENT, project, exrow, job, run, base);
+        mark(q, now, GREEN_EVENT, project, exrow, job, run, base, changed);
     }
 }
 
+/// The last mark on `project`'s base on `class` that holds: a green one
+/// written on a changed tree counts only once a landing names its job.
 fn latest(q: &(impl Querier + ?Sized), project: &str, class: &str) -> Row {
     crate::util::must_one(
         q,
-        "SELECT action, at FROM events WHERE action IN (?, ?) AND subject = ? AND json_valid(detail) AND json_extract(detail, '$.class') = ? ORDER BY seq DESC LIMIT 1",
-        &[&RED_EVENT, &GREEN_EVENT, &project, &class],
+        "SELECT e.action, e.at FROM events e WHERE e.action IN (?, ?) AND e.subject = ? AND json_valid(e.detail) AND json_extract(e.detail, '$.class') = ? \
+         AND (e.action = ? OR COALESCE(json_extract(e.detail, '$.changed'), 0) = 0 \
+              OR EXISTS (SELECT 1 FROM events l WHERE l.action IN ('land.landed', 'land.merged') AND json_valid(l.detail) AND json_extract(l.detail, '$.job') = json_extract(e.detail, '$.job')) \
+              OR EXISTS (SELECT 1 FROM events l, json_each(CASE WHEN json_valid(l.detail) THEN l.detail ELSE '{}' END, '$.jobs') jj WHERE l.action = 'land.merged' AND json_valid(l.detail) AND jj.value = json_extract(e.detail, '$.job'))) \
+         ORDER BY e.seq DESC LIMIT 1",
+        &[&RED_EVENT, &GREEN_EVENT, &project, &class, &RED_EVENT],
     )
 }
 
@@ -152,6 +162,46 @@ pub(crate) fn class_filter_sql(q: &(impl Querier + ?Sized), class: &str, now: &s
     format!(" AND NOT (j.project IN ({projects}) AND j.kind IN ({kinds}) AND NOT {pinned})")
 }
 
+/// Names the queued code jobs the lease keeps off `exrow`'s class because
+/// their project's check is red on the base there ([`lease_filter_sql`]),
+/// so the idle line of a machine of that class says why they wait rather
+/// than "no queued job" over them (TASK-169 item 7). Empty when none is
+/// kept off; `project` narrows it to one project when not empty.
+pub(crate) fn kept_off_note(
+    q: &(impl Querier + ?Sized),
+    exrow: &Row,
+    now: &str,
+    project: &str,
+) -> String {
+    let class = class_of(exrow);
+    let filter = class_filter_sql(q, &class, now);
+    if filter.is_empty() {
+        return String::new();
+    }
+    let mut sql = format!(
+        "SELECT j.project, COUNT(*) AS n FROM jobs j JOIN projects p ON p.slug = j.project WHERE j.status = 'queued' AND p.status = 'active' AND NOT (1 = 1{filter})"
+    );
+    let mut vals: Vec<&dyn rusqlite::ToSql> = Vec::new();
+    if !project.is_empty() {
+        sql.push_str(" AND j.project = ?");
+        vals.push(&project);
+    }
+    sql.push_str(" GROUP BY j.project ORDER BY j.project");
+    let rows = crate::util::query_rows(q, &sql, &vals).unwrap_or_default();
+    if rows.is_empty() {
+        return String::new();
+    }
+    let os = class.split('/').next().unwrap_or_default();
+    let parts = rows
+        .iter()
+        .map(|r| format!("{} of {}", r.int("n"), r.str("project")))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "; kept off {class}: {parts} code job(s), the project's check was red on the base on a {class} machine (lifts when a check there passes or after {RED_HOURS} h; a job that needs {os} still goes)"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,9 +242,10 @@ mod tests {
             "job-2",
             "run-2",
             "def",
+            false,
         );
         assert!(red_projects(&*conn, "linux/amd64", TEST_NOW).is_empty());
-        mark_green(&*conn, TEST_NOW, "proj", &a, "job-3", "run-3", "def");
+        mark_green(&*conn, TEST_NOW, "proj", &a, "job-3", "run-3", "def", false);
         assert_eq!(
             crate::test_helpers::count(
                 &s,
@@ -203,5 +254,39 @@ mod tests {
             ),
             1
         );
+    }
+
+    #[test]
+    fn a_green_check_of_a_changed_tree_lifts_the_mark_once_its_job_lands() {
+        // TASK-169 item 6: the fix's own check passing on a tree with its
+        // commits says nothing about the base until the fix lands.
+        let s = crate::test_helpers::new_store();
+        let conn = s.conn().unwrap();
+        let a = hand("hands-a", "amd64");
+        mark_red(&*conn, TEST_NOW, "proj", &a, "job-1", "run-1", "abc");
+        mark_green(
+            &*conn, TEST_NOW, "proj", &a, "job-fix", "run-2", "abc", true,
+        );
+        assert_eq!(red_projects(&*conn, "linux/amd64", TEST_NOW), vec!["proj"]);
+        // A landing of another job lifts nothing.
+        crate::util::event_at(
+            &*conn,
+            TEST_NOW,
+            "daemon",
+            "land.merged",
+            "proj",
+            json!({"project": "proj", "jobs": ["job-other"]}),
+        );
+        assert_eq!(red_projects(&*conn, "linux/amd64", TEST_NOW), vec!["proj"]);
+        // A merge that names the fix among its jobs lifts it.
+        crate::util::event_at(
+            &*conn,
+            TEST_NOW,
+            "daemon",
+            "land.merged",
+            "proj",
+            json!({"project": "proj", "jobs": ["job-x", "job-fix"]}),
+        );
+        assert!(red_projects(&*conn, "linux/amd64", TEST_NOW).is_empty());
     }
 }

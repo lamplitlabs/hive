@@ -1392,6 +1392,27 @@ mod tests {
         );
         // No machine of that class takes the project's code job...
         assert!(lease("aurora", "hands-b", &task).0.is_empty());
+        // ...and its idle line says why the job waits rather than "no queued
+        // job" over it (TASK-169 item 7).
+        let (none, _, why) = crate::run::take_job(
+            &s,
+            "aurora",
+            "",
+            &task,
+            false,
+            crate::test_helpers::TEST_NOW,
+            "hands-b",
+            &[],
+            &Default::default(),
+            &[],
+        )
+        .unwrap();
+        assert!(none.0.is_empty(), "{none:?}");
+        assert!(
+            why.contains("kept off linux/amd64: 1 of proj code job(s)")
+                && why.contains("check was red on the base"),
+            "{why}"
+        );
         // ...a job that only reads still goes there...
         assert_eq!(lease("aurora", "hands-b", &answer).str("id"), answer);
         // ...and a machine of another class or this one takes the code job.
@@ -1418,7 +1439,8 @@ mod tests {
             &[&fix],
         );
         assert_eq!(lease("dawn", "hands-b", &fix).str("id"), fix);
-        // A check that passes there again opens the class to the project.
+        // The fix's check passes there on a tree with its commits: the base
+        // is still red until the fix lands (TASK-169 item 6)...
         crate::class_red::mark_green(
             &*conn,
             crate::test_helpers::TEST_NOW,
@@ -1427,6 +1449,18 @@ mod tests {
             &fix,
             "run-fix",
             "def",
+            true,
+        );
+        assert!(lease("ember", "hands-b", &task).0.is_empty());
+        // ...and the landing that names the fix opens the class to the
+        // project.
+        crate::util::event_at(
+            &*conn,
+            crate::test_helpers::TEST_NOW,
+            "daemon",
+            "land.landed",
+            "hive/dawn/fix",
+            serde_json::json!({"project": "proj", "job": fix, "sha": "def"}),
         );
         assert_eq!(lease("ember", "hands-b", &task).str("id"), task);
     }
