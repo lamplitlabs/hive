@@ -73,6 +73,7 @@ use serde_json::{Value, json};
 use crate::forge::Upstream;
 use crate::util::Row;
 
+pub(crate) mod carry;
 mod experiments;
 mod merge_check;
 
@@ -2856,7 +2857,7 @@ fn rebase_or_hold(
     // to fetch it.
     let which = if c.base.stacked() {
         format!(
-            " - the head of open pull request #{}, which the task's pull request stacks on; fetch it from the upstream first",
+            " - the head of open pull request #{}, which the task's pull request stacks on; your clone carries it as a branch of that name, beside the branches to merge",
             c.base.stack_on
         )
     } else {
@@ -2977,7 +2978,7 @@ fn join_or_hold(
     }
     let which = if c.base.stacked() {
         format!(
-            " - the head of open pull request #{}, which the task's pull request stacks on; fetch it from the upstream first",
+            " - the head of open pull request #{}, which the task's pull request stacks on; your clone carries it as a branch of that name, beside the branches to merge",
             c.base.stack_on
         )
     } else {

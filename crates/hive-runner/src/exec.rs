@@ -387,6 +387,27 @@ impl LocalExec {
             String::new()
         }
     }
+    /// The refs of the project's checkout the clone carries as branches
+    /// beside the one it is cloned on: a join, rebase or merge-fix job's
+    /// base and the branches it merges (`delivery::carry`). Empty for any
+    /// other job.
+    pub(crate) fn refs_to_carry(&self) -> Vec<String> {
+        let Some(s) = self.s.as_ref() else {
+            return Vec::new();
+        };
+        let mut def = self.branch_to_clone();
+        if def.is_empty() {
+            def = crate::util::git(&self.root, &["symbolic-ref", "--short", "-q", "HEAD"])
+                .stdout
+                .trim()
+                .to_string();
+        }
+        let slug = match self.project.str("slug") {
+            s if s.is_empty() => self.job.str("project"),
+            s => s,
+        };
+        crate::delivery::carry::refs_for_job(s, &slug, &self.job.str("id"), &self.root, &def)
+    }
 }
 impl Executor for LocalExec {
     fn name(&self) -> String {
@@ -434,6 +455,7 @@ impl Executor for LocalExec {
             job_id: self.job.str("id"),
             executor: self.name(),
             resume_base: self.resume_base.take(),
+            carry: self.refs_to_carry(),
         };
         hive_hand_core::local::prepare_clone(cancel, &prep, &self.log)
     }
@@ -619,6 +641,19 @@ pub(crate) struct SshExec {
     pub(crate) base: String,
 }
 static SHA_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[0-9a-f]{40,64}$").unwrap());
+
+/// Writes the bundle a hand clones a job from: `reference` (the branch the
+/// clone is on) and the refs it `carry`s beside it.
+pub(crate) fn source_bundle(
+    root: &str,
+    bundle: &str,
+    reference: &str,
+    carry: &[String],
+) -> crate::util::GitResult {
+    let mut args = vec!["bundle", "create", "-q", bundle, reference];
+    args.extend(carry.iter().map(String::as_str));
+    crate::util::git_timeout(root, Duration::from_secs(300), &args)
+}
 
 pub(crate) fn new_ssh_exec(
     r: Row,
@@ -832,11 +867,18 @@ impl Executor for SshExec {
         } else {
             branch
         };
-        let made = crate::util::git_timeout(
-            &self.local.root,
-            Duration::from_secs(300),
-            &["bundle", "create", "-q", &self.bundle, &reference],
-        );
+        // A join, rebase or merge-fix job merges branches beside the one the
+        // clone is on: the bundle holds them too, and the hand makes each a
+        // branch of its clone (`hands::prepare`).
+        let carry = self.local.refs_to_carry();
+        if !carry.is_empty() {
+            self.local.log.add(format!(
+                "the bundle for {} carries {}",
+                self.name(),
+                carry.join(", ")
+            ));
+        }
+        let made = source_bundle(&self.local.root, &self.bundle, &reference, &carry);
         if !made.ok() {
             return Err(
                 crate::util::fail(1, format!("bundle failed: {}", made.stderr.trim())).into(),
@@ -3088,6 +3130,206 @@ mod tests {
             err.contains("the held run's signing key is not at"),
             "{err}"
         );
+    }
+
+    /// A join job (TASK-149 and TASK-151 onto `hive/task-TASK-117`, 27
+    /// November 2026) is told to start from the task's base and merge every
+    /// job branch into it. Its clone - local, or a hand's clone of the
+    /// bundle - carries the base and each branch, under their own names,
+    /// beside the default branch; a copy `hive job retry --as-new` queued
+    /// carries them too, and any other job's clone carries nothing more.
+    #[test]
+    fn a_join_jobs_clone_carries_the_base_and_every_branch_to_join() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = hive_testutil::env_lock();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let s = crate::test_helpers::new_store();
+        let project = insert_git_project(&s);
+        let root = project.str("path");
+        let git = |args: &[&str]| -> String {
+            let mut argv = vec![
+                "git",
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@x",
+                "-c",
+                "commit.gpgsign=false",
+            ];
+            argv.extend_from_slice(args);
+            crate::test_helpers::run(&root, &argv).trim().to_string()
+        };
+        let commit_on = |branch: &str, from: &str, file: &str| -> String {
+            git(&["checkout", "-q", "-b", branch, from]);
+            std::fs::write(
+                std::path::Path::new(&root).join(file),
+                format!("{branch}\n"),
+            )
+            .unwrap();
+            git(&["add", file]);
+            git(&["commit", "-q", "-m", file]);
+            let sha = git(&["rev-parse", "HEAD"]);
+            git(&["checkout", "-q", "main"]);
+            sha
+        };
+        // The base is the head of the pull request the task stacks on: the
+        // checkout has it only as the upstream's, as delivery fetched it.
+        let base = commit_on("hive/task-TASK-117", "main", "base.txt");
+        git(&[
+            "update-ref",
+            "refs/remotes/origin/hive/task-TASK-117",
+            &base,
+        ]);
+        git(&["branch", "-q", "-D", "hive/task-TASK-117"]);
+        let branches = ["hive/zephyr-95/job-a", "hive/yarrow-95/job-b"];
+        let shas: Vec<String> = branches
+            .iter()
+            .enumerate()
+            .map(|(i, b)| commit_on(b, &base, &format!("part{i}.txt")))
+            .collect();
+        let join = "job-join";
+        let c = s.conn().unwrap();
+        crate::util::event_at(
+            &c,
+            &s.now(),
+            "daemon",
+            "land.rebase",
+            "proj",
+            serde_json::json!({
+                "project": "proj", "task": "TASK-149", "job": "job-b", "branch": branches[1],
+                "sha": shas[1], "files": ["x"], "follow_up": join, "base": "hive/task-TASK-117",
+                "join": true, "jobs": ["job-a", "job-b"], "branches": branches, "shas": shas,
+            }),
+        );
+        crate::util::event_at(
+            &c,
+            &s.now(),
+            "hive",
+            hive_board::JOB_RECOVER_ACTION,
+            join,
+            serde_json::json!({"class": "human", "n": 1, "outcome": "replanned", "root": join, "job": "job-join-again"}),
+        );
+        drop(c);
+        let mut want = vec!["hive/task-TASK-117".to_string()];
+        want.extend(branches.iter().map(|b| b.to_string()));
+        let mut tips = vec![base.clone()];
+        tips.extend(shas.iter().cloned());
+        let home = tempfile::tempdir().unwrap();
+        let prepared = |job_id: &str| -> LocalExec {
+            let mut r = Row::new();
+            r.insert("name", serde_json::json!("local"));
+            let mut job = Row::new();
+            job.insert("id", serde_json::json!(job_id));
+            job.insert("project", serde_json::json!("proj"));
+            let mut e = new_local_exec(
+                r,
+                &s,
+                &home.path().display().to_string(),
+                job,
+                project.clone(),
+                "kestrel",
+                &mut RunLog::default(),
+            );
+            crate::keys::make_run_key(&e.key_path(), "kestrel", &format!("run-{job_id}")).unwrap();
+            e.prepare(&hive_bus::CancellationToken::new()).unwrap();
+            e
+        };
+        let tip = |clone: &str, branch: &str| {
+            crate::util::git(
+                clone,
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    &format!("refs/heads/{branch}"),
+                ],
+            )
+            .stdout
+            .trim()
+            .to_string()
+        };
+
+        // The join job itself, and the copy a retry queued.
+        for job_id in [join, "job-join-again"] {
+            let e = prepared(job_id);
+            for (branch, sha) in want.iter().zip(&tips) {
+                assert_eq!(
+                    &tip(&e.clone_dir, branch),
+                    sha,
+                    "{job_id}: {branch}\n{}",
+                    e.log.text()
+                );
+            }
+            assert_eq!(crate::util::git_branch(&e.clone_dir), "main");
+            assert!(
+                e.log
+                    .text()
+                    .contains("the clone carries hive/task-TASK-117"),
+                "{}",
+                e.log.text()
+            );
+            let merged = crate::util::git(
+                &e.clone_dir,
+                &["merge-base", "--is-ancestor", &base, &shas[1]],
+            );
+            assert!(merged.ok(), "the base is in the clone");
+            e.cleanup();
+        }
+
+        // Any other job's clone is the default branch alone.
+        let other = prepared("job-other");
+        let heads = crate::util::git(
+            &other.clone_dir,
+            &["for-each-ref", "--format=%(refname)", "refs/heads"],
+        );
+        assert_eq!(heads.stdout.trim(), "refs/heads/main");
+        other.cleanup();
+
+        // A hand clones the job from the bundle and finds them there too.
+        let carry = prepared(join).refs_to_carry();
+        assert_eq!(
+            carry,
+            vec![
+                "refs/remotes/origin/hive/task-TASK-117".to_string(),
+                format!("refs/heads/{}", branches[0]),
+                format!("refs/heads/{}", branches[1]),
+            ]
+        );
+        let bundle_dir = tempfile::tempdir().unwrap();
+        let bundle = bundle_dir
+            .path()
+            .join("source.bundle")
+            .display()
+            .to_string();
+        assert!(source_bundle(&root, &bundle, "main", &carry).ok());
+        let workdir = tempfile::tempdir().unwrap();
+        let out = crate::test_helpers_hands::CaptureWriter::new();
+        let err = crate::test_helpers_hands::CaptureWriter::new();
+        let (mut h, _env) = crate::test_helpers::new_test_hands(
+            &workdir.path().display().to_string(),
+            Some(out.boxed()),
+            Some(err.boxed()),
+        );
+        h.stdin = Box::new(std::io::Cursor::new(std::fs::read(&bundle).unwrap()));
+        h.prepare("JOB-JOIN", "main", "kestrel").unwrap();
+        let hand_clone = workdir
+            .path()
+            .join("JOB-JOIN")
+            .join("clone")
+            .display()
+            .to_string();
+        for (branch, sha) in want.iter().zip(&tips) {
+            assert_eq!(
+                &tip(&hand_clone, branch),
+                sha,
+                "hand: {branch} {}",
+                err.take()
+            );
+        }
+        assert_eq!(crate::util::git_branch(&hand_clone), "main");
+        assert_eq!(crate::util::git(&hand_clone, &["remote"]).stdout.trim(), "");
     }
 
     #[test]
