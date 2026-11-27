@@ -6226,9 +6226,9 @@ mod tests {
         // The kernel's memory warning halves the cap of four to two, and
         // two runs fill it - one the owner's, so no express slot - while
         // the fleet's nominal total is still four. It is pinned before the
-        // daemon starts: pinned between two ticks, a tick that read the calm
-        // cap of four before the pin leased the owner's next job when it was
-        // queued during that tick, and no yield came (about half the runs).
+        // daemon's first tick: pinned between two ticks, a pass that read
+        // the calm cap of four before the pin leased the owner's next step
+        // as well, and no yield came (about half the runs; TASK-157).
         let _warned = crate::daemon_load::pin_pressure(crate::daemon_load::Pressure {
             mem_warning: true,
             ..crate::daemon_load::CALM

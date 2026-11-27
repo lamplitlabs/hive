@@ -73,6 +73,7 @@ use serde_json::{Value, json};
 use crate::forge::Upstream;
 use crate::util::Row;
 
+pub(crate) mod carry;
 mod experiments;
 mod merge_check;
 
@@ -2631,7 +2632,7 @@ fn rebase_or_hold(
     // to fetch it.
     let which = if c.base.stacked() {
         format!(
-            " - the head of open pull request #{}, which the task's pull request stacks on; fetch it from the upstream first",
+            " - the head of open pull request #{}, which the task's pull request stacks on; your clone carries it as a branch of that name, beside the branches to merge",
             c.base.stack_on
         )
     } else {
@@ -2752,7 +2753,7 @@ fn join_or_hold(
     }
     let which = if c.base.stacked() {
         format!(
-            " - the head of open pull request #{}, which the task's pull request stacks on; fetch it from the upstream first",
+            " - the head of open pull request #{}, which the task's pull request stacks on; your clone carries it as a branch of that name, beside the branches to merge",
             c.base.stack_on
         )
     } else {
@@ -8861,12 +8862,26 @@ exit 0
             &repo,
             &["git", "merge", "-q", "--no-ff", "--no-edit", &a_tip],
         );
+        // With the identity `run` gives git: a user without a name in the
+        // password database (a rented Linux machine's) otherwise fails the
+        // merge on "empty ident name" before it stops at the conflict, and
+        // the commit below finds no merge message.
         let merged = std::process::Command::new("git")
             .args(["merge", "-q", "--no-ff", "--no-edit", &b_tip])
             .current_dir(&repo)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@x")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@x")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .output()
             .unwrap();
         assert!(!merged.status.success(), "the two conflict");
+        assert!(
+            String::from_utf8_lossy(&merged.stdout).contains("CONFLICT"),
+            "the merge stops at the conflict: {}",
+            String::from_utf8_lossy(&merged.stderr)
+        );
         std::fs::write(std::path::Path::new(&repo).join("shared.txt"), "both\n").unwrap();
         run(&repo, &["git", "add", "shared.txt"]);
         run(&repo, &["git", "commit", "-q", "--no-edit"]);
