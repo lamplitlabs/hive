@@ -654,6 +654,13 @@ pub(crate) fn write_brief(o: BriefOpts) -> anyhow::Result<String> {
         "   clone, removes whatever you left behind, and writes it down against your name (`agent.cleanup` on the"
     );
     w!("   hub's Hygiene panel) - a clean finish leaves nothing to write down.");
+    w!(
+        "   Stop a server or watcher you started by its own pid (`kill <pid>`, the pid `$!` gave you) or its"
+    );
+    w!(
+        "   process-tool id; never `pkill`, `killall` or a `kill` fed from `pgrep`/`lsof`: they match every agent's"
+    );
+    w!("   worker and the owner's programs too, and the harness refuses them.");
     let ui_mode = o
         .store
         .as_ref()
