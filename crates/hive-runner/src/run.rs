@@ -1383,6 +1383,10 @@ pub(crate) fn run_job(
     // The run's commits are on the machine and could not be fetched: its
     // clone stays there (Executor::keep_work) instead of being cleaned.
     let mut work_not_fetched = false;
+    // The run's check passed and its commits were fetched to the checkout:
+    // a job requeued under it for a lapsed lease takes this result instead
+    // of starting again from nothing (TASK-179).
+    let mut checked_and_fetched = false;
     // The runner stopped the run's check of finished work (a forced
     // restart): the base the commits stand on, so they can be kept on a
     // branch for the job's next run to check (unchecked.rs).
@@ -2122,9 +2126,13 @@ pub(crate) fn run_job(
                     && j.int("generation") == job.int("generation")
                     && j.str("lease_agent") == agent
             } else {
+                // Renew from the store's clock at the call, not the run's
+                // start (`now`): a run longer than the lease renewed from its
+                // start set lease_until in the past, and the next lease_job
+                // anywhere requeued the job under the running run (TASK-179).
                 crate::jobs::renew_lease(
                     &*c,
-                    now.to_string(),
+                    s.now(),
                     job.str("id"),
                     agent.to_string(),
                     job.int("generation"),
@@ -2721,6 +2729,7 @@ pub(crate) fn run_job(
                                     ));
                                 }
                                 status = "done".into();
+                                checked_and_fetched = verify_rc == Some(0);
                                 // The kept work landed on the job's branch.
                                 if let Some(u) = &unchecked {
                                     crate::unchecked::drop_branch(&root, &u.branch);
@@ -3139,18 +3148,42 @@ pub(crate) fn run_job(
     } else {
         branch.clone()
     };
-    if let Err(e) = hive_board::finish_run_job(
-        s,
-        hive_board::RunJobResult {
-            run_id: run_id.clone(),
-            job_id: job.str("id"),
-            agent: agent.to_string(),
-            status: job_status.clone(),
-            result: summary.clone(),
-            branch: final_branch,
-            generation: job.int("generation") as i64,
-        },
-    ) {
+    let finish = hive_board::RunJobResult {
+        run_id: run_id.clone(),
+        job_id: job.str("id"),
+        agent: agent.to_string(),
+        status: job_status.clone(),
+        result: summary.clone(),
+        branch: final_branch,
+        generation: job.int("generation") as i64,
+    };
+    let finished = match hive_board::finish_run_job(s, finish.clone()) {
+        Err(e) if status == "done" && checked_and_fetched && commits > 0 => {
+            // The lease lapsed under a run that finished its work: the
+            // check passed and the commits are in the checkout. Unless
+            // another run took the job meanwhile, the job takes this result
+            // rather than being done again from nothing (TASK-179).
+            match hive_board::adopt_stale_done_run(s, finish) {
+                Ok(Some(_)) => {
+                    log.add(format!(
+                        "the job's lease lapsed under this run ({}); its check passed and its commits were fetched, so the job takes this result",
+                        err_message(&e)
+                    ));
+                    Ok(())
+                }
+                Ok(None) => Err(e),
+                Err(adopt) => {
+                    log.add(format!(
+                        "the job could not take this run's result: {}",
+                        err_message(&adopt)
+                    ));
+                    Err(e)
+                }
+            }
+        }
+        other => other.map(|_| ()),
+    };
+    if let Err(e) = finished {
         log.put(&err_message(&e));
         eprintln!("{}", err_message(&e));
         write_run_log(&run_id, &log_path, &log.text());
@@ -6958,6 +6991,267 @@ mod tests {
         let j = crate::jobs::job_row(&s.conn().unwrap(), job_id.clone());
         assert_eq!(j.str("status"), "done", "job: {j:?}");
         assert_eq!(j.str("branch"), landed, "job: {j:?}");
+    }
+
+    /// The queued jobs a test adds for the TASK-179 lease cases: the one
+    /// the run works on, and another one a second runner leases mid-run.
+    fn two_jobs_for_lease(s: &hive_store::Store) -> (String, String) {
+        // Two lanes in the project: the second job leases beside the first.
+        crate::capacity::pin_per_project(s, 4);
+        let add = |title: &str| {
+            crate::jobs::add_job(
+                s,
+                "proj".into(),
+                "task".into(),
+                title.into(),
+                "add a note".into(),
+                1,
+                0,
+                "test".into(),
+                crate::util::HUMAN_AGENT.into(),
+                false,
+            )
+            .unwrap()
+            .0
+            .str("id")
+        };
+        (add("a note"), add("another job"))
+    }
+
+    fn lease_one(s: &hive_store::Store, agent: &str, now: &str, job_id: &str, minutes: i32) -> Row {
+        crate::jobs::lease_job(
+            s,
+            agent.into(),
+            now.into(),
+            crate::jobs::LeaseOpts {
+                job_id: job_id.into(),
+                minutes,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    }
+
+    fn requeue_events(s: &hive_store::Store, job_id: &str) -> i32 {
+        count(
+            s,
+            "SELECT COUNT(*) AS n FROM events WHERE action = 'job.requeue' AND subject = ?",
+            &[&job_id],
+        )
+    }
+
+    /// TASK-179: lease_ok renewed the lease from run_job's start, so after a
+    /// run longer than the lease the renewal set lease_until in the past and
+    /// a lease_job call for another job in the same second requeued this one
+    /// under the running run (job-20261127T121754Z-7426b5,
+    /// run-20261127T133610Z-fc5703: commit 58cd3f5a discarded). The renewal
+    /// now reads the store's clock at the call.
+    #[test]
+    fn run_job_longer_than_its_lease_renews_from_the_store_clock_and_ends_done() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = hive_testutil::env_lock();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let fixed = new_store();
+        let (_, root) = new_repo(&fixed);
+        // A store on the moving clock: HIVE_NOW is what s.now() reads.
+        let _now = hive_testutil::setenv("HIVE_NOW", TEST_NOW);
+        let s = hive_store::Store::open(hive_store::Options {
+            home: fixed.home.clone(),
+            now: String::new(),
+            ..Default::default()
+        })
+        .unwrap();
+        join(&s, "aurora");
+        join(&s, "rival");
+        let mut worker_gate = crate::test_helpers_heartbeat::new_lifecycle_gate("worker");
+        let mut verify_gate = crate::test_helpers_heartbeat::new_lifecycle_gate("verification");
+        crate::util::exec1(
+            &s.conn().unwrap(),
+            "UPDATE projects SET verify_cmd = ? WHERE slug = 'proj'",
+            &[&format!("{}; test -f NOTE.md", verify_gate.command)],
+        );
+        let (job_id, other_id) = two_jobs_for_lease(&s);
+        // The job's lease stands until the next day, as it did in the log.
+        let leased = lease_one(&s, "aurora", TEST_NOW, &job_id, 24 * 60);
+        assert_eq!(leased.str("id"), job_id, "lease: {leased:?}");
+        let worker = format!(
+            "set -e; echo note > NOTE.md; git add NOTE.md; git commit -q -m note; {}; echo 'SUMMARY: done - added a note'",
+            worker_gate.command
+        );
+        let (done_tx, done_rx) = crossbeam_channel::bounded(1);
+        let (result_tx, result_rx) = crossbeam_channel::bounded(1);
+        let run_store = s.clone();
+        std::thread::spawn(move || {
+            let r = run_job(
+                &run_store,
+                leased,
+                "aurora",
+                TEST_NOW,
+                RunOpts {
+                    worker_cmd: format!("sh -c {}", crate::util::shell_quote(&worker)),
+                    ..Default::default()
+                },
+            );
+            let _ = result_tx.send(r);
+            let _ = done_tx.send(());
+        });
+        worker_gate.wait(&done_rx);
+        // The worker ran for three hours: far past minutes_per_job + 5.
+        let later = crate::util::plus_minutes(TEST_NOW, 180);
+        let _later = hive_testutil::setenv("HIVE_NOW", &later);
+        worker_gate.release();
+        // Renewed before the check; another runner leases another job while
+        // the check runs, which requeues every lease already expired.
+        verify_gate.wait(&done_rx);
+        let j = crate::jobs::job_row(&s.conn().unwrap(), job_id.clone());
+        assert!(
+            j.str("lease_until") > later,
+            "the renewal must reach past the store's clock {later}: {j:?}"
+        );
+        let other = lease_one(&s, "rival", &s.now(), &other_id, 0);
+        assert_eq!(other.str("id"), other_id, "lease: {other:?}");
+        let j = crate::jobs::job_row(&s.conn().unwrap(), job_id.clone());
+        assert_eq!(j.str("status"), "leased", "requeued under its run: {j:?}");
+        verify_gate.release();
+        let r = result_rx
+            .recv_timeout(crate::test_helpers_daemon::test_wait(Duration::from_secs(
+                120,
+            )))
+            .expect("the run did not finish")
+            .unwrap();
+        let log = std::fs::read_to_string(r.str("log")).unwrap_or_default();
+        assert_eq!(r.str("status"), "done", "run: {r:?}\n{log}");
+        let j = crate::jobs::job_row(&s.conn().unwrap(), job_id.clone());
+        assert_eq!(j.str("status"), "done", "job: {j:?}\n{log}");
+        assert_eq!(requeue_events(&s, &job_id), 0, "the job was requeued");
+        let tip = run(
+            &root,
+            &[
+                "git",
+                "rev-parse",
+                &format!("refs/heads/{}", j.str("branch")),
+            ],
+        );
+        assert_eq!(
+            run(&root, &["git", "show", &format!("{}:NOTE.md", tip.trim())]).trim(),
+            "note"
+        );
+    }
+
+    /// TASK-179: a run whose lease lapsed after its last renewal - the job
+    /// requeued for "lease expired" while its commits were being fetched -
+    /// finished done with its check passed and the commits in the
+    /// checkout. The job takes that result instead of beginning again from
+    /// nothing; once another runner has leased the job, the run stays stale.
+    #[test]
+    fn run_job_stale_after_a_passed_check_and_fetch_gives_the_job_its_result() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = hive_testutil::env_lock();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        for retaken in [false, true] {
+            let s = new_store();
+            let (_, root) = new_repo(&s);
+            join(&s, "aurora");
+            join(&s, "rival");
+            crate::util::exec1(
+                &s.conn().unwrap(),
+                "UPDATE projects SET verify_cmd = 'test -f NOTE.md' WHERE slug = 'proj'",
+                &[],
+            );
+            // The landing fetch into the checkout waits on the gate, after
+            // the run's last renewal and before it finishes the job.
+            let mut fetch_gate = crate::test_helpers_heartbeat::new_lifecycle_gate("fetch");
+            let hook = std::path::Path::new(&root).join(".git/hooks/reference-transaction");
+            std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+            std::fs::write(
+                &hook,
+                format!(
+                    "#!/bin/sh\n[ \"$1\" = committed ] || exit 0\ngrep -q refs/hive/landing/ || exit 0\n[ -e {once} ] && exit 0\ntouch {once}\n{}\n",
+                    fetch_gate.command,
+                    once = crate::util::shell_quote(&format!("{}.once", fetch_gate.ready)),
+                ),
+            )
+            .unwrap();
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            let (job_id, other_id) = two_jobs_for_lease(&s);
+            let leased = lease_one(&s, "aurora", TEST_NOW, &job_id, 0);
+            let worker = "echo note > NOTE.md && git add NOTE.md && git commit -q -m note && echo 'SUMMARY: done - added a note'";
+            let (done_tx, done_rx) = crossbeam_channel::bounded(1);
+            let (result_tx, result_rx) = crossbeam_channel::bounded(1);
+            let run_store = s.clone();
+            std::thread::spawn(move || {
+                let r = run_job(
+                    &run_store,
+                    leased,
+                    "aurora",
+                    TEST_NOW,
+                    RunOpts {
+                        worker_cmd: format!("sh -c {}", crate::util::shell_quote(worker)),
+                        ..Default::default()
+                    },
+                );
+                let _ = result_tx.send(r);
+                let _ = done_tx.send(());
+            });
+            fetch_gate.wait(&done_rx);
+            // An hour on, another runner leases another job: the lapsed
+            // lease goes back to the queue under the running run.
+            let later = crate::util::plus_minutes(TEST_NOW, 60);
+            lease_one(&s, "rival", &later, &other_id, 0);
+            assert_eq!(requeue_events(&s, &job_id), 1, "the lease did not lapse");
+            if retaken {
+                join(&s, "heron");
+                let again = lease_one(&s, "heron", &later, &job_id, 0);
+                assert_eq!(again.str("id"), job_id, "lease: {again:?}");
+            }
+            fetch_gate.release();
+            let r = result_rx
+                .recv_timeout(crate::test_helpers_daemon::test_wait(Duration::from_secs(
+                    120,
+                )))
+                .expect("the run did not finish")
+                .unwrap();
+            let log = std::fs::read_to_string(r.str("log")).unwrap_or_default();
+            let j = crate::jobs::job_row(&s.conn().unwrap(), job_id.clone());
+            if retaken {
+                assert_eq!(r.str("status"), "stale", "run: {r:?}\n{log}");
+                assert_eq!(j.str("status"), "leased", "job: {j:?}");
+                assert_eq!(j.str("lease_agent"), "heron", "job: {j:?}");
+            } else {
+                assert_eq!(r.str("status"), "done", "run: {r:?}\n{log}");
+                assert!(r.str("summary").contains("verify exit 0"), "run: {r:?}");
+                assert_eq!(j.str("status"), "done", "job: {j:?}\n{log}");
+                assert!(!j.str("branch").is_empty(), "job: {j:?}");
+                let tip = run(
+                    &root,
+                    &[
+                        "git",
+                        "rev-parse",
+                        &format!("refs/heads/{}", j.str("branch")),
+                    ],
+                );
+                assert_eq!(
+                    run(&root, &["git", "show", &format!("{}:NOTE.md", tip.trim())]).trim(),
+                    "note"
+                );
+                assert!(log.contains("the job takes this result"), "log: {log}");
+                assert_eq!(
+                    count(
+                        &s,
+                        "SELECT COUNT(*) AS n FROM events WHERE action = ? AND subject = ?",
+                        &[&hive_board::JOB_ADOPT_ACTION, &job_id]
+                    ),
+                    1
+                );
+            }
+        }
     }
 
     #[test]

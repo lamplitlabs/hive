@@ -670,6 +670,66 @@ pub fn finish_run_job(s: &hive_store::Store, input: RunJobResult) -> Result<Job>
     Ok(job)
 }
 
+/// The action of the event that says a job took the result of a run its
+/// lease had lapsed under (TASK-179).
+pub const JOB_ADOPT_ACTION: &str = "job.adopt";
+
+/// A run whose lease lapsed under it (the job was requeued for "lease
+/// expired") but which finished done, its check passed and its commits
+/// fetched to the checkout: the job takes that result instead of starting
+/// again from nothing. Only while nothing else holds the job - it is still
+/// queued on the run's own generation (no other run leased it since) and
+/// the run is still the one running for it. Returns `None` when the job
+/// cannot be adopted; the caller then keeps the run stale.
+pub fn adopt_stale_done_run(s: &hive_store::Store, input: RunJobResult) -> Result<Option<Job>> {
+    if input.status != "done" {
+        return Ok(None);
+    }
+    let tx = s.begin()?;
+    let found: Option<String> = tx
+        .query_row(
+            r#"SELECT j.id FROM jobs j JOIN runs r ON r.job_id = j.id
+		WHERE r.id = ? AND j.id = ? AND r.agent = ? AND r.project = j.project AND r.status = 'running'
+		AND j.status = 'queued' AND j.lease_agent = '' AND j.generation = ?"#,
+            params![input.run_id, input.job_id, input.agent, input.generation],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if found.is_none() {
+        return Ok(None);
+    }
+    // A newer run of the same job must not be running either.
+    let other: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM runs WHERE job_id = ? AND id != ? AND status = 'running'",
+        params![input.job_id, input.run_id],
+        |r| r.get(0),
+    )?;
+    if other > 0 {
+        return Ok(None);
+    }
+    let job = finish_job_conn(
+        s,
+        &tx,
+        &input.job_id,
+        &input.agent,
+        "done",
+        &input.result,
+        &input.branch,
+        Some(input.generation),
+        true,
+    )?;
+    event_conn(
+        &tx,
+        s,
+        &input.agent,
+        JOB_ADOPT_ACTION,
+        &input.job_id,
+        json!({"run": input.run_id, "branch": input.branch}),
+    )?;
+    tx.commit()?;
+    Ok(Some(job))
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct RetryInput {
     pub job_id: String,
@@ -2656,6 +2716,92 @@ mod tests {
             assert!(finish_run_job(&s, input.clone()).is_err(), "{name}");
             let after = job_by_id(&s, &input.job_id).unwrap().unwrap();
             assert_eq!(before, after, "{name}");
+        }
+    }
+
+    /// TASK-179: a run whose lease lapsed under it (lease_job requeued the
+    /// job for "lease expired") but which finished done hands its result to
+    /// the job - only while nothing else took the job since.
+    #[test]
+    fn stale_done_run_is_adopted_only_while_the_job_is_untaken() {
+        let _serial = crate::test_helpers::serial();
+        let requeue = |s: &hive_store::Store, id: &str| {
+            s.conn()
+                .unwrap()
+                .execute(
+                    "UPDATE jobs SET status = 'queued', lease_agent = '', lease_until = '', finished_at = '' WHERE id = ?",
+                    [id],
+                )
+                .unwrap();
+        };
+        for name in [
+            "adopted",
+            "still leased",
+            "leased again",
+            "another run",
+            "failed run",
+            "cancelled job",
+        ] {
+            let (_dir, s, _job, mut input) = completion_run_fixture();
+            input.branch = "hive/alice/kept".into();
+            requeue(&s, &input.job_id);
+            let conn = s.conn().unwrap();
+            match name {
+                "adopted" => {}
+                "still leased" => {
+                    conn.execute(
+                        "UPDATE jobs SET status = 'leased', lease_agent = 'alice' WHERE id = ?",
+                        [&input.job_id],
+                    )
+                    .unwrap();
+                }
+                "leased again" => {
+                    conn.execute(
+                        "UPDATE jobs SET status = 'leased', lease_agent = 'bob', generation = 4 WHERE id = ?",
+                        [&input.job_id],
+                    )
+                    .unwrap();
+                }
+                "another run" => {
+                    conn.execute(
+                        "INSERT INTO runs (id, job_id, agent, project, started_at) VALUES ('run-other', ?, 'bob', 'demo', ?)",
+                        params![input.job_id, TEST_NOW],
+                    )
+                    .unwrap();
+                }
+                "failed run" => input.status = "failed".into(),
+                "cancelled job" => {
+                    conn.execute(
+                        "UPDATE jobs SET status = 'cancelled' WHERE id = ?",
+                        [&input.job_id],
+                    )
+                    .unwrap();
+                }
+                _ => unreachable!(),
+            }
+            drop(conn);
+            let before = job_by_id(&s, &input.job_id).unwrap().unwrap();
+            let got = adopt_stale_done_run(&s, input.clone()).unwrap();
+            if name == "adopted" {
+                let job = got.expect("adopted");
+                assert_eq!(job.status, "done");
+                assert_eq!(job.branch, "hive/alice/kept");
+                assert_eq!(job.result, input.result);
+                let n: i64 = s
+                    .conn()
+                    .unwrap()
+                    .query_row(
+                        "SELECT COUNT(*) FROM events WHERE action = ? AND subject = ?",
+                        params![JOB_ADOPT_ACTION, input.job_id],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(n, 1, "adopt event");
+            } else {
+                assert!(got.is_none(), "{name}: {got:?}");
+                let after = job_by_id(&s, &input.job_id).unwrap().unwrap();
+                assert_eq!(before, after, "{name}");
+            }
         }
     }
 
