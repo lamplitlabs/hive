@@ -57,7 +57,7 @@ Tidy-up lead (tidy): the check `npm test` runs no linter or formatter
 
 Hive never suggests `triage` or `review`: seat those when you want them.
 The runner also asks by itself, one seat at a time, as a question on the
-**For you** page, such as `Seat a tidy-up lead for my-app?`. **Yes** seats
+project's **For you** tab, such as `Seat a tidy-up lead for my-app?`. **Yes** seats
 the lead. It asks about a role again only after `lead.suggest_days` (30)
 days, and `0` turns the questions off.
 

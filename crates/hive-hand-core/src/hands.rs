@@ -1947,4 +1947,39 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn hands_key_hook_adds_the_trailers_after_a_word_line() {
+        let _serial = crate::test_helpers::serial();
+        let job = "job-20260918T000000Z-abcdef";
+        let workdir = tempfile::tempdir().unwrap();
+        let clone = workdir.path().join(job).join("clone");
+        std::fs::create_dir_all(&clone).unwrap();
+        crate::test_helpers::run(&clone, &["git", "init", "-q"]);
+        crate::test_helpers::run(&clone, &["git", "config", "user.name", "aurora"]);
+        let mut h = make_hands(
+            &workdir.path().display().to_string(),
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nx\n",
+        );
+        h.key(job, "hands-1").unwrap();
+        // The test key is not a real one: commit unsigned, hook as written.
+        std::fs::write(clone.join("f.txt"), "x").unwrap();
+        crate::test_helpers::run(&clone, &["git", "add", "f.txt"]);
+        crate::test_helpers::run(
+            &clone,
+            &[
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "-m",
+                "subject\n\nH: x",
+            ],
+        );
+        assert_eq!(
+            crate::test_helpers::run(&clone, &["git", "log", "-1", "--format=%(trailers)"]).trim(),
+            format!("H: x\nHive-Agent: aurora\nHive-Job: {job}\nHive-Executor: hands-1")
+        );
+    }
 }

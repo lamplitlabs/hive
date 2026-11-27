@@ -13,6 +13,7 @@ import {
   loadedSources,
   notifyItems,
   notifyStatus,
+  ownersAsk,
   planNotices,
   pruneSeen,
   readPrefs,
@@ -238,4 +239,16 @@ test("the settings line says what the owner gets here", () => {
   assert.match(notifyStatus({ app: true, supported: true, permission: "denied", on: true }).text, /System Settings/);
   assert.match(notifyStatus({ app: true, supported: false, permission: "unsupported", on: true }).text, /outside its app bundle/);
   assert.match(notifyStatus({ app: true, supported: true, permission: "default", on: false }).text, /asks macOS/);
+});
+
+test("a routine question or proposal the lead decides is no news for the owner (TASK-149 item 20)", () => {
+  assert.equal(ownersAsk({ hard_stop: "" }), false);
+  assert.equal(ownersAsk({ hard_stop: "is about money" }), true);
+  assert.equal(ownersAsk({}), true, "an older hub's ask stays the owner's");
+  const items = notifyItems({
+    ...ALL,
+    questions: [question("Q-1", { hard_stop: "" }), question("Q-2", { hard_stop: "is about credentials" })],
+    proposals: [{ id: "P-1", slug: "demo", summary: "Delete the helper", hard_stop: "" }, { id: "P-2", slug: "demo", summary: "Drop the table", hard_stop: "is about a destructive or irreversible act" }],
+  });
+  assert.deepEqual(items.map((i) => i.id).filter((id) => /^(question|proposal):/.test(id)).sort(), ["proposal:P-2", "question:Q-2"]);
 });

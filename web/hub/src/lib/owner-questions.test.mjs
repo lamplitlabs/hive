@@ -97,3 +97,12 @@ test("a stop of the loop always offers keep paused (recommended) and carry on", 
 test("a which-question that names its answers is not answered in words", () => {
   assert.equal(isOpenQuestion("Which sandbox?", "Option: EU\nOption: US\nRecommended: US - billing uses it"), false);
 });
+
+test("answers come from the last block outside code fences, as the hub reads them", () => {
+  const body = "Pull request #7\n\nThe review:\n\nRecommended: squash the fixups first - noise\n\n```diff\n-no: cache\n```\n\nYes: Merge it - it lands\nNo: Not yet - it stays open\nRecommended: No - read the reasons first\n";
+  const { options, why } = askOptions(body);
+  assert.deepEqual(options.map((o) => [o.label, o.recommended]), [["Not yet", true], ["Merge it", false]]);
+  assert.equal(why, "read the reasons first");
+  assert.equal(askOptions("```\nYes: Go\nNo: Stop\nRecommended: Yes - c\n```").options.length, 0);
+  assert.equal(askOptions("Why?\n\nOption: A - x\n\nOption: B - y\n\nRecommended: B - z").options[0].label, "B");
+});

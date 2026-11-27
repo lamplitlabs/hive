@@ -28,7 +28,7 @@ use std::sync::{Arc, Mutex, Once};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const HARNESS_USAGE: &str = "hive harness run -p TEXT [-C DIR] [--model M] [--steps-file PATH] [--resume ID] ... | chat [-C DIR] [--model M] [--yes] [--resume ID | --continue] | login [--with-token] | status | models | logout | sessions | show ID | cancel ID | prompt";
+const HARNESS_USAGE: &str = "hive harness run (-p TEXT | --task-file F|-) [-C DIR] [--model M] [--steps-file PATH] [--resume ID] ... | chat [-C DIR] [--model M] [--yes] [--resume ID | --continue] | login [--with-token] | status | models | logout | sessions | show ID | cancel ID | prompt";
 const LOGIN_FIX: &str =
     "sign in with GitHub in the console (Settings → Harness) or run hive harness login";
 
@@ -4811,7 +4811,7 @@ done
         let p = CommandFakeProvider::scripted(vec![
             call(
                 QUESTION_TOOL,
-                json!({"question": "Which one?", "choices": ["left", "right"]}),
+                json!({"question": "Which one?", "choices": ["left", "right"], "recommended": "left"}),
             ),
             say("I picked left."),
         ]);

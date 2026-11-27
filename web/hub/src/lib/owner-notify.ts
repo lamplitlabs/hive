@@ -7,10 +7,11 @@
 // `node --test` loads this file as it is).
 //
 // Two kinds of news:
-// - waits: something nothing happens on until the owner answers - every item
-//   the "For you" count counts (a proposed decision, a proposal, a question,
-//   a compute request, suggested work the agents could not settle, a draft to
-//   adopt, a gate step), a task whose lead waits for a reply, and a
+// - waits: something nothing happens on until the owner answers - a proposed
+//   decision, a proposal or a question at a hard stop (a routine one is its
+//   lead's, ownersAsk), a compute request, suggested work the agents could
+//   not settle, a draft to adopt, a gate step, a task whose lead waits for a
+//   reply, and a
 //   conversation whose agent asks a question or asks to run a tool;
 // - finished: a task done, a conversation its agent finished, and a reply
 //   that ended a conversation's turn.
@@ -162,6 +163,15 @@ function taskItems(t: ChatTask): NotifyItem[] {
   return [];
 }
 
+// Whether a question or a proposal is the owner's to answer, by the hub's one
+// rule (TASK-129): it names a hard stop. An empty `hard_stop` is routine - the
+// project's lead decides it, so it is no news for the owner (TASK-149 item 20:
+// the notifications count what the strip lists); a row with no such field
+// comes from an older hub and stays the owner's (asks-state hardStopField).
+export function ownersAsk(row: { hard_stop?: string | null }): boolean {
+  return row.hard_stop === undefined || row.hard_stop === null || row.hard_stop !== "";
+}
+
 // Every item there is to tell the owner about now, from the sources that loaded.
 export function notifyItems(input: NotifyInput): NotifyItem[] {
   const brain = input.brain ?? "";
@@ -169,10 +179,12 @@ export function notifyItems(input: NotifyInput): NotifyItem[] {
   for (const r of input.decisions ?? [])
     out.push({ id: "decision:" + r.project + ":" + r.id, kind: "decision", group: "waits", source: "records", title: "A decision waits for you", body: clip(r.title || r.id, 140) + " (" + r.id + (r.project ? ", " + r.project : "") + ")", href: notifyHref.record(r.id, r.project) });
   for (const p of input.proposals ?? []) {
+    if (!ownersAsk(p)) continue;
     const slug = p.slug || brain;
     out.push({ id: "proposal:" + p.id, kind: "proposal", group: "waits", source: "org", title: "A proposal waits for your yes or no", body: clip(p.summary, 160) + (slug ? " (" + slug + ")" : ""), href: notifyHref.forYou(slug) });
   }
   for (const q of input.questions ?? []) {
+    if (!ownersAsk(q)) continue;
     const slug = q.slug || brain;
     out.push({ id: "question:" + q.id, kind: "question", group: "waits", source: "org", title: q.stop ? "Self-improvement stopped: your review" : "Question from " + askerName(q), body: clip(q.summary, 160) + (slug ? " (" + slug + ")" : ""), href: notifyHref.forYou(slug) });
   }

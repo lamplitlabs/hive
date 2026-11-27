@@ -116,6 +116,10 @@ pub(crate) fn ask_meanings(body: &str) -> (String, String) {
 pub(crate) struct LeadBriefExtra {
     pub agent_lines: Vec<String>,
     pub owner_questions: Vec<OwnerQuestion>,
+    /// How many more asks addressed to the owner wait beyond
+    /// `owner_questions`, which the lead pass bounds to
+    /// [`LEAD_BRIEF_OWNER_ASKS`] (TASK-149 item 4).
+    pub owner_questions_more: usize,
     pub mention_lines: Vec<String>,
     /// Answers other projects gave to this project's asks that nobody here
     /// has acted on yet, one line each ([`answered_asks`]).
@@ -246,12 +250,13 @@ pub(crate) fn lead_brief(
     write_lead_agents_section(&mut b, slug.clone(), &extra.agent_lines);
     write_lead_mentions_section(&mut b, slug.clone(), &extra.mention_lines);
     write_lead_answered_asks_section(&mut b, slug.clone(), &extra.answered_ask_lines);
-    if !extra.owner_questions.is_empty() {
+    if !extra.owner_questions.is_empty() || extra.owner_questions_more > 0 {
         write_lead_owner_questions_section(
             &mut b,
             slug.clone(),
             away.clone(),
             extra.owner_questions,
+            extra.owner_questions_more,
         );
     }
     write_owner_away_section(&mut b, slug.clone(), away.clone());
@@ -396,6 +401,7 @@ pub(crate) fn write_lead_owner_questions_section(
     slug: String,
     _away: Option<AwayBrief>,
     questions: Vec<OwnerQuestion>,
+    more: usize,
 ) {
     b.push_str("## Questions addressed to the owner\n\n");
     let (routine, hard_stops): (Vec<_>, Vec<_>) =
@@ -463,12 +469,23 @@ pub(crate) fn write_lead_owner_questions_section(
                 let _ = writeln!(b, "  not shown to the owner: {}", q.needs_options);
             }
         }
-        b.push_str("\nThese are listed for context only: they wait for the owner. Do not answer, decide, queue or close them, and write no `DECIDE:` line for them; say in the task thread when one blocks a task.\n\n");
+        // One rule for every hard stop (TASK-149 item 5): it is the
+        // owner's, and nothing the lead posts answers, decides or closes it.
+        // A bare one is asked again, never answered: the board closes the
+        // bare ask itself when the same summary comes back with answers.
+        b.push_str("\nThese are listed for context only: they wait for the owner. Do not answer, decide, queue or close them, and write no `DECIDE:` line for them; say in the task thread when one blocks a task.");
+        if bare > 0 {
+            let _ = write!(
+                b,
+                " The one thing you do with an ask marked \"not shown to the owner\" is ask it again with its answers written out: it names no answers to pick or no recommended one, so the console does not put it in front of the owner (TASK-129: the owner answers with one pick, never by typing). Post `hive post question --project {slug} --area A --thread T --for-owner --summary '<the same summary>' --body-file F` on its thread, with F ending in `Option: <label> - <what it does>` lines (or `Yes:` and `No:`) and one `Recommended: <label> - <why>` line; the board then closes the bare ask with a pointer to the new one, so you post no answer on it. For a task's question use `hive task reply TASK-ID '<question>' --choice '<label> - <what it does>' --choice ... --recommend '<label>'`."
+            );
+        }
+        b.push_str("\n\n");
     }
-    if bare > 0 {
+    if more > 0 {
         let _ = write!(
             b,
-            "An ask marked \"not shown to the owner\" names no answers to pick or no recommended one, so the console does not put it in front of the owner (TASK-129: the owner answers with one pick, never by typing): it is yours to fix. Only the owner can decide it (`hive decide` refuses it to you), so ask again with the answers written out and answer the bare ask with a pointer to the new one: a post body with `Option: <label> - <what it does>` lines (or `Yes:` and `No:`) and one `Recommended: <label> - <why>` line, or `hive task reply TASK-ID '<question>' --choice '<label> - <what it does>' --choice ... --recommend '<label>'`.\n\n"
+            "{more} more ask(s) addressed to the owner wait beyond this list; they come up on a later sitting (`hive board --project {slug}` lists them all).\n\n"
         );
     }
 }
@@ -1082,7 +1099,9 @@ pub(crate) fn owner_addressed_questions(
                 false,
             );
             let mut hard_stop = hive_board::hard_stop_ask("question", &summary, &body);
-            if hard_stop.is_empty() && agent == "daemon" {
+            if hard_stop.is_empty()
+                && hive_board::daemon_owner_question("question", &agent, &summary)
+            {
                 hard_stop = "was asked by the daemon".into();
             }
             OwnerQuestion {
@@ -1112,21 +1131,34 @@ pub(crate) static ASK_READS: LazyLock<
 /// answers to their leads (PR #278 review, point 5).
 pub(crate) const BARE_ASKS_HANDED_META: &str = "migration.bare-owner-asks-handed";
 
-/// How many open asks without answers one project's pass hands its lead.
-pub(crate) const BARE_ASKS_HANDED_CAP: usize = 50;
+/// The most asks addressed to the owner one lead brief lists (TASK-149 item
+/// 4): the ones the lead acts on first, then the hard stops it only reads;
+/// the rest are counted and come up on a later sitting.
+pub(crate) const LEAD_BRIEF_OWNER_ASKS: usize = 30;
 
-/// Once per store, on the first daemon start with TASK-129's rule: the open
-/// asks addressed to the owner that name no answers to pick (posted before
-/// every owner question had to carry them) are handed to their project's
-/// lead in one pass - at most [`BARE_ASKS_HANDED_CAP`] per project - so the
-/// lead asks again with answers or decides them. The daemon's own
-/// questions are not among them: they keep the daemon's answers and stay
-/// the owner's. Returns the log line, or nothing when the pass ran before.
+/// How many lead sittings one bare hard stop - an ask only the owner may
+/// decide that names no answers to pick - wakes the lead for (TASK-149 item
+/// 11). The lead's one move is to ask it again with answers, and the board
+/// then closes the bare one; a lead that has not managed it in this many
+/// sittings will not on the next, so the ask stops waking it every six
+/// hours and is only listed when the lead sits for something else.
+pub(crate) const BARE_HARD_STOP_WAKES: usize = 3;
+
+/// Once per store, on the first daemon start with TASK-129's rule: says in
+/// the daemon's log how many open asks addressed to the owner name no
+/// answers to pick (posted before every owner question had to carry them).
+/// Each project's lead finds them in its brief on its next sitting, marked
+/// "not shown to the owner", and asks again with answers or decides them;
+/// nothing else reads this pass, so it writes no event (TASK-149 item 4).
+/// The daemon's own questions are not among them: they keep the daemon's
+/// answers and stay the owner's. The meta key is set before the count, so
+/// a restart in the middle never says it twice. Returns the log line, or
+/// nothing when the pass ran before or found nothing.
 pub(crate) fn hand_bare_asks_once(
     s: &hive_store::Store,
     projects: &[String],
     now: &str,
-    actor: &str,
+    _actor: &str,
 ) -> Vec<String> {
     if s.meta(BARE_ASKS_HANDED_META)
         .map(|(_, set)| set)
@@ -1134,40 +1166,66 @@ pub(crate) fn hand_bare_asks_once(
     {
         return Vec::new();
     }
+    if s.set_meta(BARE_ASKS_HANDED_META, now).is_err() {
+        return Vec::new();
+    }
     let mut handed = 0;
     let mut leads = 0;
     for slug in projects {
-        let asks: Vec<String> = owner_addressed_questions(s, slug.clone(), now.to_string())
+        let asks = owner_addressed_questions(s, slug.clone(), now.to_string())
             .into_iter()
             .chain(owner_addressed_asks(s, slug.clone()))
             .filter(|q| {
                 !q.needs_options.is_empty()
-                    && q.agent != "daemon"
+                    && !hive_board::daemon_owner_question(&q.kind, &q.agent, &q.summary)
                     && q.summary != hive_evolve::STOP_SUMMARY
             })
-            .map(|q| q.id)
-            .take(BARE_ASKS_HANDED_CAP)
-            .collect();
-        if asks.is_empty() {
+            .count();
+        if asks == 0 {
             continue;
         }
-        handed += asks.len();
+        handed += asks;
         leads += 1;
-        if let Ok(conn) = s.conn() {
-            event_at(
-                &conn,
-                now,
-                actor,
-                "owner_asks.handed",
-                slug,
-                json!({"project": slug, "asks": asks, "why": "no answers to pick (TASK-129)"}),
-            );
-        }
     }
-    let _ = s.set_meta(BARE_ASKS_HANDED_META, now);
+    if handed == 0 {
+        return Vec::new();
+    }
     vec![format!(
         "handed {handed} open ask(s) without answers to the leads of {leads} project(s), once: the owner answers with one pick, so their leads ask again with answers or decide them"
     )]
+}
+
+/// How many lead sittings of `slug` since post `post_id` was written have
+/// listed it in their brief.
+pub(crate) fn times_presented_to_lead(s: &hive_store::Store, slug: &str, post_id: &str) -> usize {
+    let Ok(conn) = s.conn() else { return 0 };
+    must_one(
+        &conn,
+        "SELECT COUNT(*) AS n FROM jobs WHERE project = ? AND kind = ? AND created_at >= COALESCE((SELECT date FROM posts WHERE id = ?), '') AND instr(brief, ?) > 0",
+        &[&slug, &LEAD_KIND, &post_id, &post_id],
+    )
+    .int("n")
+    .max(0) as usize
+}
+
+/// Whether ask `q` is one the lead acts on: a routine ask, or a hard stop
+/// that names no answers to pick (which it asks again with them). The
+/// daemon's own questions and the loop's stop are not.
+fn lead_acts_on(q: &OwnerQuestion) -> bool {
+    if hive_board::daemon_owner_question(&q.kind, &q.agent, &q.summary) {
+        return false;
+    }
+    q.hard_stop.is_empty()
+        || (!q.needs_options.is_empty() && q.summary != hive_evolve::STOP_SUMMARY)
+}
+
+/// The asks one lead brief lists, the ones the lead acts on first, and how
+/// many were left out beyond [`LEAD_BRIEF_OWNER_ASKS`] (TASK-149 item 4).
+pub(crate) fn bound_owner_questions(mut qs: Vec<OwnerQuestion>) -> (Vec<OwnerQuestion>, usize) {
+    qs.sort_by_key(|q| !lead_acts_on(q));
+    let more = qs.len().saturating_sub(LEAD_BRIEF_OWNER_ASKS);
+    qs.truncate(LEAD_BRIEF_OWNER_ASKS);
+    (qs, more)
 }
 
 /// Whether the post is the security watcher's finding about a major
@@ -1528,21 +1586,26 @@ pub(crate) fn tend_lead_with(
     // on a later pass.
     let held = crate::decide::held_by_role(s, &slug, &asks, &now);
     owner_questions.extend(asks.into_iter().filter(|q| !held.contains(&q.id)));
+    let (owner_questions, owner_questions_more) = bound_owner_questions(owner_questions);
     let mut away_question_count = 0;
     for q in &owner_questions {
         // A question the daemon asked (a restart drain, a login gate, a
         // lead seat) the daemon answers itself: it never wakes the lead.
         // Its findings (the security watcher's) are the lead's to decide.
         // A hard stop that names no answers to pick wakes the lead too: it
-        // never reaches the owner until the lead asks again with them.
-        let routine = q.hard_stop.is_empty();
-        let bare_hard_stop = !q.needs_options.is_empty() && q.summary != hive_evolve::STOP_SUMMARY;
-        if (routine || bare_hard_stop)
-            && !(q.kind == "question" && q.agent == "daemon")
-            && !recently_presented_to_lead(s, slug.clone(), now.clone(), q.id.clone())
+        // never reaches the owner until the lead asks again with them - but
+        // only for its first few sittings (TASK-149 item 11).
+        if !lead_acts_on(q)
+            || recently_presented_to_lead(s, slug.clone(), now.clone(), q.id.clone())
         {
-            away_question_count += 1;
+            continue;
         }
+        if !q.hard_stop.is_empty()
+            && times_presented_to_lead(s, &slug, &q.id) >= BARE_HARD_STOP_WAKES
+        {
+            continue;
+        }
+        away_question_count += 1;
     }
     if msgs.is_empty()
         && due.is_empty()
@@ -1584,6 +1647,7 @@ pub(crate) fn tend_lead_with(
     let extra = LeadBriefExtra {
         agent_lines: crate::brief::focus_lines(s, slug.clone(), lead.name.clone(), now.clone()),
         owner_questions,
+        owner_questions_more,
         mention_lines: mentions,
         answered_ask_lines: answered,
         goal_review: goal_review_section(s, &slug),
@@ -2910,6 +2974,7 @@ mod tests {
                 hard_stop: "touches credentials".into(),
                 ..Default::default()
             }],
+            0,
         );
         assert!(b.contains("listed for context only"), "{b}");
     }
@@ -4932,14 +4997,24 @@ mod tests {
         let lines = hand_bare_asks_once(&s, &["proj".into()], TEST_NOW, "daemon");
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(lines[0].starts_with("handed 1 open ask(s)"), "{lines:?}");
-        let events = must_rows(
-            &s.conn().unwrap(),
-            "SELECT detail FROM events WHERE action = 'owner_asks.handed'",
-            &[],
+        // TASK-149 item 4: nothing read the event, so none is written; the
+        // meta key says the pass ran.
+        assert!(
+            must_rows(
+                &s.conn().unwrap(),
+                "SELECT 1 AS x FROM events WHERE action = 'owner_asks.handed'",
+                &[],
+            )
+            .is_empty()
         );
-        assert_eq!(events.len(), 1);
-        assert!(events[0].str("detail").contains(&bare.str("id")));
-        assert!(!events[0].str("detail").contains(&daemon.str("id")));
+        assert!(s.meta(BARE_ASKS_HANDED_META).unwrap().1);
+        // The lead finds the bare ask in its brief, marked, and not the
+        // daemon's.
+        let bare_q = owner_addressed_questions(&s, "proj".into(), TEST_NOW.into())
+            .into_iter()
+            .find(|q| q.id == bare.str("id"))
+            .expect("bare ask listed");
+        assert!(lead_acts_on(&bare_q), "{bare_q:?}");
         // The daemon's question stays the owner's, with its own answers.
         let q = owner_addressed_questions(&s, "proj".into(), TEST_NOW.into())
             .into_iter()
@@ -4951,5 +5026,216 @@ mod tests {
         );
         // One pass: the next start hands nothing and says nothing.
         assert!(hand_bare_asks_once(&s, &["proj".into()], TEST_NOW, "daemon").is_empty());
+    }
+
+    /// TASK-149 item 4: the meta key is set before anything else, so a
+    /// store where it is set already (a restart after a pass that stopped
+    /// half-way) says nothing again; a store with no bare ask says nothing.
+    #[test]
+    fn bare_asks_pass_marks_itself_first_and_is_quiet_when_empty() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = hive_testutil::env_lock();
+        let s = new_store();
+        new_bare_repo(&s);
+        assert!(hand_bare_asks_once(&s, &["proj".into()], TEST_NOW, "daemon").is_empty());
+        assert!(
+            s.meta(BARE_ASKS_HANDED_META).unwrap().1,
+            "marked even when it found nothing"
+        );
+        join(&s, "aurora");
+        crate::board::create_post(
+            &s,
+            TEST_NOW.into(),
+            crate::board::PostOpts {
+                kind: "question".into(),
+                project: "proj".into(),
+                area: "api".into(),
+                thread: "cache".into(),
+                summary: "Keep the cache?".into(),
+                body: "It is slow.".into(),
+                for_owner: true,
+                agent: crate::board::actor_agent(&s, "aurora".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(hand_bare_asks_once(&s, &["proj".into()], TEST_NOW, "daemon").is_empty());
+    }
+
+    /// TASK-149 item 4: one lead brief lists at most LEAD_BRIEF_OWNER_ASKS
+    /// asks, the ones the lead acts on first, and counts the rest.
+    #[test]
+    fn lead_brief_bounds_the_owner_asks_it_lists() {
+        let q = |i: usize, hard_stop: &str| OwnerQuestion {
+            id: format!("Q-{i:03}"),
+            kind: "question".into(),
+            agent: "aurora".into(),
+            summary: format!("ask {i}"),
+            hard_stop: hard_stop.into(),
+            ..Default::default()
+        };
+        let mut qs: Vec<_> = (0..10).map(|i| q(i, "is about money")).collect();
+        qs.extend((10..10 + LEAD_BRIEF_OWNER_ASKS).map(|i| q(i, "")));
+        let (kept, more) = bound_owner_questions(qs);
+        assert_eq!(kept.len(), LEAD_BRIEF_OWNER_ASKS);
+        assert_eq!(more, 10);
+        assert!(
+            kept.iter().all(|q| q.hard_stop.is_empty()),
+            "routine asks first"
+        );
+        let brief = lead_brief(
+            "proj".into(),
+            vec![],
+            vec![],
+            None,
+            vec![LeadBriefExtra {
+                owner_questions: kept,
+                owner_questions_more: more,
+                ..Default::default()
+            }],
+        );
+        assert!(
+            brief.contains("10 more ask(s) addressed to the owner wait beyond this list"),
+            "{brief}"
+        );
+        assert!(!brief.contains("Q-000"), "{brief}");
+    }
+
+    /// TASK-149 item 5: one rule for a hard stop - never answered by the
+    /// lead; a bare one is asked again with answers, and the board closes
+    /// the bare one. The brief no longer tells the lead to answer it.
+    #[test]
+    fn lead_brief_has_one_rule_for_a_bare_hard_stop() {
+        let mut b = String::new();
+        write_lead_owner_questions_section(
+            &mut b,
+            "proj".into(),
+            None,
+            vec![OwnerQuestion {
+                id: "Q-1".into(),
+                kind: "question".into(),
+                summary: "Rotate the GitHub PAT".into(),
+                hard_stop: "is about credentials".into(),
+                needs_options: "no answers to pick".into(),
+                ..Default::default()
+            }],
+            0,
+        );
+        assert!(
+            b.contains("not shown to the owner: no answers to pick"),
+            "{b}"
+        );
+        assert!(
+            b.contains("Do not answer, decide, queue or close them"),
+            "{b}"
+        );
+        assert!(
+            b.contains("ask it again with its answers written out"),
+            "{b}"
+        );
+        assert!(
+            b.contains("--for-owner --summary '<the same summary>'"),
+            "{b}"
+        );
+        assert!(b.contains("so you post no answer on it"), "{b}");
+        assert!(!b.contains("answer the bare ask"), "{b}");
+    }
+
+    /// TASK-149 item 5: the planner's stuck-thread question is posted by
+    /// the daemon but asks the lead: it is a routine ask, not the daemon's
+    /// question for the owner, and wakes the lead.
+    #[test]
+    fn the_stuck_thread_question_is_the_leads() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = hive_testutil::env_lock();
+        let s = new_store();
+        new_bare_repo(&s);
+        let post = crate::board::create_post(
+            &s,
+            plus_hours(TEST_NOW, -1.0),
+            crate::board::PostOpts {
+                kind: "question".into(),
+                project: "proj".into(),
+                area: "serve".into(),
+                thread: "tutor".into(),
+                summary: format!(
+                    "{} 3 worker jobs in a row changed no code; lead decision needed",
+                    hive_store::STUCK_THREAD_SUMMARY
+                ),
+                body: "@proj-lead: decide it.".into(),
+                for_owner: true,
+                agent: crate::board::actor_agent(&s, "daemon".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let q = owner_addressed_questions(&s, "proj".into(), TEST_NOW.into())
+            .into_iter()
+            .find(|q| q.id == post.str("id"))
+            .expect("stuck question listed");
+        assert_eq!(q.hard_stop, "", "{q:?}");
+        assert!(lead_acts_on(&q), "{q:?}");
+        // A daemon question of any other summary stays the owner's.
+        assert!(hive_board::daemon_owner_question(
+            "question",
+            "daemon",
+            "Login wanted"
+        ));
+        assert!(!hive_board::daemon_owner_question(
+            "question", "daemon", &q.summary
+        ));
+    }
+
+    /// TASK-149 item 11: a bare hard stop wakes the lead for at most
+    /// BARE_HARD_STOP_WAKES sittings; after that it no longer wakes it every
+    /// six hours.
+    #[test]
+    fn a_bare_hard_stop_stops_waking_the_lead_after_a_few_sittings() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = hive_testutil::env_lock();
+        let s = new_store();
+        new_bare_repo(&s);
+        join(&s, "aurora");
+        crate::board::create_post(
+            &s,
+            plus_hours(TEST_NOW, -1.0),
+            crate::board::PostOpts {
+                kind: "question".into(),
+                project: "proj".into(),
+                area: "ops".into(),
+                thread: "token".into(),
+                summary: "Rotate the deploy token?".into(),
+                body: "It leaked into a log.".into(),
+                for_owner: true,
+                agent: crate::board::actor_agent(&s, "aurora".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let lead_titles = || {
+            must_rows(
+                &s.conn().unwrap(),
+                "SELECT title FROM jobs WHERE kind = ? ORDER BY created_at",
+                &[&LEAD_KIND],
+            )
+            .into_iter()
+            .map(|r| r.str("title"))
+            .collect::<Vec<_>>()
+        };
+        let mut at = TEST_NOW.to_string();
+        for _ in 0..BARE_HARD_STOP_WAKES + 2 {
+            let _ = tend_lead(&s, "proj".into(), at.clone(), "daemon".into());
+            crate::util::exec1(
+                &*s.conn().unwrap(),
+                "UPDATE jobs SET status = 'done', finished_at = ? WHERE kind = ? AND status != 'done'",
+                &[&at, &LEAD_KIND],
+            );
+            at = plus_hours(&at, 7.0);
+        }
+        let titles: Vec<String> = lead_titles()
+            .into_iter()
+            .filter(|t| t.contains("owner question(s)"))
+            .collect();
+        assert_eq!(titles.len(), BARE_HARD_STOP_WAKES, "{titles:?}");
     }
 }

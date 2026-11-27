@@ -188,7 +188,10 @@ MSG-20261123T040046Z-1 sent on TASK-001
 
 ## 6. Know what happens while you do not answer
 
-While you are here (`owner.presence` is `present`, the default):
+Each project's lead decides the routine asks addressed to you - proposals,
+questions, findings, handoffs and suggestions - whether you are here or
+away, recorded as the lead's decision and never as yours. What waits for you
+is a hard stop. Here or away, this is what happens while you do not answer:
 
 - An ask on the Sessions strip or a project's **For you** tab waits until you answer it, and so does the work
   that asked. The rest carries on.
@@ -197,6 +200,8 @@ While you are here (`owner.presence` is `present`, the default):
   code they started from, the loop pauses and asks. After
   `evolve.flat_wait_hours` (24) without an answer it answers itself and
   runs as many cycles again. Set the hours to `0` to make it wait for you.
+  Once you answer it, Yes or No, it never answers itself: a No keeps the
+  loop paused until a fixture whose score moves is enabled.
 - A task under **Asked you** stays there. When its lead stopped it, Hive
   wakes the lead again from time to time, and the lead is told to put the
   task back to **In progress** when what it waited for happened without
@@ -214,40 +219,44 @@ While you are here (`owner.presence` is `present`, the default):
   jobs have started in a UTC day, only your tasks, the lead's sittings,
   answers, reviews and security updates start until midnight.
 
-To let each project's lead decide for you, open **Settings**, **General**,
-and under **You** set **Here or away** to **I'm away: lead agents decide
-for me**, press **Save** and confirm. In a terminal:
+What stays yours whatever the setting says:
 
-```bash
-hive settings set owner.presence away      # present when you are back
-```
-
-- From its next sitting on, the lead decides the proposals of its project
-  and the findings, handoffs and suggestions marked for you, and answers
-  the questions it can. It is told to say yes only to small, reversible
-  work inside the project's rules and the decisions you accepted. Each
-  decision is recorded as the lead's, never as yours, and a yes queues one
-  job.
-- On a task the lead is told to decide and to write its reasons instead
-  of asking. It still asks you about a stop that only you may lift and
-  about a decision that needs a decision record.
 - Hive refuses the lead's answer on a machine request, on the
   self-improvement question, on a proposal that names a decision record or
   a path only you may change (such as `.github/`), on one that changes a
   spend setting, on one that authorises a command, and on a security
   finding about a major dependency upgrade. These wait for you.
-- Hive stops asking about tools and [role leads](role-leads.md), too. It
-  adds the skills and tools a project's files call for (a tool that needs
-  a secret still waits for you) and seats a security lead for a project
+- On a task the lead decides and writes its reasons instead of asking. It
+  still asks you about a stop that only you may lift and about a decision
+  that needs a decision record, with the answers written out.
+- Decision records, machine requests and pull requests handed to you wait
+  for you: no rule gives them to a lead. That agents leave them alone is a
+  rule they are given, not a barrier: the program does not check who runs
+  `hive record accept`, `hive compute approve` or
+  `hive review merge 7 --by owner`.
+
+**Here or away** (`owner.presence`) changes only what Hive does without
+asking. To mark yourself away, open **Settings**, **General**, and under
+**You** set **Here or away** to **I'm away: Hive adds tools and skills on
+its own**, press **Save** and confirm; the **Here** switch in the sidebar
+does the same. In a terminal:
+
+```bash
+hive settings set owner.presence away      # present when you are back
+```
+
+- Hive stops asking about tools and [role leads](role-leads.md). It adds
+  the skills and tools a project's files call for (a tool that needs a
+  secret still waits for you) and seats a security lead for a project
   whose dependencies nothing audits. It says each on the board, with the
   command that undoes it.
-- Decision records, machine requests and pull requests handed to you wait
-  as before: the away rules give none of them to a lead. That agents leave
-  them alone is a rule they are given, not a barrier: the program does not
-  check who runs `hive record accept`, `hive compute approve` or
-  `hive review merge 7 --by owner`.
+- A security finding with no fixed version is answered with the away
+  default, keep watching: Hive queues the update once a patched version is
+  published and old enough.
+- With `records.auto_adopt` set to `1`, the daemon adopts waiting
+  constitution and evaluator drafts in its own name.
 - Hive refuses `owner.presence` to a command run under an agent's name.
-  Nothing decided while you were away is undone when you return.
+  Nothing done while you were away is undone when you return.
 
 ## Check that it worked
 

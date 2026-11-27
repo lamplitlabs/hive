@@ -29,10 +29,11 @@
           "id": 3,
           "question": "Two projects ship docs: demo-app has a docs/ folder that is a year old, demo-lib has none at all. Which one should the refresh cover first?",
           "choices": [
-            "demo-app",
-            "demo-lib",
-            "Both, demo-app first"
-          ]
+            "demo-app - refresh its year-old docs/ first",
+            "demo-lib - write its first docs/ from scratch",
+            "Both - demo-app first, then demo-lib"
+          ],
+          "recommended": "demo-app - refresh its year-old docs/ first"
         },
         "queued": [],
         "turn_from": 3,

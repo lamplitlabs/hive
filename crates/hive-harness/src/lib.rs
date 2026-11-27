@@ -15,6 +15,7 @@ pub mod harness;
 pub mod history;
 pub mod hooks;
 pub mod instructions;
+pub mod killguard;
 pub mod localenv;
 pub mod lockdown;
 pub mod memory;

@@ -442,6 +442,12 @@ pub(crate) fn write_brief(o: BriefOpts) -> anyhow::Result<String> {
         "   `--author`, or `-c user.*`: the runner verifies every commit against this run's key before it lands and"
     );
     w!("   refuses the rest - never sign as anyone else.");
+    w!(
+        "   End every commit message with a sentence, never with 'Word: text' lines: git reads a last paragraph of"
+    );
+    w!(
+        "   such lines as trailers, and the hook then refuses the commit or the landing refuses it for want of them."
+    );
     if o.remote {
         w!(
             "6. Finish within {} minutes. This machine has no Hive store, so report by printing these lines to your",
@@ -654,6 +660,13 @@ pub(crate) fn write_brief(o: BriefOpts) -> anyhow::Result<String> {
         "   clone, removes whatever you left behind, and writes it down against your name (`agent.cleanup` on the"
     );
     w!("   hub's Hygiene panel) - a clean finish leaves nothing to write down.");
+    w!(
+        "   Stop a server or watcher you started by its own pid (`kill <pid>`, the pid `$!` gave you) or its"
+    );
+    w!(
+        "   process-tool id; never `pkill`, `killall` or a `kill` fed from `pgrep`/`lsof`: they match every agent's"
+    );
+    w!("   worker and the owner's programs too, and the harness refuses them.");
     let ui_mode = o
         .store
         .as_ref()
@@ -818,8 +831,10 @@ pub(crate) struct EarlierAttempt {
     pub agents: Vec<String>,
 }
 
-/// Looks up the latest `job.requeue` event of `job_id` and the agents whose
-/// runs made the earlier attempts; `None` when the job was never requeued.
+/// Looks up the latest `job.requeue` event of `job_id` - or the
+/// [`crate::signal_stop::SIGNALLED_EVENT`] of a run ended from outside - and
+/// the agents whose runs made the earlier attempts; `None` when the job was
+/// never requeued.
 pub(crate) fn earlier_attempt(
     s: &hive_store::Store,
     job_id: &str,
@@ -828,7 +843,7 @@ pub(crate) fn earlier_attempt(
     let conn = s.conn().ok()?;
     let ev = crate::util::query_one(
         &conn,
-        "SELECT detail FROM events WHERE action = 'job.requeue' AND subject = ? ORDER BY at DESC, rowid DESC LIMIT 1",
+        "SELECT detail FROM events WHERE action IN ('job.requeue', 'job.signalled') AND subject = ? ORDER BY at DESC, seq DESC LIMIT 1",
         &[&job_id],
     )
     .ok()??;
@@ -1738,6 +1753,32 @@ mod tests {
             assert!(
                 brief.contains(&format!("`SUMMARY: {code}")),
                 "the brief does not name {code}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_brief_says_not_to_end_a_commit_message_with_word_lines() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        let (project, _) = new_bare_repo(&s);
+        for remote in [false, true] {
+            let brief = must_write_brief(BriefOpts {
+                job: brief_job(),
+                project: project.clone(),
+                agent: "aurora".into(),
+                clone: "/clone".into(),
+                minutes: 30,
+                store: Some((*s).clone()),
+                now: TEST_NOW.into(),
+                remote,
+                ..Default::default()
+            });
+            assert!(
+                brief.contains(
+                    "End every commit message with a sentence, never with 'Word: text' lines"
+                ),
+                "remote={remote}:\n{brief}"
             );
         }
     }

@@ -319,7 +319,7 @@ pub(crate) fn report_turn_message(e: &UiEvidence, base: &str) -> String {
 1. Before: show each changed screen as it was at the base commit {base_short}. Check the base out beside your clone (`git worktree add \"$TMPDIR/before\" {base}`), run the project's dev server or test harness from there and save each screen as a PNG in $HIVE_ARTIFACTS ({dir}): before-<screen>.png at 1440x900, plus 390x844 for a screen people open on a phone, plus the dark theme when the change touches colour.\n\
 2. After: the same screens, the same sizes, from your clone, saved as after-<screen>.png.\n\
 3. Write {dir}/{manifest} (`hive report --example` prints its shape): a title, a summary of what changed for the person looking, one entry per visible change with `was`, `now`, `before` and `after`, the checks you ran and where the work stands. Then run `hive report`: it builds {page} and names anything missing; run it until it names nothing.\n\
-4. Remove the worktree (`git worktree remove --force \"$TMPDIR/before\"`) and stop any server you started.\n\n\
+4. Remove the worktree (`git worktree remove --force \"$TMPDIR/before\"`) and stop any server you started by its own pid (`kill <pid>`, the pid `$!` gave when you started it); never `pkill`, `killall` or a `kill` fed from `pgrep`/`lsof`: they stop every agent's worker and the owner's programs, and the harness refuses them.\n\n\
 End with your SUMMARY line as before, naming {page}.",
         counted(&e.ui_paths, "UI file"),
         listed(&e.ui_paths),

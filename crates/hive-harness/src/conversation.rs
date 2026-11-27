@@ -250,7 +250,12 @@ pub enum Pending {
     Question {
         id: u64,
         question: String,
+        /// The answers to pick from, the recommended one first: the
+        /// `question` tool requires them (TASK-149 item 13).
         choices: Vec<String>,
+        /// The choice the agent recommends (the first of `choices`); empty
+        /// for a question asked before choices were required.
+        recommended: String,
     },
     Approval {
         id: u64,
@@ -800,16 +805,18 @@ impl Ui for WebUi {
 
     fn ask(&mut self, question: &str, choices: &[String]) -> Option<String> {
         let id = self.next_id();
+        let recommended = choices.first().cloned().unwrap_or_default();
         let _ = self.store.chat_add_message(
             &self.id,
             "question",
             question,
-            &json!({"choices": choices, "pending": id}),
+            &json!({"choices": choices, "recommended": recommended, "pending": id}),
         );
         let pending = Pending::Question {
             id,
             question: question.to_string(),
             choices: choices.to_vec(),
+            recommended,
         };
         self.report_question(question, choices);
         match self.park(
@@ -5026,7 +5033,7 @@ mod tests {
             home.path(),
             json!([
                 {"content": "Hello, I am here."},
-                {"tool": "question", "args": {"question": "Red or blue?", "choices": ["red", "blue"]}},
+                {"tool": "question", "args": {"question": "Red or blue?", "choices": ["red", "blue"], "recommended": "red"}},
                 {"content": "Blue it is."},
             ]),
         );
@@ -5452,7 +5459,7 @@ mod tests {
         let script = script(
             home.path(),
             json!([
-                {"tool": "question", "args": {"question": "Red or blue?", "choices": ["red", "blue"]}},
+                {"tool": "question", "args": {"question": "Red or blue?", "choices": ["red", "blue"], "recommended": "red"}},
                 {"content": "Blue it is."}
             ]),
         );
@@ -5465,10 +5472,14 @@ mod tests {
         let pending = wait_pending(&m, &row.id);
         match &pending {
             Pending::Question {
-                question, choices, ..
+                question,
+                choices,
+                recommended,
+                ..
             } => {
                 assert_eq!(question, "Red or blue?");
                 assert_eq!(choices, &["red", "blue"]);
+                assert_eq!(recommended, "red");
             }
             other => panic!("{other:?}"),
         }
@@ -5507,7 +5518,7 @@ mod tests {
         let script = script(
             home.path(),
             json!([
-                {"tool": "question", "args": {"question": "Red or blue?", "choices": ["red", "blue"]}},
+                {"tool": "question", "args": {"question": "Red or blue?", "choices": ["red", "blue"], "recommended": "red"}},
                 {"content": "Dark blue it is."}
             ]),
         );
@@ -5951,7 +5962,7 @@ mod tests {
         let script = script(
             home.path(),
             json!([
-                {"tool": "question", "args": {"question": "Which project?", "choices": ["demo"]}},
+                {"tool": "question", "args": {"question": "Which project?", "choices": ["demo", "none"], "recommended": "demo"}},
                 {"content": "Carrying on."}
             ]),
         );
