@@ -239,7 +239,7 @@ pub(super) fn fix_or_hold(
     drop(conn);
     let which = if b.base.stacked() {
         format!(
-            " - the head of open pull request #{}, which the task's pull request stacks on; fetch it from the upstream first",
+            " - the head of open pull request #{}, which the task's pull request stacks on; your clone carries it as a branch of that name, beside the branches to merge",
             b.base.stack_on
         )
     } else {

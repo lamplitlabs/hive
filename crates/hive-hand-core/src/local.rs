@@ -210,6 +210,71 @@ pub struct ClonePrep {
     pub executor: String,
     /// The base of a held run whose clone this run carries on in.
     pub resume_base: Option<String>,
+    /// Refs of `root` the clone carries as branches beside the one it is
+    /// cloned on ([`carry_branches`]): a join job's base and the branches it
+    /// merges.
+    pub carry: Vec<String>,
+}
+
+/// The branch a ref carried into a job's clone becomes there:
+/// `refs/heads/X` and `refs/remotes/<remote>/X` are both `X`. `None` for any
+/// other ref, `HEAD`, or a name a branch of a clone should not have.
+pub fn carried_branch(r: &str) -> Option<&str> {
+    let name = match r.strip_prefix("refs/heads/") {
+        Some(b) => b,
+        None => r.strip_prefix("refs/remotes/")?.split_once('/')?.1,
+    };
+    let plain = !name.is_empty()
+        && name != "HEAD"
+        && !name.starts_with(['-', '/'])
+        && !name.ends_with('/')
+        && !name.contains("..")
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '/' | '-'));
+    plain.then_some(name)
+}
+
+/// Makes each of `refs` of `source` - the project's repository, or the
+/// bundle a hand was sent - a branch of `clone` under its
+/// [`carried_branch`] name, so a job that merges branches other than the
+/// one it is cloned on finds them there: a clone keeps only its own branch
+/// once its origin is removed. The branch the clone is on is left alone.
+/// Returns the branches made and one line for each ref that could not be.
+pub fn carry_branches(clone: &str, source: &str, refs: &[String]) -> (Vec<String>, Vec<String>) {
+    let on = crate::util::git(clone, &["symbolic-ref", "--short", "-q", "HEAD"])
+        .stdout
+        .trim()
+        .to_string();
+    let mut made: Vec<String> = Vec::new();
+    let mut failed = Vec::new();
+    for r in refs {
+        let Some(name) = carried_branch(r) else {
+            failed.push(format!("{r}: not a branch a clone carries"));
+            continue;
+        };
+        if name == on || made.iter().any(|m| m == name) {
+            continue;
+        }
+        let got = crate::util::git_timeout(
+            clone,
+            Duration::from_secs(120),
+            &[
+                "fetch",
+                "-q",
+                "--no-tags",
+                source,
+                &format!("+{r}:refs/heads/{name}"),
+            ],
+        );
+        if got.ok() {
+            made.push(name.to_string());
+        } else {
+            let why = got.stderr.split_whitespace().collect::<Vec<_>>().join(" ");
+            failed.push(format!("{r}: {}", short(&why, 300)));
+        }
+    }
+    (made, failed)
 }
 
 /// Prepares the job's clone and returns its base commit. A held run's clone
@@ -272,6 +337,15 @@ pub fn prepare_clone(
             "",
         )
         .into());
+    }
+    if !prep.carry.is_empty() {
+        let (made, failed) = carry_branches(&prep.clone_dir, &prep.root, &prep.carry);
+        if !made.is_empty() {
+            log.add(format!("the clone carries {}", made.join(", ")));
+        }
+        for line in failed {
+            log.add(format!("the clone could not carry {line}"));
+        }
     }
     let _ = crate::util::git(&prep.clone_dir, &["remote", "remove", "origin"]);
     configure_clone_identity(&prep.clone_dir, &prep.agent, &prep.key, &hook)?;
@@ -444,6 +518,31 @@ mod tests {
     }
 
     #[test]
+    fn a_carried_ref_becomes_a_branch_of_its_own_name() {
+        assert_eq!(
+            carried_branch("refs/heads/hive/a/job-1"),
+            Some("hive/a/job-1")
+        );
+        assert_eq!(
+            carried_branch("refs/remotes/origin/hive/task-TASK-117"),
+            Some("hive/task-TASK-117")
+        );
+        for refused in [
+            "HEAD",
+            "refs/heads/HEAD",
+            "refs/remotes/origin/HEAD",
+            "refs/tags/v1",
+            "refs/heads/-x",
+            "refs/heads/a..b",
+            "refs/heads/a b",
+            "refs/remotes/origin",
+            "main",
+        ] {
+            assert_eq!(carried_branch(refused), None, "{refused}");
+        }
+    }
+
+    #[test]
     fn prepare_runs_and_cleans_a_clone_without_the_store() {
         let _serial = serial();
         let tmp = tempfile::tempdir().unwrap();
@@ -470,6 +569,7 @@ mod tests {
             job_id: "job-x".into(),
             executor: "local".into(),
             resume_base: None,
+            carry: Vec::new(),
         };
         let cancel = crate::ctx::CancellationToken::new();
         assert_eq!(prepare_clone(&cancel, &prep, &log).unwrap(), head);
