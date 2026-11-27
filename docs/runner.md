@@ -361,19 +361,38 @@ and half an hour past that so an owner's run started late in the window gets
 on before it is held. `0` is no bound, the old behaviour. While a restart is
 pending the heartbeat's `restart` record carries `since` and `until` (when
 the bound is up) beside the runs the new build waits for. What ends the wait
-after the bound: the bound itself sets no timer on it. The daemon waits for
-its runs in flight to end, or to hold as `daemon.restart_hold` says (a held
-run exits within moments; a run past its harness - in its check, or a custom
-worker - runs to its end); an owner's **Restart now** written during that
-wait is heard within two seconds and starts the timer of
+after the bound: the bound itself sets no timer on the runs on this machine.
+A run on another machine (a hand or a rented machine) gets its own short
+wait, `daemon.restart_remote_minutes` (default 10), counted from the bound:
+the daemon says `restart: waiting for N run(s) on other machines (N on
+<machine>) at most 10m0s more (daemon.restart_remote_minutes); ...`, and when
+that is up it fetches each run's commits as kept work (branch
+`hive/<agent>/<job>-failed` and a patch, the job's next run starts from
+them), stops the run and returns its job to the queue with the attempt
+refunded - the run summary reads `stopped on <machine>: the restart waited
+daemon.restart_remote_minutes past its bound ...`. Such a run never holds
+the daemon: on 2026-11-27 a daemon waited for seven runs on hands-cr-11116
+from 06:21Z with nothing said. `0` stops them as soon as the bound is up.
+The runs on this machine are asked to hold (`daemon.restart_hold`) only when
+the daemon is about to leave - once no run on another machine is left - not
+when the wait begins, so a run that ends in that time ends whole. The daemon
+then waits for its runs in flight to end, or to hold as `daemon.restart_hold`
+says (a held run exits within moments; a run past its harness - in its
+check, or a custom worker - runs to its end); an owner's **Restart now**
+written during that wait is heard within two seconds and starts the timer of
 `daemon.hold_seconds`, after which the runs still going are stopped; the
 console's **Restart** without "now" waits the runs out. So the longest wait
-after the bound is the longest run in its check, unless the owner asks
-**Restart now**. `hive status`
+after the bound is `daemon.restart_remote_minutes` plus the longest run here
+in its check, unless the owner asks **Restart now**. `hive status`
 reads them on its daemon line (`restart since <time> (<how long>), waits for
-<runs>; nothing new starts after <until> (daemon.restart_max_minutes)`) and
-the console's **Update waiting** row under **Settings → This machine** says
-how long the restart has been pending and when new runs stop starting. The build itself is a
+<runs>; nothing new starts after <until> (daemon.restart_max_minutes)`, and
+once the daemon waits for its runs `restart waits for 1 run(s) on this
+machine since 06:21Z, 7 run(s) on hands-cr-11116 since 06:21Z (stopped at
+06:31Z, their commits kept: daemon.restart_remote_minutes); Restart now
+(console: Settings -> This machine) ends the wait`) and the console's
+**Update waiting** row under **Settings → This machine** says how long the
+restart has been pending, when new runs stop starting and, while the daemon
+waits, what for and since when, with **Restart now** beside it. The build itself is a
 full release compile, so it keeps out of the runs' way: it runs at nice 10
 with `cargo -j` set to `daemon.build_jobs` (half the machine's cores by
 default), and it does not start while the load governor (below) says the
