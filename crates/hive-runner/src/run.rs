@@ -2643,6 +2643,24 @@ pub(crate) fn run_job(
                                     "identity check (ADR-022):\n{}",
                                     problems.join("\n")
                                 ));
+                                // The refused commits are the worker's work all
+                                // the same (a lost trailer refuses as surely as a
+                                // forged one): keep them as after a failed check,
+                                // so a retry or the owner starts from them.
+                                let kept = crate::land::keep_failed_work(
+                                    &root,
+                                    |dst| {
+                                        crate::util::git(&root, &["update-ref", dst, &holding]).ok()
+                                    },
+                                    &base,
+                                    &crate::land::failed_work_branch(author, &job.str("id")),
+                                    &home,
+                                    &project.str("slug"),
+                                );
+                                if !kept.is_empty() {
+                                    log.add(format!("the refused run's work: {kept}"));
+                                    summary.push_str(&format!("; {kept}"));
+                                }
                             } else {
                                 let own = crate::keys::own_commit_count(
                                     &root, &base, &holding, &accepted,
@@ -5601,6 +5619,79 @@ mod tests {
     }
 
     /// The reviewer's clone stands on the pull request's head after
+    /// A commit the identity check refuses (here: no trailers) is still the
+    /// worker's work: it is kept on the job's -failed branch, as after a
+    /// failed check, and the refusal names that branch.
+    #[test]
+    fn commits_the_landing_refuses_are_kept_on_the_failed_branch() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = hive_testutil::env_lock();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let s = new_store();
+        let (_proj, root) = new_repo(&s);
+        join(&s, "aurora");
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "no trailers".into(),
+            "commit without the provenance hook".into(),
+            1,
+            0,
+            "test".into(),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        let job = crate::jobs::lease_job(
+            &s,
+            "aurora".into(),
+            TEST_NOW.into(),
+            crate::jobs::LeaseOpts {
+                job_id: job.str("id"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // Signed by the run's key, but past the hook: no trailers, as a
+        // message whose last paragraph read `H: x` left it under doNothing.
+        let worker = "printf 'x\\n' > x.txt && git add x.txt && git -c core.hooksPath=/dev/null commit -q -m 'refused work' && echo 'SUMMARY: committed'";
+        let r = run_job(
+            &s,
+            job,
+            "aurora",
+            TEST_NOW,
+            RunOpts {
+                worker_cmd: format!("sh -c {}", crate::util::shell_quote(worker)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(r.str("status"), "failed", "run: {r:?}");
+        let kept = crate::land::failed_work_branch("aurora", &r.str("job_id"));
+        let summary = r.str("summary");
+        assert!(
+            summary.starts_with("1 commit(s) refused: commit ")
+                && summary.contains("lacks its Hive-Agent trailer")
+                && summary.contains(&format!(
+                    "nothing landed; its commits are kept on branch {kept}"
+                )),
+            "the refusal does not name the kept branch: {summary}"
+        );
+        assert_eq!(
+            run(&root, &["git", "log", "-1", "--format=%s", &kept]).trim(),
+            "refused work",
+            "the refused commit is not on {kept}"
+        );
+        // The job's own branch is not made: a retry lands there.
+        assert!(
+            !crate::unchecked::branch_exists(&root, &format!("hive/aurora/{}", r.str("job_id"))),
+            "the refused work landed on the job's branch"
+        );
+    }
+
     /// `hive review checkout`: the commits past the base are the author's,
     /// signed by another run's key, and the run lands nothing of them.
     /// The review's verdict is its outcome.
