@@ -306,6 +306,20 @@ what would go and removes nothing, `--held` also says what stays and why,
 sweep in pressure mode) whether or not the disk is under the floor;
 `daemon.sweep off` leaves it to you.
 
+What the ladder removes from the temp folders goes by name alone. In the
+process's temp dir (`TMPDIR`) and in `/tmp` when that is a different place,
+Hive removes a top-level folder whose name starts with `hive-`,
+`check-site-` or `distill-ui-`, or is a Rust `tempfile` folder (`.tmp`
+followed by exactly six letters or digits, e.g. `.tmpAb3xY9`), once nothing
+under it has been written for two hours (`TEMP_GRACE` in
+`crates/hive-runner/src/reclaim.rs`) and no process of yours has its working
+directory or program under it. It never follows a symlink, never removes a
+plain file, and leaves every other name alone - Python's `tmpXXXXXXXX`
+folders included. A folder of your own under `/tmp` with one of those names
+can therefore go when the disk is under the floor or on `hive sweep
+--reclaim`; give it another name, or touch it, to keep it. Hive's own tests
+sweep only temp roots they create, never the machine's.
+
 What the machine keeps is bounded, not just tidied (`crates/hive-runner/src/retention.rs`,
 `buildcache.rs`, and the sweep). A laptop that ran the fleet for a month held
 8 GB under `~/.hive`: seven clones of 0.6-1.6 GB each (`node_modules`, a

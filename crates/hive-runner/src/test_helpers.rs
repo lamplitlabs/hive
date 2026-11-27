@@ -231,6 +231,7 @@ impl Write for OutBufWriter {
 }
 
 pub(crate) fn once_daemon(s: &hive_store::Store, mut o: crate::daemon::DaemonOpts) -> String {
+    seed_sweep_off(s);
     let out = OutBuf::new();
     o.out = Some(out.writer());
     if o.interval == 0 {
@@ -240,6 +241,23 @@ pub(crate) fn once_daemon(s: &hive_store::Store, mut o: crate::daemon::DaemonOpt
     let result = crate::daemon::daemon(&hive_bus::CancellationToken::new(), s, o);
     assert_eq!(result, "done", "daemon = {result}\n{}", out.string());
     out.string()
+}
+
+/// A test's daemon pass leaves the machine alone (TASK-161): the periodic
+/// sweep and the disk-floor reclaim ladder read `daemon.sweep`, so it is
+/// seeded `off` unless the test set it itself or swapped temp roots of its
+/// own in (`reclaim::swap_temp_roots`). Seeded without a `setting` event, so
+/// tests that count events see only their own.
+pub(crate) fn seed_sweep_off(s: &hive_store::Store) {
+    if crate::reclaim::temp_roots_swapped() {
+        return;
+    }
+    let conn = s.conn().expect("conn");
+    conn.execute(
+        "INSERT OR IGNORE INTO settings (name, value, updated_at, updated_by) VALUES ('daemon.sweep', 'off', ?, 'test')",
+        rusqlite::params![s.now()],
+    )
+    .expect("seed daemon.sweep");
 }
 
 pub(crate) fn run(dir: impl AsRef<Path>, argv: &[&str]) -> String {

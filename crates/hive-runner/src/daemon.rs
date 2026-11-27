@@ -4061,6 +4061,10 @@ mod tests {
         let _login = with_closed_login_gate();
         // The host's disk does not decide the hold: the dispatch reads 512 MB.
         let _free = crate::executor::pin_free_mb(512);
+        // The floor sends the pass up the reclaim ladder: its temp rung gets
+        // a root of this test's own, never the machine's (TASK-161).
+        let root = tempfile::tempdir().unwrap();
+        let _roots = crate::reclaim::swap_temp_roots(vec![root.path().to_path_buf()]);
         let s = new_store();
         new_bare_repo(&s);
         join(&s, "aurora");
@@ -4102,6 +4106,124 @@ mod tests {
             ),
             0
         );
+    }
+
+    /// Sets a file tree's modification times `ago` in the past, the way a
+    /// test home left by a killed `cargo test` hours earlier looks.
+    fn age_tree(path: &std::path::Path, ago: Duration) {
+        let when = std::time::SystemTime::now() - ago;
+        fn set(path: &std::path::Path, when: std::time::SystemTime) {
+            if let Ok(entries) = std::fs::read_dir(path) {
+                for e in entries.flatten() {
+                    set(&e.path(), when);
+                }
+            }
+            if let Ok(f) = std::fs::File::open(path) {
+                let _ = f.set_modified(when);
+            }
+        }
+        set(path, when);
+    }
+
+    /// TASK-161: a test's daemon pass under the disk floor never reaches a
+    /// temp root the test did not hand it. Two roots hold stale folders with
+    /// every name the ladder claims: the first stands in for the machine's
+    /// temp dirs (`once_daemon` seeds `daemon.sweep off`, and in a test
+    /// build no root is swept until a test swaps one in), and survives; the
+    /// second, swapped in, is swept by the same path, which proves the pass
+    /// did climb the ladder.
+    #[test]
+    fn daemon_pass_under_the_floor_leaves_temp_roots_it_was_not_given() {
+        let _serial = crate::test_helpers::serial();
+        let _login = with_closed_login_gate();
+        let _free = crate::executor::pin_free_mb(512);
+        let stale = crate::reclaim::TEMP_GRACE * 2;
+        let claimed = [
+            ".tmpAb3xY9",
+            "hive-template-store-q1",
+            "check-site-abc",
+            "distill-ui-xyz",
+        ];
+        let plant = |root: &std::path::Path| -> Vec<std::path::PathBuf> {
+            claimed
+                .iter()
+                .map(|name| {
+                    let d = root.join(name);
+                    std::fs::create_dir_all(&d).unwrap();
+                    std::fs::write(d.join("blob"), vec![1u8; 2048]).unwrap();
+                    age_tree(&d, stale);
+                    d
+                })
+                .collect()
+        };
+        let pass = |s: &hive_store::Store| {
+            once_daemon(
+                s,
+                DaemonOpts {
+                    worker_cmd: "sh -c 'echo SUMMARY: should not run'".into(),
+                    ..Default::default()
+                },
+            )
+        };
+        let floor = |s: &hive_store::Store| {
+            s.set_setting(
+                hive_store::HUMAN_AGENT,
+                "daemon.min_free_mb",
+                &i32::MAX.to_string(),
+            )
+            .unwrap();
+        };
+
+        // The machine's stand-in: nothing swapped in, the sweep left unset.
+        let machine = tempfile::tempdir().unwrap();
+        let mut machine_dirs = plant(machine.path());
+        // And one canary on the machine's own temp dir, a top-level name the
+        // ladder claims: the code before TASK-161 swept it on this pass.
+        struct Canary(std::path::PathBuf);
+        impl Drop for Canary {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let canary = Canary(std::env::temp_dir().join(format!(
+            "hive-task161-canary-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        )));
+        std::fs::create_dir_all(&canary.0).unwrap();
+        std::fs::write(canary.0.join("blob"), b"x").unwrap();
+        age_tree(&canary.0, stale);
+        machine_dirs.push(canary.0.clone());
+        let s = new_store();
+        new_bare_repo(&s);
+        floor(&s);
+        let out = pass(&s);
+        assert!(out.contains("idle: disk under floor"), "{out}");
+        for d in &machine_dirs {
+            assert!(d.exists(), "{} went:\n{out}", d.display());
+        }
+        assert_eq!(s.setting("daemon.sweep", "on"), "off", "seeded off");
+        assert!(crate::reclaim::temp_roots().is_empty());
+
+        // A second root the test swaps in: the same pass sweeps it, and
+        // still not the stand-in.
+        let own = tempfile::tempdir().unwrap();
+        let own_dirs = plant(own.path());
+        let _roots = crate::reclaim::swap_temp_roots(vec![own.path().to_path_buf()]);
+        let s = new_store();
+        new_bare_repo(&s);
+        floor(&s);
+        let out = pass(&s);
+        assert_eq!(s.setting("daemon.sweep", "on"), "on", "not seeded");
+        for d in &own_dirs {
+            assert!(!d.exists(), "{} stayed:\n{out}", d.display());
+        }
+        for d in &machine_dirs {
+            assert!(d.exists(), "{} went:\n{out}", d.display());
+        }
     }
 
     #[cfg(unix)]
