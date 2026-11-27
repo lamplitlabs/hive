@@ -367,9 +367,12 @@ run exits within moments; a run past its harness - in its check, or a custom
 worker - runs to its end); an owner's **Restart now** written during that
 wait is heard within two seconds and starts the timer of
 `daemon.hold_seconds`, after which the runs still going are stopped; the
-console's **Restart** without "now" waits the runs out. So the longest wait
-after the bound is the longest run in its check, unless the owner asks
-**Restart now**. `hive status`
+console's **Restart** without "now" waits the runs out. A run on another
+machine (a paired or rented hand) cannot hold: no harness of this daemon
+runs it, so it runs to its end, its check included, and the wait lasts as
+long. So the longest wait after the bound is the longest of a run here in
+its check and any run on a hand, unless the owner asks **Restart now**.
+`hive status`
 reads them on its daemon line (`restart since <time> (<how long>), waits for
 <runs>; nothing new starts after <until> (daemon.restart_max_minutes)`) and
 the console's **Update waiting** row under **Settings → This machine** says
@@ -516,15 +519,25 @@ worker's report lines; the job returns to the queue at no cost of an attempt,
 and its next run on this machine checks out that branch, starts no worker,
 and checks and lands the commits as the stopped run would have, then deletes
 the branch. A task amended after the work was kept is named in that run's
-log, since the kept commits predate the amendment. When the commits could
+log, since the kept commits predate the amendment - counted from the stop
+that first kept them, not from a later record of the same work. When the commits could
 not be fetched onto the branch, the event names the stopped run's clone
 instead and the clone stays; the next run fetches the commits from it before
 it makes its own clone, and when that fetch fails too it ends with a runner
 error and leaves the clone alone (the summary gives the `git fetch` that
-gets them by hand). A job with such kept work is leased to this machine's
-slots only, as a job with a session held here is: a hand would do the task
-again from nothing. A stop that is the owner's cancel - of the run or of its
-task - keeps nothing and does not put the job back in the queue; nor does a
+gets them by hand). Once the job's attempts are spent and it has failed, the
+sweep saves the commits still in that clone as a patch under
+`patches/<project>/` before it removes the clone, and keeps a clone whose
+commits it cannot save. A job with such kept work is leased to this machine's
+slots only, as a job with a session held here is (a hand would do the task
+again from nothing), and a starved queue does not rent a machine for it -
+but only while this machine could take the job: one that needs something
+this machine lacks, or a plain job while this machine is kept for the work
+that needs something (`machine.reserve`), goes to a hand and starts over
+rather than wait for a lease that never comes. A stop that is the owner's
+cancel - of the run, of its task or of the job itself (`hive job finish ...
+cancelled` while it ran) - keeps nothing and does not put the job back in
+the queue; nor does a
 stop during a card's proof (`evolve.require_check`) count as the card's check
 failing - it is a stopped check like any other (crates/hive-runner/src/unchecked.rs).
 On a hand the stop ends the ssh session the

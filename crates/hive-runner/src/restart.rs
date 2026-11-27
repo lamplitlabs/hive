@@ -386,7 +386,16 @@ impl Restart {
 /// drain, the stay for the owner's queued work and every owner's run that
 /// anchors the window again. Zero is no bound.
 fn restart_max(s: &hive_store::Store) -> Duration {
-    restart_max_of(s.setting_int("daemon.restart_max_minutes"))
+    restart_max_of(restart_max_minutes(s))
+}
+
+/// `daemon.restart_max_minutes` as every reader takes it: held to
+/// `0..=`[`RESTART_MAX_MINUTES_CAP`], so a value stored before the setting
+/// refused more never reaches a clock (the handover's here, the
+/// self-update's settle wait in selfupdate.rs).
+pub(crate) fn restart_max_minutes(s: &hive_store::Store) -> i64 {
+    s.setting_int("daemon.restart_max_minutes")
+        .clamp(0, RESTART_MAX_MINUTES_CAP)
 }
 
 /// The most minutes `daemon.restart_max_minutes` takes (a week): the setting
@@ -1642,6 +1651,15 @@ mod tests {
             Duration::from_secs(RESTART_MAX_MINUTES_CAP as u64 * max_minute_secs())
         );
         assert_eq!(restart_max_of(-5), Duration::ZERO);
+        // A value stored before the rule, past the setting's refusal, is
+        // read held to the cap by every reader (the self-update's too).
+        let s = crate::test_helpers::new_store();
+        crate::util::exec1(
+            &s.conn().unwrap(),
+            "INSERT INTO settings (name, value, updated_at) VALUES ('daemon.restart_max_minutes', '140000000000', '') ON CONFLICT(name) DO UPDATE SET value = excluded.value",
+            &[],
+        );
+        assert_eq!(restart_max_minutes(&s), RESTART_MAX_MINUTES_CAP);
     }
 
     #[test]

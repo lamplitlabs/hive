@@ -238,9 +238,31 @@ pub(crate) fn pending_sql() -> String {
     )
 }
 
+/// The SQL condition (over the jobs alias `j`) that pins a job to this
+/// machine for its kept work, with the values to bind: the work is pending
+/// ([`pending_sql`]) and this machine (`local`, `executor::local_executor_row`)
+/// could take the job - it offers what the job needs and, while it is kept
+/// for the work that needs something, the job needs something (as
+/// `jobs::owner_work_queued_here`). A job this machine cannot run is not
+/// pinned: its kept work would wait for a lease that never comes here, so a
+/// hand takes it and does the task again rather than never (TASK-152 review).
+pub(crate) fn pinned_here_sql(local: &Row) -> (String, Vec<String>) {
+    let (fit, words) = hive_store::needs::sql_fit("j.needs", &crate::executor::caps(local));
+    let reserved = if crate::executor::reserved(local) {
+        " AND j.needs != ''"
+    } else {
+        ""
+    };
+    (format!("({} AND {fit}{reserved})", pending_sql()), words)
+}
+
 /// The amendments of the job's task written after its work was kept: the
 /// kept commits predate them, so the run that checks and lands them says
-/// so (TASK-152 item 7). Each entry is `rev N: note`.
+/// so (TASK-152 item 7). Each entry is `rev N: note`. The work counts as
+/// kept from the first `run.unchecked` of the unbroken chain - no run that
+/// judged the job started after its kept run - not the newest: a fetch from
+/// a kept clone and a check stopped again write fresh ones for the same
+/// commits, and the amendments before those still postdate the work.
 pub(crate) fn amended_since_kept(s: &hive_store::Store, job_id: &str, source: &str) -> Vec<String> {
     let task = crate::compute::task_of_source(source);
     if task.is_empty() {
@@ -251,7 +273,9 @@ pub(crate) fn amended_since_kept(s: &hive_store::Store, job_id: &str, source: &s
     };
     crate::util::must_rows(
         &conn,
-        "SELECT detail FROM events WHERE action = 'task.amended' AND subject = ? AND seq > COALESCE((SELECT MAX(seq) FROM events WHERE action = ? AND subject = ?), 0) ORDER BY seq",
+        &format!(
+            "SELECT detail FROM events WHERE action = 'task.amended' AND subject = ?1 AND seq > COALESCE((SELECT MIN(e.seq) FROM events e LEFT JOIN runs r1 ON r1.id = json_extract(e.detail, '$.run') WHERE e.action = ?2 AND e.subject = ?3 AND json_valid(e.detail) AND NOT EXISTS (SELECT 1 FROM runs r2 WHERE r2.job_id = ?3 AND r2.id != r1.id AND r2.started_at >= r1.started_at AND r2.status NOT IN ({UNJUDGED_RUN_STATUSES}))), 0) ORDER BY seq"
+        ),
         &[&task, &UNCHECKED_EVENT, &job_id],
     )
     .iter()
@@ -368,6 +392,44 @@ mod tests {
         let after = amended_since_kept(&s, "job-1", &source);
         assert_eq!(after.len(), 1, "{after:?}");
         assert!(after[0].contains("shorter please"), "{after:?}");
+        // A fetch from the kept clone (or a check stopped again) writes a
+        // fresh record for the same work: the amendment before it still
+        // postdates the work.
+        record(
+            &s.conn().unwrap(),
+            &s.now(),
+            "job-1",
+            &Unchecked {
+                run: "run-1".into(),
+                ..Default::default()
+            },
+        );
+        let again = amended_since_kept(&s, "job-1", &source);
+        assert_eq!(again, after, "counted from the first kept record");
+        // Once a later run judged the job, a new chain starts at the work
+        // kept after it.
+        let conn = s.conn().unwrap();
+        for (run, started, status) in [
+            ("run-1", "2026-01-01T00:00:00Z", "lost"),
+            ("run-2", "2026-01-01T01:00:00Z", "failed"),
+            ("run-3", "2026-01-01T02:00:00Z", "lost"),
+        ] {
+            crate::util::exec1(
+                &conn,
+                "INSERT INTO runs (id, job_id, agent, project, started_at, status, executor) VALUES (?, 'job-1', 'borealis', 'proj', ?, ?, 'local')",
+                &[&run, &started, &status],
+            );
+        }
+        record(
+            &conn,
+            &s.now(),
+            "job-1",
+            &Unchecked {
+                run: "run-3".into(),
+                ..Default::default()
+            },
+        );
+        assert!(amended_since_kept(&s, "job-1", &source).is_empty());
     }
 
     #[test]

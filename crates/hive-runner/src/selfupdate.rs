@@ -514,7 +514,9 @@ pub(crate) fn tend_binary(s: &hive_store::Store, now: String, env: SelfUpdateEnv
     let bench = Bench::read(std::path::Path::new(&s.home), &env, &co.rev);
     let settle = s.setting_int("daemon.self_update_settle_minutes").max(0);
     let mut env = env;
-    env.restart_max_minutes = s.setting_int("daemon.restart_max_minutes").max(0);
+    // Held to the cap as the handover's own read is: a value stored before
+    // the setting refused more would overflow the settle clock it is added to.
+    env.restart_max_minutes = crate::restart::restart_max_minutes(s);
     match gate(&mut st, settle, &now, &env, &co, &bench) {
         Gate::Quiet => {}
         Gate::Wait(reason) => say(&mut st, &mut lines, reason),

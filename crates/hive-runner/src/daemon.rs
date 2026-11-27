@@ -807,21 +807,26 @@ pub(crate) fn rented_class(caps: &std::collections::BTreeSet<String>) -> String 
 /// session is held here with its clone carries on here, and a hand's slot
 /// passes it (`jobs::lease`), so it is no reason to rent one. A machine
 /// rented for work it cannot take stood drained all night on 27 November
-/// (CR-11114).
+/// (CR-11114). A job whose kept work waits for its check here
+/// (`unchecked::pinned_here_sql`, with this machine's row `local`) is no
+/// reason either, but only while this machine could take it, as the lease
+/// says: a hand takes one this machine cannot run.
 pub(crate) fn rentable_jobs(
     conn: &(impl crate::util::Querier + ?Sized),
     caps: &std::collections::BTreeSet<String>,
+    local: &Row,
     since: &str,
 ) -> Vec<Row> {
     let (fit, words) = hive_store::needs::sql_fit("j.needs", caps);
+    let (pin, pin_words) = crate::unchecked::pinned_here_sql(local);
     let mut vals: Vec<&dyn rusqlite::ToSql> = vec![&since];
-    for w in &words {
+    for w in words.iter().chain(&pin_words) {
         vals.push(w);
     }
     crate::util::must_rows(
         conn,
         &format!(
-            "SELECT j.id, j.kind, j.project FROM jobs j JOIN projects p ON p.slug = j.project WHERE j.status = 'queued' AND p.status = 'active' AND j.kind IN ({}) AND j.created_at <= ? AND {fit} AND NOT EXISTS (SELECT 1 FROM harness_sessions h JOIN runs r ON r.id = h.run_id WHERE h.job_id = j.id AND h.status = 'held' AND r.executor = '{}') ORDER BY j.created_at",
+            "SELECT j.id, j.kind, j.project FROM jobs j JOIN projects p ON p.slug = j.project WHERE j.status = 'queued' AND p.status = 'active' AND j.kind IN ({}) AND j.created_at <= ? AND {fit} AND NOT EXISTS (SELECT 1 FROM harness_sessions h JOIN runs r ON r.id = h.run_id WHERE h.job_id = j.id AND h.status = 'held' AND r.executor = '{}') AND NOT {pin} ORDER BY j.created_at",
             crate::jobs::work_kinds_sql(),
             crate::executor::LOCAL_EXECUTOR
         ),
@@ -844,7 +849,7 @@ pub(crate) fn starved_waiting(
     let since = crate::util::plus_minutes(now, -HANDS_WANTED_MINUTES);
     let fit = s
         .conn()
-        .map(|c| rentable_jobs(&c, &rented, &since).len())
+        .map(|c| rentable_jobs(&c, &rented, &crate::executor::local_executor_row(s), &since).len())
         .unwrap_or(0);
     let mut line = format!(
         "{fit} job(s) a rented {} machine could run waited {waited} min with every slot on this machine busy or held",
@@ -1157,7 +1162,12 @@ pub(crate) fn auto_compute(
     // bare for (`rental_repeats_lack`): the next waiting project gets the
     // machine instead.
     let rented = rented_caps(s);
-    let candidates = rentable_jobs(&conn, &rented, &since);
+    let candidates = rentable_jobs(
+        &conn,
+        &rented,
+        &crate::executor::local_executor_row(s),
+        &since,
+    );
     if candidates.is_empty() {
         return Err(why(format!(
             "no improve or task job that a rented Linux machine could run has waited {min_wait} min"
@@ -4760,6 +4770,59 @@ mod tests {
             panic!("{err}");
         };
         assert!(why.starts_with("no improve or task job"), "{why}");
+    }
+
+    /// TASK-152 review: a job whose kept work waits for its check here is
+    /// no reason to rent while this machine could take it, as the lease
+    /// keeps it off a hand; once this machine cannot (kept for the work
+    /// that needs something), a rented machine could take it, so it counts.
+    #[test]
+    fn kept_work_counts_for_a_rental_only_when_this_machine_cannot_take_it() {
+        let _serial = crate::test_helpers::serial();
+        let s = store_with_projects(&["proj"]);
+        queued_job(&s, "j-kept", "proj", "task", "owner");
+        exec1(
+            &s,
+            "UPDATE jobs SET created_at = ?",
+            &[&crate::util::plus_minutes(TEST_NOW, -40)],
+        );
+        exec1(
+            &s,
+            "INSERT INTO runs(id, job_id, agent, project, started_at, finished_at, status, executor) VALUES('run-kept', 'j-kept', 'aurora', 'proj', ?, ?, 'lost', 'local')",
+            &[
+                &crate::util::plus_minutes(TEST_NOW, -35),
+                &crate::util::plus_minutes(TEST_NOW, -34),
+            ],
+        );
+        crate::unchecked::record(
+            &s.conn().unwrap(),
+            TEST_NOW,
+            "j-kept",
+            &crate::unchecked::Unchecked {
+                run: "run-kept".into(),
+                agent: "aurora".into(),
+                branch: crate::unchecked::unchecked_branch("aurora", "j-kept"),
+                base: "abc".into(),
+                commits: 1,
+                ..Default::default()
+            },
+        );
+        let rentable = || {
+            let since = crate::util::plus_minutes(TEST_NOW, -HANDS_WANTED_MINUTES);
+            rentable_jobs(
+                &s.conn().unwrap(),
+                &rented_caps(&s),
+                &crate::executor::local_executor_row(&s),
+                &since,
+            )
+            .iter()
+            .map(|r| r.str("id"))
+            .collect::<Vec<_>>()
+        };
+        assert!(rentable().is_empty());
+        s.set_setting(hive_store::HUMAN_AGENT, "machine.reserve", "on")
+            .unwrap();
+        assert_eq!(rentable(), vec!["j-kept".to_string()]);
     }
 
     /// TASK-156 item 4: once a rented machine ran a project's work and none

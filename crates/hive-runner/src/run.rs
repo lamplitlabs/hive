@@ -2800,7 +2800,12 @@ pub(crate) fn run_job(
     // works for (the watch cancels the run's token for both) - not from a
     // restart: nobody wants the work any more, so it is neither kept nor
     // queued again (TASK-152 item 7).
-    let owner_stop = owner_cancelled.load(Ordering::SeqCst) || run_task_cancelled(s, &run_id);
+    // The job itself cancelled while it was leased (`hive job finish ...
+    // cancelled` from another shell, the console's stop) is the same: the
+    // board refuses to queue it again (hive-board finish_run_job).
+    let job_cancelled = crate::jobs::job_row(&*c, job.str("id")).str("status") == "cancelled";
+    let owner_stop =
+        owner_cancelled.load(Ordering::SeqCst) || run_task_cancelled(s, &run_id) || job_cancelled;
     if status == "lost" && check_stopped.is_some() && owner_stop {
         check_stopped = None;
         status = "failed".into();
@@ -3100,8 +3105,10 @@ pub(crate) fn run_job(
     // A job whose task the owner cancelled while it ran is not put back in
     // the queue by the run's end, whatever stopped it: the cancel ends the
     // task's open jobs, and this one was leased then (TASK-152 item 7).
+    // A job itself cancelled while it ran stays cancelled: the board
+    // refuses to queue it again.
     if job_status == "queued" && status != "dry-run" && owner_stop {
-        job_status = "failed".into();
+        job_status = if job_cancelled { "cancelled" } else { "failed" }.into();
     }
     let final_branch = if job_status == "queued" {
         job.str("branch")
@@ -7061,6 +7068,41 @@ mod tests {
         assert!(crate::unchecked::pending(&s, &job_id, &root).is_none());
         let j = crate::jobs::job_row(&s.conn().unwrap(), job_id.clone());
         assert_ne!(j.str("status"), "queued", "job: {j:?}\n{log}");
+    }
+
+    /// TASK-152 review: a leased job set cancelled (`hive job finish ...
+    /// cancelled` from another shell) and then stopped is not queued again
+    /// by the stop, nor is its work kept: the run ends with the job
+    /// cancelled, not stale.
+    #[test]
+    fn run_job_cancelled_while_leased_is_not_requeued_by_a_stop() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = hive_testutil::env_lock();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let s = new_store();
+        let (job_id, root, marker) = stalling_check_job(&s, "test");
+        let s2 = s.clone();
+        let id2 = job_id.clone();
+        let (r, log) = run_until_stopped_in_check(&s, &job_id, &marker, |c| {
+            crate::util::exec1(
+                &s2.conn().unwrap(),
+                "UPDATE jobs SET status = 'cancelled' WHERE id = ?",
+                &[&id2],
+            );
+            c.cancel();
+        });
+        assert_ne!(r.str("status"), "stale", "run: {r:?}\n{log}");
+        assert!(
+            log.contains("cancelled by the owner during the check"),
+            "{log}"
+        );
+        let kept = crate::unchecked::unchecked_branch("aurora", &job_id);
+        assert!(!crate::unchecked::branch_exists(&root, &kept), "{log}");
+        let j = crate::jobs::job_row(&s.conn().unwrap(), job_id.clone());
+        assert_ne!(j.str("status"), "queued", "job: {j:?}\n{log}");
+        assert_eq!(j.int("attempts"), 1, "job: {j:?}");
     }
 
     /// TASK-152 item 6: a stop during the card's proof was read as the

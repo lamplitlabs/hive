@@ -577,7 +577,14 @@ pub fn finish_run_job(s: &hive_store::Store, input: RunJobResult) -> Result<Job>
             ),
         ));
     };
-    if input.status == "done" && (prev == "cancelled" || prev == "failed") {
+    // A job cancelled while it was leased (`hive job finish ... cancelled`,
+    // the owner's stop) stays cancelled: the run's end does not put it back
+    // in the queue, whatever stopped the run (TASK-152 review). Only the
+    // cancelled state is final here: a worker's own `done` before a stop is
+    // work the next run checks, and the queue is where it waits.
+    if (input.status == "done" && (prev == "cancelled" || prev == "failed"))
+        || (input.status == "queued" && prev == "cancelled")
+    {
         return Err(refuse(
             2,
             format!(
@@ -2539,9 +2546,20 @@ mod tests {
             "run project",
             "cancelled",
             "failed",
+            "cancelled, queued again",
         ] {
             let (_dir, s, _job, mut input) = completion_run_fixture();
             match name {
+                "cancelled, queued again" => {
+                    s.conn()
+                        .unwrap()
+                        .execute(
+                            "UPDATE jobs SET status = 'cancelled' WHERE id = ?",
+                            [&input.job_id],
+                        )
+                        .unwrap();
+                    input.status = "queued".into();
+                }
                 "missing run" => input.run_id = "missing".into(),
                 "finished run" => {
                     s.conn()
