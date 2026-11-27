@@ -5727,7 +5727,14 @@ mod tests {
         // waited beside them and no fleet run was asked to hold.
         let _serial = crate::test_helpers::serial();
         let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
-        let calm = crate::daemon_load::pin_pressure(crate::daemon_load::CALM);
+        // The kernel's memory warning stands from the start: the daemon reads
+        // the pressure once per tick, so a warning pinned mid-run could be
+        // missed by a tick that read the calm machine before it and then
+        // leased the owner's next step over the halved cap (a flake).
+        let _warned = crate::daemon_load::pin_pressure(crate::daemon_load::Pressure {
+            mem_warning: true,
+            ..crate::daemon_load::CALM
+        });
         let live = LiveGovernor::start_with(|s| {
             s.set_setting(hive_store::HUMAN_AGENT, "capacity", "4")
                 .unwrap();
@@ -5760,11 +5767,6 @@ mod tests {
             // The kernel's memory warning halves the cap of four to two, and
             // two runs fill it - one the owner's, so no express slot - while
             // the fleet's nominal total is still four.
-            drop(calm);
-            let _warned = crate::daemon_load::pin_pressure(crate::daemon_load::Pressure {
-                mem_warning: true,
-                ..crate::daemon_load::CALM
-            });
             assert_eq!(crate::capacity::fleet(&live.s).total, 4);
             let next = live.add("Owner's next step", "task:TASK-001:next");
             let text = live.wait_for(
