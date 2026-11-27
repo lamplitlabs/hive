@@ -189,6 +189,15 @@ a failed job on a planning pass
                    lead re-plans
 ```
 
+A run renews its job's lease from the store's clock at each renewal (before
+its check, before landing), so a run longer than the lease keeps it; a
+renewal from the run's start once set the lease in the past and the next
+lease anywhere requeued the job under the running run (TASK-179). A run whose
+lease lapsed all the same, but which ends done with its check passed and its
+commits fetched to the checkout, gives the job its result (a `job.adopt`
+event) instead of leaving it to start again from nothing - unless another
+run has leased the job since, in which case the run stays `stale`.
+
 Worker selection and leasing agree on occupied capacity: one current lease
 per agent, and a provisional completion does not free the worker or project
 slot until its controller run ends. Workers are not kept idle: a dispatch
@@ -360,11 +369,42 @@ is the thirty-minute drain plus one more drain of stay for the owner's work,
 and half an hour past that so an owner's run started late in the window gets
 on before it is held. `0` is no bound, the old behaviour. While a restart is
 pending the heartbeat's `restart` record carries `since` and `until` (when
-the bound is up) beside the runs the new build waits for; `hive status`
+the bound is up) beside the runs the new build waits for. What ends the wait
+after the bound: the bound itself sets no timer on the runs on this machine.
+A run on another machine (a hand or a rented machine) gets its own short
+wait, `daemon.restart_remote_minutes` (default 10), counted from the bound:
+the daemon says `restart: waiting for N run(s) on other machines (N on
+<machine>) at most 10m0s more (daemon.restart_remote_minutes); ...`, and when
+that is up it fetches each run's commits as kept work (branch
+`hive/<agent>/<job>-failed` and a patch, the job's next run starts from
+them), stops the run and returns its job to the queue with the attempt
+refunded - the run summary reads `stopped on <machine>: the restart waited
+daemon.restart_remote_minutes past its bound ...`. Such a run never holds
+the daemon: on 2026-11-27 a daemon waited for seven runs on hands-cr-11116
+from 06:21Z with nothing said. `0` stops them as soon as the bound is up.
+The runs on this machine are asked to hold (`daemon.restart_hold`) only when
+the daemon is about to leave - once no run on another machine is left - not
+when the wait begins, so a run that ends in that time ends whole. The daemon
+then waits for its runs in flight to end, or to hold as `daemon.restart_hold`
+says (a held run exits within moments; a run past its harness - in its
+check, or a custom worker - runs to its end); an owner's **Restart now**
+written during that wait is heard within two seconds and starts the timer of
+`daemon.hold_seconds`, after which the runs still going are stopped; the
+console's **Restart** without "now" waits the runs out. A run on another
+machine (a paired or rented hand) cannot hold: no harness of this daemon
+runs it, so it is stopped with its commits kept when
+`daemon.restart_remote_minutes` is up, as above. So the longest wait after
+the bound is `daemon.restart_remote_minutes` plus the longest run here in
+its check, unless the owner asks **Restart now**. `hive status`
 reads them on its daemon line (`restart since <time> (<how long>), waits for
-<runs>; nothing new starts after <until> (daemon.restart_max_minutes)`) and
-the console's **Update waiting** row under **Settings → This machine** says
-how long the restart has been pending and when new runs stop starting. The build itself is a
+<runs>; nothing new starts after <until> (daemon.restart_max_minutes)`, and
+once the daemon waits for its runs `restart waits for 1 run(s) on this
+machine since 06:21Z, 7 run(s) on hands-cr-11116 since 06:21Z (stopped at
+06:31Z, their commits kept: daemon.restart_remote_minutes); Restart now
+(console: Settings -> This machine) ends the wait`) and the console's
+**Update waiting** row under **Settings → This machine** says how long the
+restart has been pending, when new runs stop starting and, while the daemon
+waits, what for and since when, with **Restart now** beside it. The build itself is a
 full release compile, so it keeps out of the runs' way: it runs at nice 10
 with `cargo -j` set to `daemon.build_jobs` (half the machine's cores by
 default), and it does not start while the load governor (below) says the
@@ -379,7 +419,11 @@ minutes apart, and five release builds a day, each followed by a restart
 window that refuses the long kinds of run, were the price of building on every
 merge - the daemon says `building once it has stood for 60 min` once, and a
 further merge restarts the clock, so the burst builds once, from its last
-commit. Nor
+commit. Merges closer together than the settle time would restart that clock
+for ever, so the settle wait gives way once the default branch has been ahead
+of the running build for `daemon.restart_max_minutes` (an hour when it is 0),
+counted from the first pass that saw it ahead whatever HEAD it then stood at.
+Nor
 does it start while a fleet improve, task or experiment job is queued that the
 restart the build ends in would refuse (its run is not expected to end before
 the runs in flight): the daemon says `building once the queued improve runs on
@@ -387,7 +431,9 @@ the runs in flight): the daemon says `building once the queued improve runs on
 and lets them start first, for at most `daemon.restart_max_minutes` (90; an
 hour when it is 0). The wait counts from the first pass that waited, or from
 the arming of a restart already pending when that is earlier, and a queue that
-empties for a pass and fills again does not start it over. Past it the daemon
+empties for a pass and fills again does not start it over; nor does a pass
+that waits for the settle time instead (a new HEAD in between), since with a
+bound the wait counts from when the default branch went ahead at the latest. Past it the daemon
 says `building past the queued task runs on <project>, waited for since <time>`
 and builds: the queued work stays queued and starts under the next daemon. On
 2026-11-26 a priority-0 audit queued on the brain behind the owner's tasks held
@@ -492,7 +538,37 @@ finished and verified at 06:13:37Z was requeued at 06:13:50Z and its
 (a custom worker command, a run still in its recipe setup or already in its
 run-end check, a remote executor, an agent gone inactive) is stopped after
 `daemon.hold_seconds` (default 120) and settles `lost`: its job returns to
-the queue and starts over. On a hand the stop ends the ssh session the
+the queue and starts over - unless the run was in its run-end check, its
+worker's work finished. Then the stop keeps the commits on the branch
+`hive/<agent>/<job>-unchecked` in the project's checkout (not the job's own
+`hive/<agent>/<job>`, which the landing refuses when it exists) and writes a
+`run.unchecked` event on the job with the base, the signing key and the
+worker's report lines; the job returns to the queue at no cost of an attempt,
+and its next run on this machine checks out that branch, starts no worker,
+and checks and lands the commits as the stopped run would have, then deletes
+the branch. A task amended after the work was kept is named in that run's
+log, since the kept commits predate the amendment - counted from the stop
+that first kept them, not from a later record of the same work. When the commits could
+not be fetched onto the branch, the event names the stopped run's clone
+instead and the clone stays; the next run fetches the commits from it before
+it makes its own clone, and when that fetch fails too it ends with a runner
+error and leaves the clone alone (the summary gives the `git fetch` that
+gets them by hand). Once the job's attempts are spent and it has failed, the
+sweep saves the commits still in that clone as a patch under
+`patches/<project>/` before it removes the clone, and keeps a clone whose
+commits it cannot save. A job with such kept work is leased to this machine's
+slots only, as a job with a session held here is (a hand would do the task
+again from nothing), and a starved queue does not rent a machine for it -
+but only while this machine could take the job: one that needs something
+this machine lacks, or a plain job while this machine is kept for the work
+that needs something (`machine.reserve`), goes to a hand and starts over
+rather than wait for a lease that never comes. A stop that is the owner's
+cancel - of the run, of its task or of the job itself (`hive job finish ...
+cancelled` while it ran) - keeps nothing and does not put the job back in
+the queue; nor does a
+stop during a card's proof (`evolve.require_check`) count as the card's check
+failing - it is a stopped check like any other (crates/hive-runner/src/unchecked.rs).
+On a hand the stop ends the ssh session the
 worker or the check runs in and the run's clean-up tells the hand to clean
 the job, which ends what the worker left running there; until 2026-11-05 a
 hand's run could not be stopped at all, and a restart with one in flight

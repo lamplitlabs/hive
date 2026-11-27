@@ -365,6 +365,64 @@ pub struct RestartBeat {
     /// and from heartbeats older than the bound.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub until: String,
+    /// Once the daemon has left its loop and waits for its runs: the
+    /// machines they run on, since when it waits for them and when the
+    /// runs on another machine are stopped; absent before that and from
+    /// older daemons.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub machines: Vec<RestartMachine>,
+}
+
+/// The runs on one machine a daemon waits for before it restarts.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RestartMachine {
+    pub machine: String,
+    pub local: bool,
+    pub runs: u64,
+    pub since: String,
+    /// When the runs there are stopped, their commits fetched as kept work
+    /// (daemon.restart_remote_minutes); empty for this machine's runs and
+    /// when they are waited out.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub until: String,
+}
+
+/// "06:21Z" of an ISO time, the clock a status line needs; the text as it
+/// is when it does not parse.
+fn clock_text(at: &str) -> String {
+    parse_utc(at)
+        .map(|t| t.format("%H:%MZ").to_string())
+        .unwrap_or_else(|_| at.to_string())
+}
+
+/// The clause of a daemon that waits for its runs before it restarts: what
+/// it waits for on which machine and since when - "waits for 7 run(s) on
+/// hands-cr-11116 since 06:21Z" - each other machine's with when its runs
+/// are stopped, and the way out (the console's Restart now).
+fn waiting_machines_clause(machines: &[RestartMachine]) -> String {
+    let parts: Vec<String> = machines
+        .iter()
+        .map(|m| {
+            let on = if m.local {
+                "this machine".to_string()
+            } else {
+                m.machine.clone()
+            };
+            let mut part = format!("{} run(s) on {on} since {}", m.runs, clock_text(&m.since));
+            if !m.until.is_empty() {
+                part.push_str(&format!(
+                    " (stopped at {}, their commits kept: daemon.restart_remote_minutes)",
+                    clock_text(&m.until)
+                ));
+            }
+            part
+        })
+        .collect();
+    format!(
+        ", restart waits for {}; Restart now (console: Settings -> This machine) ends the wait",
+        parts.join(", ")
+    )
 }
 
 /// One run a pending restart waits for.
@@ -383,6 +441,9 @@ pub struct RestartWait {
 /// the slots - so a restart held open by the owner's queue reads as such,
 /// not as a daemon that forgot to restart.
 fn restart_clause(r: &RestartBeat, now: chrono::DateTime<chrono::Utc>) -> String {
+    if !r.machines.is_empty() {
+        return waiting_machines_clause(&r.machines);
+    }
     let ago = |at: &str| {
         parse_utc(at).ok().map(|t| {
             hive_cli::format_duration(std::time::Duration::from_secs(
@@ -1376,6 +1437,12 @@ mod tests {
             (
                 r#"{"pid":7,"at":"2026-09-06T19:00:00Z","loops":9,"interval":300,"restart":{"since":"2026-09-06T18:30:00Z","inflight":4,"dispatching":false,"waits_for":[{"agent":"a","kind":"task","project":"p","job":"1","started_at":""},{"agent":"b","kind":"review","project":"p","job":"2","started_at":""},{"agent":"c","kind":"lead","project":"q","job":"3","started_at":""},{"agent":"d","kind":"task","project":"q","job":"4","started_at":""}]}}"#,
                 "alive pid 7, last loop 0s ago, 9 loop(s), interval 300s, restart since 2026-09-06T18:30:00Z (30m0s), waits for a's task on p, b's review on p, c's lead on q and 1 more; nothing new starts",
+            ),
+            // A daemon past its loop names the machines it waits for and
+            // since when, the other machine's with when its runs stop.
+            (
+                r#"{"pid":7,"at":"2026-09-06T19:00:00Z","loops":9,"interval":300,"restart":{"since":"2026-09-06T17:00:00Z","inflight":8,"dispatching":false,"waits_for":[],"until":"2026-09-06T18:30:00Z","machines":[{"machine":"local","local":true,"runs":1,"since":"2026-09-06T18:30:00Z","until":""},{"machine":"hands-cr-11116","local":false,"runs":7,"since":"2026-09-06T18:30:00Z","until":"2026-09-06T18:40:00Z"}]}}"#,
+                "alive pid 7, last loop 0s ago, 9 loop(s), interval 300s, restart waits for 1 run(s) on this machine since 18:30Z, 7 run(s) on hands-cr-11116 since 18:30Z (stopped at 18:40Z, their commits kept: daemon.restart_remote_minutes); Restart now (console: Settings -> This machine) ends the wait",
             ),
             (
                 r#"{"pid":7,"at":"2026-09-06T19:00:00Z","loops":9,"interval":300,"tick":{"ms":80,"max_ms":31000,"slow":7,"longest":[{"stage":"plan","ms":14000},{"stage":"pipeline","ms":9000}]}}"#,

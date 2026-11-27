@@ -407,6 +407,24 @@ pub fn stop_job(
     let conn = s.conn()?;
     let job = job_by_id_conn(&conn, job_id)?
         .ok_or_else(|| refuse(2, format!("No job {}", py_repr(job_id))))?;
+    // The guard `finish_job` keeps: only the owner or the agent that holds
+    // the lease ends a leased job. The run's watcher records any stop as
+    // the owner's, so without it one agent stopped another's run - a
+    // lead's sitting, a review in the middle of a merge (TASK-169 item 5).
+    if job.status == "leased"
+        && !job.lease_agent.is_empty()
+        && !actor.is_empty()
+        && job.lease_agent != actor
+        && actor != hive_store::HUMAN_AGENT
+    {
+        return Err(refuse(
+            2,
+            format!(
+                "Job {} ({}) is leased by {}, not {actor}; only the owner or that agent stops its run",
+                job.id, job.kind, job.lease_agent
+            ),
+        ));
+    }
     let run: Option<(String, String)> = conn
         .query_row(
             "SELECT id, executor FROM runs WHERE job_id = ? AND status = 'running' ORDER BY started_at DESC, id DESC LIMIT 1",
@@ -646,7 +664,14 @@ pub fn finish_run_job(s: &hive_store::Store, input: RunJobResult) -> Result<Job>
             ),
         ));
     };
-    if input.status == "done" && (prev == "cancelled" || prev == "failed") {
+    // A job cancelled while it was leased (`hive job finish ... cancelled`,
+    // the owner's stop) stays cancelled: the run's end does not put it back
+    // in the queue, whatever stopped the run (TASK-152 review). Only the
+    // cancelled state is final here: a worker's own `done` before a stop is
+    // work the next run checks, and the queue is where it waits.
+    if (input.status == "done" && (prev == "cancelled" || prev == "failed"))
+        || (input.status == "queued" && prev == "cancelled")
+    {
         return Err(refuse(
             2,
             format!(
@@ -668,6 +693,66 @@ pub fn finish_run_job(s: &hive_store::Store, input: RunJobResult) -> Result<Job>
     )?;
     tx.commit()?;
     Ok(job)
+}
+
+/// The action of the event that says a job took the result of a run its
+/// lease had lapsed under (TASK-179).
+pub const JOB_ADOPT_ACTION: &str = "job.adopt";
+
+/// A run whose lease lapsed under it (the job was requeued for "lease
+/// expired") but which finished done, its check passed and its commits
+/// fetched to the checkout: the job takes that result instead of starting
+/// again from nothing. Only while nothing else holds the job - it is still
+/// queued on the run's own generation (no other run leased it since) and
+/// the run is still the one running for it. Returns `None` when the job
+/// cannot be adopted; the caller then keeps the run stale.
+pub fn adopt_stale_done_run(s: &hive_store::Store, input: RunJobResult) -> Result<Option<Job>> {
+    if input.status != "done" {
+        return Ok(None);
+    }
+    let tx = s.begin()?;
+    let found: Option<String> = tx
+        .query_row(
+            r#"SELECT j.id FROM jobs j JOIN runs r ON r.job_id = j.id
+		WHERE r.id = ? AND j.id = ? AND r.agent = ? AND r.project = j.project AND r.status = 'running'
+		AND j.status = 'queued' AND j.lease_agent = '' AND j.generation = ?"#,
+            params![input.run_id, input.job_id, input.agent, input.generation],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if found.is_none() {
+        return Ok(None);
+    }
+    // A newer run of the same job must not be running either.
+    let other: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM runs WHERE job_id = ? AND id != ? AND status = 'running'",
+        params![input.job_id, input.run_id],
+        |r| r.get(0),
+    )?;
+    if other > 0 {
+        return Ok(None);
+    }
+    let job = finish_job_conn(
+        s,
+        &tx,
+        &input.job_id,
+        &input.agent,
+        "done",
+        &input.result,
+        &input.branch,
+        Some(input.generation),
+        true,
+    )?;
+    event_conn(
+        &tx,
+        s,
+        &input.agent,
+        JOB_ADOPT_ACTION,
+        &input.job_id,
+        json!({"run": input.run_id, "branch": input.branch}),
+    )?;
+    tx.commit()?;
+    Ok(Some(job))
 }
 
 #[derive(Debug, Clone, Default)]
@@ -2608,9 +2693,20 @@ mod tests {
             "run project",
             "cancelled",
             "failed",
+            "cancelled, queued again",
         ] {
             let (_dir, s, _job, mut input) = completion_run_fixture();
             match name {
+                "cancelled, queued again" => {
+                    s.conn()
+                        .unwrap()
+                        .execute(
+                            "UPDATE jobs SET status = 'cancelled' WHERE id = ?",
+                            [&input.job_id],
+                        )
+                        .unwrap();
+                    input.status = "queued".into();
+                }
                 "missing run" => input.run_id = "missing".into(),
                 "finished run" => {
                     s.conn()
@@ -2656,6 +2752,92 @@ mod tests {
             assert!(finish_run_job(&s, input.clone()).is_err(), "{name}");
             let after = job_by_id(&s, &input.job_id).unwrap().unwrap();
             assert_eq!(before, after, "{name}");
+        }
+    }
+
+    /// TASK-179: a run whose lease lapsed under it (lease_job requeued the
+    /// job for "lease expired") but which finished done hands its result to
+    /// the job - only while nothing else took the job since.
+    #[test]
+    fn stale_done_run_is_adopted_only_while_the_job_is_untaken() {
+        let _serial = crate::test_helpers::serial();
+        let requeue = |s: &hive_store::Store, id: &str| {
+            s.conn()
+                .unwrap()
+                .execute(
+                    "UPDATE jobs SET status = 'queued', lease_agent = '', lease_until = '', finished_at = '' WHERE id = ?",
+                    [id],
+                )
+                .unwrap();
+        };
+        for name in [
+            "adopted",
+            "still leased",
+            "leased again",
+            "another run",
+            "failed run",
+            "cancelled job",
+        ] {
+            let (_dir, s, _job, mut input) = completion_run_fixture();
+            input.branch = "hive/alice/kept".into();
+            requeue(&s, &input.job_id);
+            let conn = s.conn().unwrap();
+            match name {
+                "adopted" => {}
+                "still leased" => {
+                    conn.execute(
+                        "UPDATE jobs SET status = 'leased', lease_agent = 'alice' WHERE id = ?",
+                        [&input.job_id],
+                    )
+                    .unwrap();
+                }
+                "leased again" => {
+                    conn.execute(
+                        "UPDATE jobs SET status = 'leased', lease_agent = 'bob', generation = 4 WHERE id = ?",
+                        [&input.job_id],
+                    )
+                    .unwrap();
+                }
+                "another run" => {
+                    conn.execute(
+                        "INSERT INTO runs (id, job_id, agent, project, started_at) VALUES ('run-other', ?, 'bob', 'demo', ?)",
+                        params![input.job_id, TEST_NOW],
+                    )
+                    .unwrap();
+                }
+                "failed run" => input.status = "failed".into(),
+                "cancelled job" => {
+                    conn.execute(
+                        "UPDATE jobs SET status = 'cancelled' WHERE id = ?",
+                        [&input.job_id],
+                    )
+                    .unwrap();
+                }
+                _ => unreachable!(),
+            }
+            drop(conn);
+            let before = job_by_id(&s, &input.job_id).unwrap().unwrap();
+            let got = adopt_stale_done_run(&s, input.clone()).unwrap();
+            if name == "adopted" {
+                let job = got.expect("adopted");
+                assert_eq!(job.status, "done");
+                assert_eq!(job.branch, "hive/alice/kept");
+                assert_eq!(job.result, input.result);
+                let n: i64 = s
+                    .conn()
+                    .unwrap()
+                    .query_row(
+                        "SELECT COUNT(*) FROM events WHERE action = ? AND subject = ?",
+                        params![JOB_ADOPT_ACTION, input.job_id],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(n, 1, "adopt event");
+            } else {
+                assert!(got.is_none(), "{name}: {got:?}");
+                let after = job_by_id(&s, &input.job_id).unwrap().unwrap();
+                assert_eq!(before, after, "{name}");
+            }
         }
     }
 
@@ -4233,6 +4415,26 @@ mod tests {
                 params![away.id, lease_agent, TEST_NOW],
             )
             .unwrap();
+        // Another agent may not stop it: only the owner or the lease holder.
+        let err = stop_job(&s, &away.id, false, "someone-else").err().unwrap();
+        assert_eq!(code(Some(&err)), 2);
+        assert!(
+            what_any(&err).contains(&format!("leased by {lease_agent}, not someone-else")),
+            "{}",
+            what_any(&err)
+        );
+        let stops: i64 = s
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE action = ?",
+                [RUN_STOP_ACTION],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stops, 0, "a refused stop records nothing");
+        let own = stop_job(&s, &away.id, false, &lease_agent).unwrap();
+        assert_eq!(own.run, "run-away");
         let r = stop_job(&s, &away.id, true, "human").unwrap();
         assert_eq!(
             (r.run.as_str(), r.executor.as_str(), r.requeue),
@@ -4242,7 +4444,7 @@ mod tests {
             .conn()
             .unwrap()
             .query_row(
-                "SELECT detail FROM events WHERE action = ? AND subject = 'run-away'",
+                "SELECT detail FROM events WHERE action = ? AND subject = 'run-away' ORDER BY seq DESC LIMIT 1",
                 [RUN_STOP_ACTION],
                 |r| r.get(0),
             )

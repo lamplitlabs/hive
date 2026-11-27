@@ -526,7 +526,14 @@ blocked*, *stopped*, *ended its session* - and the note wakes the parent's
 agent (reopening it if it had finished) so it can read the report and answer,
 steer the child (`send`) or read its last messages (`read`); a parent's steer
 shows in the child on the right as *From <parent>* and answers a question the
-child was asking if one waits. Two levels deep at most and eight open
+child was asking if one waits. Each report carries the time it was written, and
+reports that waited behind the parent's turn reach its agent together, oldest
+first, in one turn (a finished parent reopens once for all of them). A
+sub-session's turn stopped with `hive harness cancel` on its session (what a
+parent's agent uses) stops that turn only: the child's note and the report
+name `hive harness cancel` rather than your **Stop**, the messages queued
+behind it are noted as never sent, as **Stop** leaves them, and the next
+message runs. Two levels deep at most and eight open
 sub-sessions to a parent by default - `chat.sub_depth` and `chat.sub_open`
 under Settings, `0` lifting a cap (each level is a paid session, and each open
 sub-session a live one in the parent's worktree, so the defaults stay); an

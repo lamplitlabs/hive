@@ -594,6 +594,19 @@ impl Handler {
             self.addition_pairing_dismiss(w, r, parts[2].clone());
             return;
         }
+        // TASK-165: the owner's rental dialog and the answers on a request a limit refused.
+        if parts.len() == 2 && parts[1] == "preview" {
+            self.addition_compute_preview(w, r);
+            return;
+        }
+        if parts.len() == 2 && (parts[1] == "linux" || parts[1] == "refile-today") {
+            self.addition_compute_owner(w, r, &parts[1]);
+            return;
+        }
+        if parts.len() == 3 && (parts[2] == "rent" || parts[2] == "keep-off") {
+            self.addition_compute_answer(w, r, &parts[1], &parts[2]);
+            return;
+        }
         if parts.len() != 1 && (parts.len() != 3 || (parts[2] != "approve" && parts[2] != "deny")) {
             addition_not_found(w);
             return;
@@ -623,7 +636,7 @@ impl Handler {
             query.push_str(" WHERE project=?");
             args.push(SqlValue::Text(project));
         }
-        let requests = match self.addition_rows(r, &(query + " ORDER BY at,id"), args) {
+        let mut requests = match self.addition_rows(r, &(query + " ORDER BY at,id"), args) {
             Ok(v) => v,
             Err(e) => {
                 addition_failure(w, e.to_string());
@@ -652,11 +665,162 @@ impl Handler {
         // their last-seen time, for the revoke button and the "dials in"
         // line; a store from before the tables exist lists none.
         let devices = hive_runner::dial::devices(store).unwrap_or_default();
+        // A request a limit refused, not yet answered, carries the limit it hit: its row reads
+        // "Not rented: ..." with Rent it anyway / Rent it and raise the limit to N / Do not rent
+        // (TASK-165 item 4). `refused_today` is what a limit change offers to file again.
+        let mut refused_today = Vec::new();
+        for req in requests.iter_mut() {
+            if addition_row_string(&*req, "status") != "failed" {
+                continue;
+            }
+            let id = addition_row_string(&*req, "id");
+            if let Ok(Some(hit)) = hive_tasks::open_limit_hit(store, &id) {
+                if addition_row_string(&*req, "updated_at").get(..10) == store.now().get(..10) {
+                    refused_today.push(Value::String(id));
+                }
+                req.insert("limit_hit".into(), value_from(&hit));
+            }
+        }
         write_json(
             w,
             200,
-            json!({"requests": requests, "executors": executors, "caps": caps, "pairings": self.pairings_json(), "devices": devices}),
+            json!({"requests": requests, "executors": executors, "caps": caps, "pairings": self.pairings_json(), "devices": devices, "refused_today": refused_today}),
         );
+    }
+
+    /// GET compute/preview?project=P&hours=N: what the owner reads before renting (TASK-165
+    /// items 1 and 3) - how many waiting jobs could run on the machine or what keeps them off,
+    /// the limit an agent's request would pass, and the risk of letting the project's jobs run
+    /// on Linux.
+    pub(crate) fn addition_compute_preview(&self, w: &mut ResponseWriter, r: &Request) {
+        if !addition_method(w, r, vec!["GET".to_string()])
+            || !self.addition_available(w, r, vec!["compute_requests".to_string()])
+        {
+            return;
+        }
+        let Some(store) = self.store.as_deref() else {
+            return;
+        };
+        let mut project = r.query("project");
+        if project.is_empty() {
+            project = self.project.clone();
+        }
+        let hours = r.query("hours").trim().parse::<i32>().unwrap_or(4).max(1);
+        let preview = hive_runner::compute::rental_preview(store, &project, hours);
+        write_json(w, 200, value_from(&preview));
+    }
+
+    /// POST compute/linux {"project": P}: Let project jobs run on Linux - the OS words a rented
+    /// Linux machine lacks leave the project's needs. POST compute/refile-today: Rent it anyway
+    /// for every request a limit refused today, offered after a limit change.
+    pub(crate) fn addition_compute_owner(&self, w: &mut ResponseWriter, r: &Request, what: &str) {
+        if !addition_method(w, r, vec!["POST".to_string()])
+            || !self.addition_available(w, r, vec!["compute_requests".to_string()])
+        {
+            return;
+        }
+        let (payload, ok) = crate::server::read_payload(w, r);
+        if !ok {
+            return;
+        }
+        let _lock = ADDITION_WRITES.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(store) = self.store.as_deref() else {
+            return;
+        };
+        if what == "linux" {
+            let (mut project, ok) =
+                addition_string(w, &payload, "project", self.project.is_empty());
+            if !ok {
+                return;
+            }
+            if project.is_empty() {
+                project = self.project.clone();
+            }
+            match hive_runner::compute::let_project_run_on_linux(
+                store,
+                &project,
+                hive_store::HUMAN_AGENT,
+            ) {
+                Ok(needs) => write_json(w, 200, json!({"project": project, "needs": needs})),
+                Err(e) => addition_failure(w, e.to_string()),
+            }
+            return;
+        }
+        let refused = match hive_tasks::refused_today(store) {
+            Ok(v) => v,
+            Err(e) => {
+                addition_failure(w, e.to_string());
+                return;
+            }
+        };
+        let mut filed = Vec::new();
+        for (req, _) in refused {
+            if !self.project.is_empty() && req.project != self.project {
+                continue;
+            }
+            match hive_tasks::refile(store, &req.id, false, hive_store::HUMAN_AGENT) {
+                Ok(new) => filed.push(new.id),
+                Err(e) => {
+                    addition_failure(w, e.to_string());
+                    return;
+                }
+            }
+        }
+        write_json(w, 200, json!({"filed": filed}));
+    }
+
+    /// POST compute/<id>/rent {"raise": bool} or compute/<id>/keep-off: the owner's answer on a
+    /// request a limit refused - Rent it anyway (a new request of the owner's, which no limit
+    /// refuses), Rent it and raise the limit to N, or Do not rent.
+    pub(crate) fn addition_compute_answer(
+        &self,
+        w: &mut ResponseWriter,
+        r: &Request,
+        id: &str,
+        action: &str,
+    ) {
+        if !addition_method(w, r, vec!["POST".to_string()])
+            || !self.addition_available(w, r, vec!["compute_requests".to_string()])
+        {
+            return;
+        }
+        let (payload, ok) = crate::server::read_payload(w, r);
+        if !ok {
+            return;
+        }
+        let _lock = ADDITION_WRITES.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(store) = self.store.as_deref() else {
+            return;
+        };
+        let cur = match hive_tasks::get_compute(store, id) {
+            Ok(c) if self.project.is_empty() || c.project == self.project => c,
+            _ => {
+                addition_failure(w, "not found".to_string());
+                return;
+            }
+        };
+        if !matches!(hive_tasks::open_limit_hit(store, &cur.id), Ok(Some(_))) {
+            write_error(
+                w,
+                409,
+                "Compute request was not refused by a limit".to_string(),
+                "Only a request a rental limit refused, not answered yet, may be rented again or kept off.".to_string(),
+                "Refresh the compute requests.".to_string(),
+            );
+            return;
+        }
+        if action == "keep-off" {
+            match hive_tasks::keep_off(store, &cur.id, hive_store::HUMAN_AGENT) {
+                Ok(()) => write_json(w, 200, json!({"request": value_from(&cur)})),
+                Err(e) => addition_failure(w, e.to_string()),
+            }
+            return;
+        }
+        let raise = matches!(payload.get("raise"), Some(Value::Bool(true)));
+        match hive_tasks::refile(store, &cur.id, raise, hive_store::HUMAN_AGENT) {
+            Ok(new) => write_json(w, 201, json!({"request": value_from(&new)})),
+            Err(e) => addition_failure(w, e.to_string()),
+        }
     }
 
     pub(crate) fn addition_task_write(

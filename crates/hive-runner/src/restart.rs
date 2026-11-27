@@ -66,6 +66,17 @@ pub(crate) struct Restart {
     /// each tick by `tend`; zero is none. The heartbeat's `until` is
     /// `since` plus this.
     max: Duration,
+    /// When the daemon left its loop for this restart and began to wait for
+    /// the runs in flight, ISO; empty while it still dispatches. The
+    /// heartbeat's `machines` say since when it waits for each machine.
+    waiting_since: String,
+    /// When the runs on other machines are stopped (their commits fetched
+    /// as kept work): the bound plus daemon.restart_remote_minutes; none
+    /// without a bound or for a restart asked for now (its hold cap stops
+    /// every run).
+    remote_deadline: Option<Instant>,
+    /// `remote_deadline` on the store's clock, ISO, for the heartbeat.
+    remote_until: String,
 }
 
 impl Restart {
@@ -282,6 +293,35 @@ impl Restart {
         )
     }
 
+    /// The daemon left its loop and waits for the runs in flight: the
+    /// heartbeat says since when, per machine, and a run on another machine
+    /// gets daemon.restart_remote_minutes past the bound, then is stopped
+    /// (`remote_deadline`). Returns that deadline, if any.
+    pub(crate) fn begin_wait(&mut self, s: &hive_store::Store) -> Option<Instant> {
+        self.waiting_since = s.now();
+        self.max = restart_max(s);
+        self.remote_deadline = match self.pending {
+            // The other machines' own wait starts at the bound, or when the
+            // daemon comes to wait if it noticed the bound late: they always
+            // get the whole of daemon.restart_remote_minutes.
+            Some(since) if !self.forced && !self.max.is_zero() => {
+                Some((since + self.max).max(Instant::now()) + restart_remote(s))
+            }
+            _ => None,
+        };
+        self.remote_until = self
+            .remote_deadline
+            .map(|at| {
+                let left = at.saturating_duration_since(Instant::now());
+                crate::util::format_iso(
+                    crate::util::must_iso(&self.waiting_since)
+                        + chrono::Duration::seconds(left.as_secs() as i64),
+                )
+            })
+            .unwrap_or_default();
+        self.remote_deadline
+    }
+
     /// The heartbeat's record of the handover (`restart_beat`): the wait
     /// after the loop beats with `dispatching` false.
     pub(crate) fn beat(
@@ -292,6 +332,9 @@ impl Restart {
         let mut beat = restart_beat(&self.since, inflight, &self.anchors, dispatching);
         if let Some(until) = restart_until(&self.since, self.max) {
             beat["until"] = serde_json::Value::String(until);
+        }
+        if !self.waiting_since.is_empty() {
+            beat["machines"] = restart_machines(inflight, &self.waiting_since, &self.remote_until);
         }
         beat
     }
@@ -386,8 +429,26 @@ impl Restart {
 /// drain, the stay for the owner's queued work and every owner's run that
 /// anchors the window again. Zero is no bound.
 fn restart_max(s: &hive_store::Store) -> Duration {
+    restart_max_of(restart_max_minutes(s))
+}
+
+/// `daemon.restart_max_minutes` as every reader takes it: held to
+/// `0..=`[`RESTART_MAX_MINUTES_CAP`], so a value stored before the setting
+/// refused more never reaches a clock (the handover's here, the
+/// self-update's settle wait in selfupdate.rs).
+pub(crate) fn restart_max_minutes(s: &hive_store::Store) -> i64 {
+    s.setting_int("daemon.restart_max_minutes")
+        .clamp(0, RESTART_MAX_MINUTES_CAP)
+}
+
+/// The most minutes `daemon.restart_max_minutes` takes (a week): the setting
+/// refuses more, and a value stored before that rule is held to it here, so
+/// `restart_until` never adds a duration the clock overflows on.
+pub(crate) const RESTART_MAX_MINUTES_CAP: i64 = 10080;
+
+fn restart_max_of(minutes: i64) -> Duration {
     Duration::from_secs(
-        (s.setting_int("daemon.restart_max_minutes").max(0) as u64) * max_minute_secs(),
+        (minutes.clamp(0, RESTART_MAX_MINUTES_CAP) as u64).saturating_mul(max_minute_secs()),
     )
 }
 
@@ -439,6 +500,43 @@ fn restart_until(since: &str, max: Duration) -> Option<String> {
     Some(crate::util::format_iso(
         at + chrono::Duration::seconds(max.as_secs() as i64),
     ))
+}
+
+/// How long a run on another machine may go on past the restart's bound
+/// (daemon.restart_remote_minutes, ten by default); then its commits are
+/// fetched as kept work and it is stopped, so it never holds the daemon.
+pub(crate) fn restart_remote(s: &hive_store::Store) -> Duration {
+    restart_max_of(s.setting_int("daemon.restart_remote_minutes"))
+}
+
+/// The heartbeat's `machines` of a daemon that waits for its runs: one
+/// record per machine with the runs on it, since when the daemon waits for
+/// them and, for another machine, when they are stopped (`until`, empty
+/// when they are waited out) - so `hive status` and the console say "waits
+/// for 7 run(s) on hands-cr-11116 since 06:21Z" rather than a bare count.
+/// This machine comes first, then the others by name.
+fn restart_machines(
+    inflight: &BTreeMap<String, Dispatch>,
+    since: &str,
+    remote_until: &str,
+) -> serde_json::Value {
+    let mut runs: BTreeMap<(bool, String), u64> = BTreeMap::new();
+    for d in inflight.values() {
+        *runs.entry((d.remote(), d.slot.clone())).or_default() += 1;
+    }
+    serde_json::Value::Array(
+        runs.into_iter()
+            .map(|((remote, machine), n)| {
+                serde_json::json!({
+                    "machine": machine,
+                    "local": !remote,
+                    "runs": n,
+                    "since": since,
+                    "until": if remote { remote_until } else { "" },
+                })
+            })
+            .collect(),
+    )
 }
 
 /// How long a daemon whose binary changed on disk keeps dispatching while
@@ -1615,6 +1713,33 @@ mod tests {
             Tend::Goes(_)
         ));
         assert!(r.beat(&inflight, true).get("until").is_none());
+    }
+
+    /// TASK-152: a bound near 1.4e11 minutes overflowed `restart_until`; the
+    /// setting refuses more than a week, and a stored value is held to it.
+    #[test]
+    fn the_restart_bound_is_held_to_a_week() {
+        assert_eq!(
+            hive_store::validate_setting("daemon.restart_max_minutes", "10080").unwrap(),
+            "10080"
+        );
+        assert!(
+            hive_store::validate_setting("daemon.restart_max_minutes", "140000000000").is_err()
+        );
+        assert_eq!(
+            restart_max_of(140_000_000_000),
+            Duration::from_secs(RESTART_MAX_MINUTES_CAP as u64 * max_minute_secs())
+        );
+        assert_eq!(restart_max_of(-5), Duration::ZERO);
+        // A value stored before the rule, past the setting's refusal, is
+        // read held to the cap by every reader (the self-update's too).
+        let s = crate::test_helpers::new_store();
+        crate::util::exec1(
+            &s.conn().unwrap(),
+            "INSERT INTO settings (name, value, updated_at) VALUES ('daemon.restart_max_minutes', '140000000000', '') ON CONFLICT(name) DO UPDATE SET value = excluded.value",
+            &[],
+        );
+        assert_eq!(restart_max_minutes(&s), RESTART_MAX_MINUTES_CAP);
     }
 
     #[test]

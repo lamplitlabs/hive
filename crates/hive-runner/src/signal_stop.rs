@@ -58,6 +58,14 @@ pub(crate) fn stop_on_record(s: &hive_store::Store, job_id: &str, run_id: &str) 
     if r.int("holds") > 0 {
         return "a hold is on record for its harness session".into();
     }
+    // `hive job stop` (run.stop): the watcher reads it every few seconds,
+    // so a stop and the signal it led to can land between two reads. The
+    // stop is the owner's, not an outside one (TASK-169 item 8).
+    match crate::run::owner_stop(&*conn, run_id) {
+        Some(true) => return "the owner stopped it to run again (hive job stop --requeue)".into(),
+        Some(false) => return "the owner stopped it (hive job stop)".into(),
+        None => {}
+    }
     if crate::yield_lane::yielded(s, job_id, run_id) {
         return "the runner held it so the owner's work could start first".into();
     }
@@ -301,6 +309,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_owner_stop_is_a_stop_on_record() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        assert_eq!(stop_on_record(&s, "job-1", "run-1"), "");
+        crate::util::event_at(
+            &*s.conn().unwrap(),
+            crate::test_helpers::TEST_NOW,
+            hive_store::HUMAN_AGENT,
+            hive_board::RUN_STOP_ACTION,
+            "run-1",
+            json!({"job": "job-1", "executor": "", "requeue": false}),
+        );
+        assert_eq!(
+            stop_on_record(&s, "job-1", "run-1"),
+            "the owner stopped it (hive job stop)"
+        );
+        assert_eq!(stop_on_record(&s, "job-2", "run-2"), "");
+        crate::util::event_at(
+            &*s.conn().unwrap(),
+            crate::test_helpers::TEST_NOW,
+            hive_store::HUMAN_AGENT,
+            hive_board::RUN_STOP_ACTION,
+            "run-2",
+            json!({"job": "job-2", "executor": "", "requeue": true}),
+        );
+        assert!(
+            stop_on_record(&s, "job-2", "run-2").contains("--requeue"),
+            "{}",
+            stop_on_record(&s, "job-2", "run-2")
+        );
+    }
+
+    #[test]
     fn only_a_kill_from_outside_is_an_outside_signal() {
         assert_eq!(outside_signal(false, 143), Some("SIGTERM"));
         assert_eq!(outside_signal(false, 137), Some("SIGKILL"));
@@ -308,6 +349,72 @@ mod tests {
         for code in [0, 1, 5, 75, 130] {
             assert_eq!(outside_signal(false, code), None, "exit {code}");
         }
+    }
+
+    /// TASK-170: what is on record for a run decides whether its SIGTERM was
+    /// the runner's own: a cancel or a hold asked of its harness session,
+    /// or the runner yielding its lane to the owner's work. Another run's
+    /// record, or a session with neither asked, is not.
+    #[test]
+    fn stop_on_record_names_the_runners_own_stop() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        let conn = s.conn().unwrap();
+        let session = |id: &str, run: &str, cancel: &str, hold: &str| {
+            conn.execute(
+                "INSERT INTO harness_sessions (id, run_id, job_id, agent, project, status, started_at, updated_at, cancel_requested_at, hold_requested_at) VALUES (?1, ?2, 'job-1', 'aurora', 'proj', 'running', ?3, ?3, ?4, ?5)",
+                rusqlite::params![id, run, crate::test_helpers::TEST_NOW, cancel, hold],
+            )
+            .unwrap();
+        };
+        // Nothing on record: the signal came from outside.
+        assert_eq!(stop_on_record(&s, "job-1", "run-a"), "");
+        session("hs-a", "run-a", "", "");
+        assert_eq!(stop_on_record(&s, "job-1", "run-a"), "");
+        // Another run's cancel and hold are not this run's.
+        session(
+            "hs-other",
+            "run-b",
+            crate::test_helpers::TEST_NOW,
+            crate::test_helpers::TEST_NOW,
+        );
+        assert_eq!(stop_on_record(&s, "job-1", "run-a"), "");
+        session("hs-c", "run-c", crate::test_helpers::TEST_NOW, "");
+        assert_eq!(
+            stop_on_record(&s, "job-1", "run-c"),
+            "a cancel is on record for its harness session"
+        );
+        session("hs-h", "run-h", "", crate::test_helpers::TEST_NOW);
+        assert_eq!(
+            stop_on_record(&s, "job-1", "run-h"),
+            "a hold is on record for its harness session"
+        );
+        // A cancel wins over a hold of the same run.
+        session(
+            "hs-ch",
+            "run-ch",
+            crate::test_helpers::TEST_NOW,
+            crate::test_helpers::TEST_NOW,
+        );
+        assert_eq!(
+            stop_on_record(&s, "job-1", "run-ch"),
+            "a cancel is on record for its harness session"
+        );
+        // The runner yielded this run's lane to the owner's work.
+        crate::util::event_at(
+            &conn,
+            crate::test_helpers::TEST_NOW,
+            "daemon",
+            crate::yield_lane::YIELD_ACTION,
+            "job-1",
+            json!({"run": "run-y"}),
+        );
+        assert_eq!(
+            stop_on_record(&s, "job-1", "run-y"),
+            "the runner held it so the owner's work could start first"
+        );
+        assert_eq!(stop_on_record(&s, "job-2", "run-y"), "", "another job");
+        assert_eq!(stop_on_record(&s, "job-1", "run-a"), "", "another run");
     }
 
     #[test]

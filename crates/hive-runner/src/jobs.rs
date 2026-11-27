@@ -611,6 +611,10 @@ pub(crate) fn lease_job(
         .ok()
         .flatten()
         .is_some_and(|a| a.kind == crate::lead::LEAD_KIND);
+    // A remote slot passes a job whose kept work pins it here, but only
+    // while this machine could take it (TASK-152 review).
+    let kept_pin = (!o.executor.is_empty() && o.executor != crate::executor::LOCAL_EXECUTOR)
+        .then(|| crate::unchecked::pinned_here_sql(&crate::executor::local_executor_row(s)));
     let mut leased = Row::new();
     crate::db::immediate(s, |q| {
         for r in query_rows_dyn(
@@ -831,6 +835,16 @@ pub(crate) fn lease_job(
                 " AND NOT EXISTS (SELECT 1 FROM harness_sessions h JOIN runs r ON r.id = h.run_id WHERE h.job_id = j.id AND h.status = 'held' AND r.executor = '{}')",
                 crate::executor::LOCAL_EXECUTOR
             ));
+            // Work a stopped check kept on this machine's checkout waits
+            // for its check here: a hand would do the task again from
+            // nothing (TASK-152 item 2). Only while this machine could take
+            // the job: one it cannot run would otherwise never be leased.
+            if let Some((pin, words)) = &kept_pin {
+                sql.push_str(&format!(" AND NOT {pin}"));
+                for w in words {
+                    vals.push(Box::new(w.clone()));
+                }
+            }
             sql.push_str(&format!(" AND j.kind NOT IN ({})", store_kinds_sql()));
             // A machine whose fetch the brain saw fail takes no run that
             // changes code until a fetch from it works again or the owner
@@ -1392,6 +1406,27 @@ mod tests {
         );
         // No machine of that class takes the project's code job...
         assert!(lease("aurora", "hands-b", &task).0.is_empty());
+        // ...and its idle line says why the job waits rather than "no queued
+        // job" over it (TASK-169 item 7).
+        let (none, _, why) = crate::run::take_job(
+            &s,
+            "aurora",
+            "",
+            &task,
+            false,
+            crate::test_helpers::TEST_NOW,
+            "hands-b",
+            &[],
+            &Default::default(),
+            &[],
+        )
+        .unwrap();
+        assert!(none.0.is_empty(), "{none:?}");
+        assert!(
+            why.contains("kept off linux/amd64: 1 of proj code job(s)")
+                && why.contains("check was red on the base"),
+            "{why}"
+        );
         // ...a job that only reads still goes there...
         assert_eq!(lease("aurora", "hands-b", &answer).str("id"), answer);
         // ...and a machine of another class or this one takes the code job.
@@ -1418,7 +1453,8 @@ mod tests {
             &[&fix],
         );
         assert_eq!(lease("dawn", "hands-b", &fix).str("id"), fix);
-        // A check that passes there again opens the class to the project.
+        // The fix's check passes there on a tree with its commits: the base
+        // is still red until the fix lands (TASK-169 item 6)...
         crate::class_red::mark_green(
             &*conn,
             crate::test_helpers::TEST_NOW,
@@ -1427,6 +1463,18 @@ mod tests {
             &fix,
             "run-fix",
             "def",
+            true,
+        );
+        assert!(lease("ember", "hands-b", &task).0.is_empty());
+        // ...and the landing that names the fix opens the class to the
+        // project.
+        crate::util::event_at(
+            &*conn,
+            crate::test_helpers::TEST_NOW,
+            "daemon",
+            "land.landed",
+            "hive/dawn/fix",
+            serde_json::json!({"project": "proj", "job": fix, "sha": "def"}),
         );
         assert_eq!(lease("ember", "hands-b", &task).str("id"), task);
     }
@@ -2045,6 +2093,152 @@ mod tests {
         );
         let fourth = lease("aurora");
         assert_eq!(fourth.str("id"), held, "{fourth:?}");
+    }
+
+    /// TASK-152 item 2: work a stopped check kept on this machine's
+    /// checkout waits for its check here; a hand's slot passes the job, as
+    /// it passes a session held here, instead of doing the task again.
+    #[test]
+    fn a_job_with_kept_work_is_leased_only_here() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        crate::capacity::pin_per_project(&s, 4);
+        join(&s, "borealis");
+        let kept = queue(&s, "proj", "improve", "kept-work", 5);
+        let other = queue(&s, "proj", "improve", "other-work", 1);
+        crate::util::exec1(
+            &s.conn().unwrap(),
+            "INSERT INTO runs (id, job_id, agent, project, started_at, status, executor) VALUES ('run-kept', ?, 'borealis', 'proj', ?, 'lost', 'local')",
+            &[&kept, &crate::test_helpers::TEST_NOW],
+        );
+        crate::unchecked::record(
+            &s.conn().unwrap(),
+            crate::test_helpers::TEST_NOW,
+            &kept,
+            &crate::unchecked::Unchecked {
+                run: "run-kept".into(),
+                agent: "borealis".into(),
+                branch: crate::unchecked::unchecked_branch("borealis", &kept),
+                base: "abc".into(),
+                commits: 1,
+                ..Default::default()
+            },
+        );
+        let lease = |executor: &str| {
+            super::lease_job(
+                &s,
+                "borealis".into(),
+                crate::test_helpers::TEST_NOW.into(),
+                super::LeaseOpts {
+                    any_proj: true,
+                    executor: executor.into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        let requeue = |id: &str| {
+            crate::util::exec1(
+                &s.conn().unwrap(),
+                "UPDATE jobs SET status = 'queued', lease_agent = '', lease_until = '' WHERE id = ?",
+                &[&id],
+            );
+        };
+        let on_hand = lease("hands-1");
+        assert_eq!(on_hand.str("id"), other, "{on_hand:?}");
+        requeue(&other);
+        let at_home = lease(crate::executor::LOCAL_EXECUTOR);
+        assert_eq!(at_home.str("id"), kept, "{at_home:?}");
+        // Once a later run judged the job, the kept work is spent: any
+        // machine may take the job again.
+        requeue(&kept);
+        crate::util::exec1(
+            &s.conn().unwrap(),
+            "INSERT INTO runs (id, job_id, agent, project, started_at, status, executor) VALUES ('run-judged', ?, 'borealis', 'proj', ?, 'failed', 'local')",
+            &[&kept, &crate::test_helpers::TEST_NOW],
+        );
+        let elsewhere = lease("hands-1");
+        assert_eq!(elsewhere.str("id"), kept, "{elsewhere:?}");
+    }
+
+    /// TASK-152 review: the pin of kept work holds only while this machine
+    /// could take the job. A job that needs what this machine lacks, or a
+    /// plain job while this machine is kept for the work that needs
+    /// something, would wait for a lease that never comes here; a hand
+    /// takes it and does the task again instead.
+    #[test]
+    fn kept_work_this_machine_cannot_run_is_leased_by_a_hand() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        crate::capacity::pin_per_project(&s, 4);
+        join(&s, "borealis");
+        let kept = queue(&s, "proj", "improve", "kept-work", 5);
+        crate::util::exec1(
+            &s.conn().unwrap(),
+            "INSERT INTO runs (id, job_id, agent, project, started_at, status, executor) VALUES ('run-kept', ?, 'borealis', 'proj', ?, 'lost', 'local')",
+            &[&kept, &crate::test_helpers::TEST_NOW],
+        );
+        crate::unchecked::record(
+            &s.conn().unwrap(),
+            crate::test_helpers::TEST_NOW,
+            &kept,
+            &crate::unchecked::Unchecked {
+                run: "run-kept".into(),
+                agent: "borealis".into(),
+                branch: crate::unchecked::unchecked_branch("borealis", &kept),
+                base: "abc".into(),
+                commits: 1,
+                ..Default::default()
+            },
+        );
+        let hand_caps: std::collections::BTreeSet<String> = ["linux", "amd64", "gpu-only-here"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let lease = || {
+            super::lease_job(
+                &s,
+                "borealis".into(),
+                crate::test_helpers::TEST_NOW.into(),
+                super::LeaseOpts {
+                    any_proj: true,
+                    executor: "hands-1".into(),
+                    caps: Some(hand_caps.clone()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        let requeue = || {
+            crate::util::exec1(
+                &s.conn().unwrap(),
+                "UPDATE jobs SET status = 'queued', lease_agent = '', lease_until = '' WHERE id = ?",
+                &[&kept],
+            );
+        };
+        // This machine could take the plain job: the hand passes it.
+        assert!(lease().0.is_empty(), "the kept job stays here");
+        // It needs a word this machine does not offer: the hand takes it.
+        crate::util::exec1(
+            &s.conn().unwrap(),
+            "UPDATE jobs SET needs = 'gpu-only-here' WHERE id = ?",
+            &[&kept],
+        );
+        assert_eq!(lease().str("id"), kept);
+        // Plain again, but this machine is kept for the work that needs
+        // something: the hand takes it too.
+        requeue();
+        crate::util::exec1(
+            &s.conn().unwrap(),
+            "UPDATE jobs SET needs = '' WHERE id = ?",
+            &[&kept],
+        );
+        assert!(lease().0.is_empty(), "the kept job stays here");
+        s.set_setting(hive_store::HUMAN_AGENT, "machine.reserve", "on")
+            .unwrap();
+        assert_eq!(lease().str("id"), kept);
     }
 
     #[test]
@@ -4045,6 +4239,25 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             !check(&accepted).is_empty(),
             "a chat branch exempted the sibling's commit"
         );
+        git(&["branch", "-D", "hive/chat-20261105T120000-abcdef"]);
+        // Kept work (review of PR 299) never passed the identity check: a
+        // failed, refused or outside-ended run's `-failed` branch, the
+        // `-failed-<machine>` one beside it and a stopped check's
+        // `-unchecked` one exempt nothing.
+        for kept in [
+            "hive/aurora/JOB-1-failed",
+            "hive/aurora/JOB-1-failed-hands",
+            "hive/aurora/JOB-1-unchecked",
+        ] {
+            git(&["branch", kept, &sibling]);
+            let accepted = crate::keys::accepted_refs(&root, "main", "work");
+            assert_eq!(accepted, vec!["refs/heads/main".to_string()], "{kept}");
+            assert!(
+                !check(&accepted).is_empty(),
+                "kept work on {kept} exempted the sibling's commit"
+            );
+            git(&["branch", "-D", kept]);
+        }
         // The branch under check never exempts itself, named either way.
         git(&["branch", "hive/bob/JOB-3", "work"]);
         for own in ["hive/bob/JOB-3", "refs/heads/hive/bob/JOB-3"] {
@@ -5271,6 +5484,20 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         verify_cmd: &str,
         check: impl FnOnce(&hive_store::Store, &crate::util::Row, &crate::util::Row, &std::path::Path),
     ) {
+        committing_run_on_a_hand_whose_fetch_fails_worker(
+            refuse,
+            verify_cmd,
+            "sh -c 'echo hi > note.txt && git add note.txt && git commit -q -m note && echo SUMMARY: noted on the machine'",
+            check,
+        );
+    }
+    /// The same with the worker command `worker` (it must make one commit).
+    fn committing_run_on_a_hand_whose_fetch_fails_worker(
+        refuse: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        verify_cmd: &str,
+        worker: &str,
+        check: impl FnOnce(&hive_store::Store, &crate::util::Row, &crate::util::Row, &std::path::Path),
+    ) {
         let _serial = crate::test_helpers::serial();
         let _guard = hive_testutil::env_lock();
         if which::which("ssh-keygen").is_err() {
@@ -5377,7 +5604,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             crate::test_helpers::TEST_NOW,
             crate::run::RunOpts {
                 executor: "hands".into(),
-                worker_cmd: "sh -c 'echo hi > note.txt && git add note.txt && git commit -q -m note && echo SUMMARY: noted on the machine'".into(),
+                worker_cmd: worker.into(),
                 ..Default::default()
             },
         )
@@ -5386,6 +5613,129 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         assert_eq!(run.str("executor"), "hands", "run {run:?}");
         assert_eq!(run.int("commits"), 1, "run {run:?}");
         check(&s, &run, &job, &workdir);
+    }
+
+    /// TASK-170: a worker on a hand ended by an outside SIGTERM is not
+    /// judged either. The hand reports the worker's exit 143, the brain
+    /// requeues the job without using an attempt, fetches the commit from
+    /// the hand onto the job's `-failed` branch and names the hand in the
+    /// `job.signalled` event.
+    #[test]
+    fn a_worker_on_a_hand_ended_from_outside_is_requeued_with_its_commit_kept() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = hive_testutil::env_lock();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let bin = crate::test_helpers::build_hive();
+        let _stage = crate::test_helpers_staged_hive::stage_local_hive(&bin);
+        let s = crate::test_helpers::new_store();
+        let (_proj, root) = crate::test_helpers::new_bare_repo(&s);
+        crate::test_helpers::join(&s, "aurora");
+        s.set_setting(crate::util::HUMAN_AGENT, "minutes_per_job", "1")
+            .unwrap();
+        let workroot = tempfile::tempdir().unwrap();
+        let workdir = workroot.path().join("srv");
+        let hands_home = tempfile::tempdir().unwrap();
+        let fake_path = crate::test_helpers::fake_hands_path(&[]);
+        let fake_path = fake_path.trim_start_matches("PATH=").to_string();
+        let hand = crate::test_helpers_hands::hive_hand_binary();
+        let old_ssh = crate::executor::set_run_ssh(|_, _, _, _| unreachable!());
+        let _ssh = crate::test_helpers_hands::RunSshGuard::new(old_ssh);
+        let runner = crate::executor::local_hand_runner(
+            hand,
+            vec![
+                ("HIVE_HANDS_WORKDIR".into(), workdir.display().to_string()),
+                ("HOME".into(), hands_home.path().display().to_string()),
+                ("HIVE_HANDS_ALLOW_ANY_WORKER".into(), "1".into()),
+                ("HIVE_HANDS_KEYS_OK".into(), "yes".into()),
+                ("PATH".into(), fake_path),
+            ],
+        );
+        crate::executor::set_run_ssh(move |c, a, i, t| runner(c, a, i, t));
+        crate::executor::add_executor(
+            &s,
+            crate::test_helpers::TEST_NOW,
+            "hands",
+            "hive@hands",
+            workdir.to_str().unwrap(),
+            1,
+            "*",
+            crate::util::HUMAN_AGENT,
+        )
+        .unwrap();
+        let (ok, note) = crate::executor::probe_executor(
+            &s,
+            "hands",
+            crate::util::HUMAN_AGENT,
+            crate::test_helpers::TEST_NOW,
+        )
+        .unwrap();
+        assert!(ok, "probe: {note:?}");
+        let job = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "remote".into(),
+            "note it remotely".into(),
+            1,
+            0,
+            "test".into(),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap()
+        .0;
+        let job_id = job.str("id");
+        // The worker commits, then something on the machine sends it
+        // SIGTERM: no hold, cancel or timeout is on record for its run.
+        let (run, reason) = crate::run::work_once(
+            &s,
+            "aurora",
+            "",
+            "",
+            crate::test_helpers::TEST_NOW,
+            crate::run::RunOpts {
+                executor: "hands".into(),
+                worker_cmd: "sh -c 'echo hi > note.txt && git add note.txt && git commit -q -m note && kill -TERM $$'".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(reason.is_empty(), "{reason}");
+        assert_eq!(run.str("executor"), "hands", "run {run:?}");
+        assert_eq!(run.int("exit_code"), 143, "run {run:?}");
+        assert_eq!(run.str("status"), "held", "run {run:?}");
+        assert!(
+            run.str("summary")
+                .starts_with("ended by an outside SIGTERM (exit 143)"),
+            "run {run:?}"
+        );
+        let after = crate::jobs::job_row(&s.conn().unwrap(), job_id.clone());
+        assert_eq!(after.str("status"), "queued", "job {after:?}");
+        assert_eq!(
+            after.int("attempts"),
+            0,
+            "the lease's attempt is given back: {after:?}"
+        );
+        let kept = crate::land::failed_work_branch("aurora", &job_id);
+        let log = crate::test_helpers::run(&root, &["git", "log", "--format=%s", "-1", &kept]);
+        assert_eq!(log.trim(), "note", "kept branch {kept}");
+        let ev = crate::util::must_one(
+            &s.conn().unwrap(),
+            "SELECT detail FROM events WHERE action = 'job.signalled' AND subject = ?",
+            &[&job_id],
+        );
+        let d = crate::util::json_map(&ev.str("detail"));
+        assert_eq!(d.get("executor").and_then(|v| v.as_str()), Some("hands"));
+        assert_eq!(
+            d.get("commits").and_then(serde_json::Value::as_i64),
+            Some(1)
+        );
+        assert_eq!(
+            d.get("branch").and_then(|v| v.as_str()),
+            Some(kept.as_str())
+        );
     }
 
     /// TASK-133 part 2: a machine whose `git-upload-pack` does not answer
@@ -5527,6 +5877,47 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         );
     }
 
+    /// Review of PR 299 item 1: a worker on a machine ended from outside
+    /// after it committed, with neither the fetch nor the bundle bringing the
+    /// commits back. Before, the run was requeued and its clone on the
+    /// machine cleaned: the only copy of the commits went, unmarked. Now the
+    /// clone stays as after a failed check, the machine is marked and the
+    /// summary says how to get the work.
+    #[test]
+    fn an_outside_ended_run_on_a_machine_whose_fetch_fails_keeps_its_clone() {
+        let refuse = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        committing_run_on_a_hand_whose_fetch_fails_worker(
+            refuse,
+            "",
+            "sh -c 'echo hi > note.txt && git add note.txt && git commit -q -m note && kill -TERM $$'",
+            |s, run, job, workdir| {
+                assert_eq!(run.str("status"), "held", "run {run:?}");
+                let summary = run.str("summary");
+                assert!(
+                    summary.starts_with("ended by an outside SIGTERM")
+                        && summary.contains("stay in the clone only")
+                        && summary.contains("the clone stays on hands at")
+                        && summary
+                            .contains(&crate::land::failed_work_branch("aurora", &job.str("id"))),
+                    "the summary does not say how to get the work: {summary}"
+                );
+                assert!(
+                    workdir
+                        .join(job.str("id"))
+                        .join("clone")
+                        .join("note.txt")
+                        .exists(),
+                    "the machine's clone was cleaned"
+                );
+                assert!(crate::executor::fetch_broken(s, "hands"));
+                assert!(
+                    crate::executor::kept_clones(s, "hands").contains(&job.str("id")),
+                    "the kept clone is not written down"
+                );
+            },
+        );
+    }
+
     /// TASK-138 item 2: a machine marked after one failed fetch finds its
     /// way back without a hand. `hive executor list` says why it takes no
     /// code work; the daemon's fetch probe tries the kept clone again on its
@@ -5622,7 +6013,18 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             let clone = workdir.join(job.str("id")).join("clone");
             assert!(clone.join("note.txt").exists());
             // A second run kept its clone there later; it is gone as well.
-            crate::test_helpers_daemon::queued_job(s, "job-later", "proj", "task", "owner");
+            // Its job is a task's, so the task hears of the loss (review of
+            // PR 286 item 4: before, only the daemon's line and two events
+            // said it).
+            let task = hive_tasks::new(s, "proj", "Ship the fixtures", "the brief", 30, "human")
+                .unwrap_or_else(|err| panic!("{err}"));
+            crate::test_helpers_daemon::queued_job(
+                s,
+                "job-later",
+                "proj",
+                "task",
+                &format!("task:{}", task.id),
+            );
             crate::util::exec1(
                 &s.conn().unwrap(),
                 "UPDATE jobs SET status = 'failed' WHERE id = 'job-later'",
@@ -5662,6 +6064,28 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             );
             let (_, note) = crate::executor::last_fetch_probe(s, "hands");
             assert!(note.contains("no clone for job"), "{note}");
+            let bodies = hive_tasks::messages(s, "proj", &task.id, "", "")
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|m| m.author == "daemon")
+                .map(|m| m.body)
+                .collect::<Vec<_>>();
+            assert_eq!(bodies.len(), 1, "{bodies:?}\n{lines:?}");
+            assert!(
+                bodies[0].contains("The work of job job-later")
+                    && bodies[0].contains("is lost")
+                    && bodies[0].contains("hands no longer has the clone")
+                    && bodies[0].contains("no clone for job")
+                    && bodies[0].contains("Job job-later is failed"),
+                "{}",
+                bodies[0]
+            );
+            assert!(
+                lines
+                    .iter()
+                    .any(|l| l == &format!("the loss of job-later's work is said on {}", task.id)),
+                "{lines:?}"
+            );
         });
     }
 
@@ -6274,6 +6698,106 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         assert!(
             ok && !note.contains("warning"),
             "path-reporting hands must not warn: ok={ok} note={note:?}"
+        );
+    }
+
+    /// TASK-170: hands that run a hive from before pull request 299 (their
+    /// probe answers no `trailers=2`) are said once on the board, not on
+    /// every probe; current hands forget it, so a machine that goes back to
+    /// an older hive is said again.
+    #[test]
+    fn hands_on_an_older_hive_are_said_once() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_repo(&s);
+        crate::executor::add_executor(
+            &s,
+            crate::test_helpers::TEST_NOW,
+            "hands",
+            "hive@hands",
+            "/srv/hive",
+            1,
+            "*",
+            crate::util::HUMAN_AGENT,
+        )
+        .unwrap();
+        let base = "hands=ok user=hive workdir=/srv/hive git=2.40 harness=yes hive=/usr/local/bin/hive remotes=0 keys_ok=yes disk_free_mb=20480 jobs=- keys=- heartbeat=1 steps=1 recipe=1 push=1";
+        let current = format!(
+            "{base} trailers={}\n",
+            hive_hand_core::provenance::HOOK_VERSION
+        );
+        let said = |s: &hive_store::Store| {
+            crate::util::must_one(
+                &s.conn().unwrap(),
+                "SELECT COUNT(*) AS n FROM posts WHERE kind = 'finding' AND thread = ?",
+                &[&crate::executor::OLDER_HANDS_THREAD],
+            )
+            .int("n")
+        };
+        // (what the hands answer, findings on the board after the probe)
+        for (reply, posts) in [
+            (current.clone(), 0),
+            (format!("{base}\n"), 1),
+            (format!("{base} trailers=1\n"), 1),
+            (format!("{base}\n"), 1),
+            (current.clone(), 1),
+            (format!("{base}\n"), 2),
+        ] {
+            let old = crate::executor::run_ssh_hook();
+            crate::executor::set_run_ssh(fake_probe_ssh);
+            *PROBE_REPLY.write().unwrap() = reply.clone();
+            let (ok, note) = crate::executor::probe_executor(
+                &s,
+                "hands",
+                crate::util::HUMAN_AGENT,
+                crate::test_helpers::TEST_NOW,
+            )
+            .unwrap();
+            crate::executor::restore_run_ssh(old);
+            assert!(ok, "older hands still run jobs: {note}");
+            assert_eq!(said(&s), posts, "after {reply:?}");
+        }
+        let p = crate::util::must_one(
+            &s.conn().unwrap(),
+            "SELECT * FROM posts WHERE kind = 'finding' AND thread = ? ORDER BY rowid LIMIT 1",
+            &[&crate::executor::OLDER_HANDS_THREAD],
+        );
+        assert_eq!(
+            p.str("summary"),
+            "hands on hands run an older hive (before pull request 299)"
+        );
+        assert!(
+            p.str("body")
+                .contains("hive pair <admin@host> --name hands"),
+            "{p:?}"
+        );
+        // What this build's hands answer is current.
+        let reply = {
+            let workdir = tempfile::tempdir().unwrap();
+            let out = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+            struct Shared(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+            impl std::io::Write for Shared {
+                fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                    self.0.lock().unwrap().extend_from_slice(b);
+                    Ok(b.len())
+                }
+                fn flush(&mut self) -> std::io::Result<()> {
+                    Ok(())
+                }
+            }
+            let (mut h, _env) = crate::test_helpers::new_test_hands(
+                &workdir.path().display().to_string(),
+                Some(Box::new(Shared(out.clone()))),
+                None,
+            );
+            h.probe().unwrap();
+            String::from_utf8(out.lock().unwrap().clone()).unwrap()
+        };
+        let fields = hive_hand_core::transport::parse_probe(&reply);
+        assert_eq!(
+            crate::executor::older_hands_warning("hands", &fields),
+            None,
+            "{reply}"
         );
     }
 
@@ -8082,8 +8606,13 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         }
         let req = hive_tasks::request_compute(&s, "proj", "aurora", "Standard_B2ms", 4, "long run")
             .unwrap();
-        hive_tasks::approve(&s, &req.id, "fine", crate::util::HUMAN_AGENT).unwrap();
-        // The owner lowers the cap after approving: the worker checks it again.
+        // Approved by the daemon (auto_approve under the limits), not by the owner: the limit
+        // still bounds it, and the worker checks it again.
+        crate::util::exec1(
+            &*s.conn().unwrap(),
+            "UPDATE compute_requests SET status = 'approved', decided_by = 'hive' WHERE id = ?",
+            &[&req.id],
+        );
         s.set_setting(crate::util::HUMAN_AGENT, "compute.max_hours_per_day", "1")
             .unwrap();
         let w = crate::compute::new_compute_worker(
@@ -8098,14 +8627,27 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         w.wait(std::time::Duration::from_secs(5));
         let _ = w.drain();
         let got = hive_tasks::get_compute(&s, &req.id).unwrap();
-        assert_eq!(got.status, "failed", "over caps: {got:?}");
+        // TASK-165 item 4: not rented, said with the limit and the numbers, never "Failed: cap".
+        assert_eq!(
+            (got.status.as_str(), got.note.as_str()),
+            (
+                "failed",
+                "Not rented: today's limit of 1 hour is used (0 used, this asks 4)"
+            ),
+            "over caps: {got:?}"
+        );
+        assert!(hive_tasks::open_limit_hit(&s, &req.id).unwrap().is_some());
         let conn = s.conn().unwrap();
         let f = crate::util::must_one(
             &conn,
             "SELECT * FROM posts WHERE kind = 'finding' AND thread = 'compute'",
             &[],
         );
-        assert!(f.str("summary").contains("cap:"), "finding: {f:?}");
+        assert!(
+            f.str("summary")
+                .contains("not rented: today's limit of 1 hour"),
+            "finding: {f:?}"
+        );
         assert!(!crate::compute::redact_secrets("token ****** leaked").contains("******"));
         crate::azure::init();
         assert!(crate::provider::provider_names().contains(&"azure".to_string()));

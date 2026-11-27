@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { canApplyServiceSetup, daemonControlState, daemonHeadline, daemonServiceState, daemonUpdateText, pendingUpdate, serviceSetupAction, updatePendingText } from "./daemon-control-state.ts";
+import { canApplyServiceSetup, daemonControlState, daemonHeadline, daemonServiceState, daemonUpdateText, pendingUpdate, serviceSetupAction, updatePendingText, updateWaitingText } from "./daemon-control-state.ts";
 import { HANDOVER_WAIT_MS, waitForServiceHandover } from "./service-handover.ts";
 import { writes } from "../../lib/api.ts";
 
@@ -156,7 +156,7 @@ test("a fresh heartbeat is ok and reads running; a pending update and an exit ar
   const restarting = daemonControlState(inputs({ runner: snapshot(draining) }));
   assert.equal(restarting.label, "alive");
   assert.equal(restarting.tone, "ok");
-  assert.deepEqual(restarting.update, { since: null, inflight: 2, dispatching: true, waits: [], until: null });
+  assert.deepEqual(restarting.update, { since: null, inflight: 2, dispatching: true, waits: [], until: null, machines: [] });
   assert.match(restarting.description, /newer hive built/);
   assert.match(restarting.description, /2 runs in progress/);
   assert.match(restarting.description, /nothing to start by hand/);
@@ -421,4 +421,50 @@ test("a pending restart says since when and when new runs stop", () => {
   assert.equal(updatePendingText(pendingUpdate(old, now), now), "Pending for 10 minutes");
   assert.equal(updatePendingText(pendingUpdate({ note: "restarting: 2 in flight" }, now), now), "");
   assert.equal(updatePendingText(pendingUpdate({ note: "x", restart: { since: "", inflight: 1, dispatching: false, waits_for: [] } }, now), now), "Nothing new starts");
+});
+
+// Review of PR 282, item 3: once the daemon waits after its loop (the drain is
+// over, or Restart now) the page said "It has stopped taking new work" and,
+// beside it, "new runs, yours included, stop starting in 59 minutes". A daemon
+// that dispatches nothing says that nothing new starts, whatever its bound.
+test("a daemon past its loop does not say new runs stop starting later", () => {
+  const now = Date.parse("2026-11-26T06:52:00Z");
+  const r = runner("alive");
+  r.daemon.note = "restarting: 1 in flight";
+  r.daemon.restart = { since: "2026-11-26T06:42:00Z", inflight: 1, dispatching: false, until: "2026-11-26T07:51:00Z", waits_for: [{ agent: "fjord", kind: "task", project: "brain", job: "j1", started_at: "2026-11-26T06:42:00Z" }] };
+  const state = daemonControlState(inputs({ runner: snapshot(r) }), now);
+  assert.equal(updatePendingText(state.update, now), "Pending for 10 minutes; nothing new starts");
+  assert.match(state.description, /It has stopped taking new work\. Pending for 10 minutes; nothing new starts/);
+  assert.doesNotMatch(state.description, /stop starting in/);
+});
+
+// On 2026-11-27 a daemon past its bound waited for seven runs on a rented
+// machine with nothing said but "nothing new starts". Past its loop the
+// heartbeat names each machine, since when, and when the other machine's runs
+// are stopped with their commits kept (daemon.restart_remote_minutes).
+test("a daemon past its loop says what it waits for on which machine and since when", () => {
+  const now = Date.parse("2026-11-27T06:25:00Z");
+  const r = runner("alive");
+  r.daemon.note = "restarting: waiting for 8 run(s) in flight to finish";
+  r.daemon.restart = {
+    since: "2026-11-27T04:51:00Z", inflight: 8, dispatching: false, until: "2026-11-27T06:21:00Z", waits_for: [],
+    machines: [
+      { machine: "hands-cr-11116", local: false, runs: 7, since: "2026-11-27T06:21:00Z", until: "2026-11-27T06:31:00Z" },
+      { machine: "local", local: true, runs: 1, since: "2026-11-27T06:21:00Z", until: "" },
+      { machine: "gone", local: false, runs: 0, since: "2026-11-27T06:21:00Z" },
+    ],
+  };
+  const update = pendingUpdate(r.daemon, now);
+  assert.deepEqual(update.machines.map((m) => m.machine), ["local", "hands-cr-11116"], "this machine first, none without runs");
+  assert.equal(updateWaitingText(update, now), "Waits for 1 run on this machine since 06:21Z, 7 runs on hands-cr-11116 since 06:21Z (stopped at 06:31Z, their commits kept)");
+  // Past the remote wait the other machine's runs are being stopped.
+  const late = Date.parse("2026-11-27T06:32:00Z");
+  assert.equal(updateWaitingText(pendingUpdate(r.daemon, late), late), "Waits for 1 run on this machine since 06:21Z, 7 runs on hands-cr-11116 since 06:21Z (being stopped, their commits kept)");
+  // Without a bound the other machine's runs are waited out.
+  r.daemon.restart.machines = [{ machine: "hands-cr-11116", local: false, runs: 7, since: "2026-11-27T06:21:00Z" }];
+  assert.equal(updateWaitingText(pendingUpdate(r.daemon, now), now), "Waits for 7 runs on hands-cr-11116 since 06:21Z");
+  // Still dispatching, or an older daemon: nothing to add.
+  assert.equal(updateWaitingText(pendingUpdate({ note: "x", restart: { since: "", inflight: 1, waits_for: [] } }, now), now), "");
+  assert.equal(updateWaitingText(pendingUpdate({ note: "restarting: 2 in flight" }, now), now), "");
+  assert.equal(updateWaitingText(null, now), "");
 });

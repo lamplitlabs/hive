@@ -149,6 +149,28 @@ pub(crate) fn open_prs(q: &(impl crate::util::Querier + ?Sized), slug: &str) -> 
 /// Every Hive pull request of a project with a `land.pr`, oldest number
 /// first, with the newest state event that stands for it.
 fn pr_states(q: &(impl crate::util::Querier + ?Sized), slug: &str) -> Vec<(String, OpenPr)> {
+    read_pr_states(q, slug).unwrap_or_default()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests: every read through `read_pr_states` fails while set and the
+    /// store's other reads go on, as when one read fails and the next one
+    /// succeeds.
+    static PR_STATES_UNREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// [`pr_states`], or why the store could not be read.
+fn read_pr_states(
+    q: &(impl crate::util::Querier + ?Sized),
+    slug: &str,
+) -> Result<Vec<(String, OpenPr)>, String> {
+    #[cfg(test)]
+    if PR_STATES_UNREAD.get() {
+        return Err(format!(
+            "the pull requests of {slug} could not be read: disk I/O error"
+        ));
+    }
     let rows = crate::util::query_rows(
         q,
         &format!(
@@ -156,7 +178,7 @@ fn pr_states(q: &(impl crate::util::Querier + ?Sized), slug: &str) -> Vec<(Strin
         ),
         &[&slug],
     )
-    .unwrap_or_default();
+    .map_err(|e| format!("the pull requests of {slug} could not be read: {e}"))?;
     let mut latest: std::collections::BTreeMap<i64, (String, Option<OpenPr>)> = Default::default();
     for r in rows {
         let detail: Value = serde_json::from_str(&r.str("detail")).unwrap_or(Value::Null);
@@ -168,10 +190,10 @@ fn pr_states(q: &(impl crate::util::Querier + ?Sized), slug: &str) -> Vec<(Strin
         entry.1 = opened_by(entry.1.take(), &action, r.int("seq") as i64, &detail);
         entry.0 = action;
     }
-    latest
+    Ok(latest
         .into_values()
         .filter_map(|(action, pr)| Some((action, pr?)))
-        .collect()
+        .collect())
 }
 
 /// The Hive pull requests of a project that are still open on the forge,
@@ -179,9 +201,14 @@ fn pr_states(q: &(impl crate::util::Querier + ?Sized), slug: &str) -> Vec<(Strin
 /// merged nor closed it. Unlike [`open_prs`] (the ones open for review),
 /// a pull request under a "changes" verdict, a waiting merge or a hand-off
 /// to the owner is here too: its branch and its base are still the
-/// forge's.
-pub(crate) fn forge_open_prs(q: &(impl crate::util::Querier + ?Sized), slug: &str) -> Vec<OpenPr> {
-    pr_states(q, slug)
+/// forge's. `Err` when the store could not be read: no answer is not "none
+/// open", and a merge that took it so would delete a branch another pull
+/// request is based on.
+pub(crate) fn forge_open_prs(
+    q: &(impl crate::util::Querier + ?Sized),
+    slug: &str,
+) -> Result<Vec<OpenPr>, String> {
+    Ok(read_pr_states(q, slug)?
         .into_iter()
         .filter(|(action, _)| {
             !matches!(
@@ -190,7 +217,7 @@ pub(crate) fn forge_open_prs(q: &(impl crate::util::Querier + ?Sized), slug: &st
             )
         })
         .map(|(_, pr)| pr)
-        .collect()
+        .collect())
 }
 
 /// The pull request as its state events so far describe it: a `land.pr`
@@ -1420,17 +1447,30 @@ fn try_merge(
     // review said: one under a "changes" verdict (its fix job is running),
     // one whose approved merge waits, one handed to the owner (#267 closed
     // when #266 merged while its fix job ran).
-    let stacked_above: Vec<i64> = match s.conn() {
-        Ok(c) if !head.is_empty() => forge_open_prs(&c, &slug)
-            .into_iter()
-            .filter(|p| p.number != number && p.base == head)
-            .map(|p| p.number)
-            .collect(),
-        _ => Vec::new(),
+    // A store that cannot say which are open keeps the branch: the merge
+    // goes through, and delivery deletes the branch once a pass reads that
+    // nothing is based on it (`delivery::delete_kept_head`).
+    let (stacked_above, unread): (Vec<i64>, Option<String>) = if head.is_empty() {
+        (Vec::new(), None)
+    } else {
+        match s
+            .conn()
+            .map_err(|e| format!("the store could not be opened: {e}"))
+            .and_then(|c| forge_open_prs(&c, &slug))
+        {
+            Ok(open) => (
+                open.into_iter()
+                    .filter(|p| p.number != number && p.base == head)
+                    .map(|p| p.number)
+                    .collect(),
+                None,
+            ),
+            Err(e) => (Vec::new(), Some(e)),
+        }
     };
     let number_arg = number.to_string();
     let mut args = vec!["pr", "merge", number_arg.as_str(), "--merge"];
-    if stacked_above.is_empty() {
+    if stacked_above.is_empty() && unread.is_none() {
         args.push("--delete-branch");
     }
     let result = gh(s, &slug, &repo, &args, MERGE_TIMEOUT);
@@ -1444,6 +1484,9 @@ fn try_merge(
             }
             if !stacked_above.is_empty() {
                 detail["branch_kept_for"] = json!(stacked_above);
+            }
+            if let Some(why) = &unread {
+                detail["branch_kept"] = json!(why);
             }
             if view.checks == 0 && ci_expected(s, project) {
                 detail["no_checks"] = json!(true);
@@ -3111,6 +3154,41 @@ mod tests {
         assert!(merges[1].contains("--delete-branch"), "{merges:?}");
         let merged = events(&s, "review.merged");
         assert!(merged[1].get("branch_kept_for").is_none(), "{}", merged[1]);
+    }
+
+    /// A merge whose store cannot say which pull requests are open keeps
+    /// its branch: an empty answer read as "nothing is based on it" passed
+    /// `--delete-branch`, and the forge closes for good whatever is stacked
+    /// on that branch. The merge itself goes through and says why the
+    /// branch stayed.
+    #[test]
+    fn a_merge_keeps_its_branch_when_the_store_cannot_say_what_is_open() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let (_bin, _path, log, _view) = fake_gh();
+        let s = new_store();
+        let (proj, _repo, _bare) = push_fixture(&s);
+        land_pr(&s, 7, "task", "TASK-001", "JOB-a");
+        PR_STATES_UNREAD.set(true);
+        let merged = merge(&s, &proj, 7, "reviewer-1", "reviewer-1", TEST_NOW);
+        PR_STATES_UNREAD.set(false);
+        merged.unwrap();
+        let merges: Vec<String> = std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.starts_with("pr merge"))
+            .map(str::to_string)
+            .collect();
+        assert_eq!(merges.len(), 1, "{merges:?}");
+        assert!(!merges[0].contains("--delete-branch"), "{merges:?}");
+        let merged = events(&s, "review.merged");
+        assert!(
+            merged[0]["branch_kept"]
+                .as_str()
+                .is_some_and(|w| w.contains("could not be read")),
+            "{}",
+            merged[0]
+        );
     }
 
     /// A pull request stacked on the one that merges keeps that branch

@@ -395,10 +395,11 @@ impl Hands {
         };
         writeln!(
             self.stdout,
-            "hands=ok user={user} workdir={} git={gitv} harness={harness} hive={hivev}{lookup} remotes={remotes} keys_ok={keys_ok} disk_free_mb={free} jobs={} keys={} heartbeat=1 steps=1 recipe=1 push=1 os={} arch={} found={} cores={} mem_mb={}",
+            "hands=ok user={user} workdir={} git={gitv} harness={harness} hive={hivev}{lookup} remotes={remotes} keys_ok={keys_ok} disk_free_mb={free} jobs={} keys={} heartbeat=1 steps=1 recipe=1 push=1 trailers={} os={} arch={} found={} cores={} mem_mb={}",
             self.workdir,
             dash(jobs),
             dash(keys),
+            crate::provenance::HOOK_VERSION,
             crate::needs::this_os(),
             crate::needs::this_arch(),
             dash(crate::machine::found_labels().to_vec()),
@@ -451,6 +452,20 @@ impl Hands {
         };
         if !cl.ok() {
             return Err(hands_die(cl.stderr.trim().to_string()));
+        }
+        // Every other head the bundle holds - a join job's base and the
+        // branches it merges - becomes a branch of the clone: the clone
+        // keeps only its own once the bundle's origin goes.
+        let heads: Vec<String> = crate::util::git(&clone, &["bundle", "list-heads", &bundle])
+            .stdout
+            .lines()
+            .filter_map(|l| l.split_whitespace().nth(1))
+            .filter(|r| *r != "HEAD")
+            .map(str::to_string)
+            .collect();
+        let (_, failed) = crate::local::carry_branches(&clone, &bundle, &heads);
+        for line in failed {
+            let _ = writeln!(self.stderr, "the clone could not carry {line}");
         }
         let _ = std::fs::remove_file(bundle);
         let _ = crate::util::git(&clone, &["remote", "remove", "origin"]);

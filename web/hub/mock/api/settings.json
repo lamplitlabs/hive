@@ -901,8 +901,8 @@
     {
       "choices": null,
       "default": "0",
-      "description": "machine-hours agents may consume per UTC day across provisioned hands; 0 means none",
-      "kind": "count",
+      "description": "machine-hours agents and the daemon may rent per UTC day across provisioned hands; 0 means Hive rents nothing by itself, none/off/unlimited means no limit; the owner's own requests are never refused by it",
+      "kind": "count-or-none",
       "min": 0,
       "name": "compute.max_hours_per_day",
       "secret": false,
@@ -913,8 +913,8 @@
     {
       "choices": null,
       "default": "0",
-      "description": "provisioned machines that may exist at once; 0 means agents cannot get compute",
-      "kind": "count",
+      "description": "provisioned machines agents and the daemon may have at once; 0 means Hive rents nothing by itself, none/off/unlimited means no limit; the owner's own requests (the console's Extra machine, hive compute request typed by the owner, hive compute approve) are never refused by it",
+      "kind": "count-or-none",
       "min": 0,
       "name": "compute.max_vms",
       "secret": false,

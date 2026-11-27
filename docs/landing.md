@@ -169,7 +169,14 @@ upstream default branch.
 The commits are the runner's: each carries its `Hive-Agent`, `Hive-Job` and
 `Hive-Executor` trailers and the run key's signature, and `hive verify
 <ref>` checks that they match the run that made it (ADR-022; `hive signers`
-lists the trusted keys). The `land.pr` event names the pull request (`number`,
+lists the trusted keys). The trailers come from a `prepare-commit-msg` hook
+the runner writes into the job's clone (on a hand, its `key` verb): it adds
+them with `git interpret-trailers --no-divider --if-exists addIfDifferent`,
+so neither a last paragraph of `Word: text` lines nor a `---` line in the
+message hides them, reads them back, and refuses the commit with one sentence
+when one is still missing. A commit that reaches the landing without them is
+refused, and its work is kept on `hive/<agent>/<job>-failed` and in a patch.
+The `land.pr` event names the pull request (`number`,
 `url`, `title`), the branches (`head`, `base`, `remote`), the commits (`from`,
 the merge base with the default branch; `to`, the head pushed; `commits`, how
 many between them), the `jobs` it delivers, whether the pass `opened` the pull
@@ -210,8 +217,10 @@ the sibling's branch and commit (TASK-078 on TASK-077's, 2026-11-05) puts
 its clone on that commit and commits on top. The landing's identity check
 (ADR-022) then answers only for the commits past the default branch as it
 stands now and past Hive's own `hive/*` branches - never a conversation's
-`hive/chat-*`, which nothing is built on, and never the branch under check
-itself. The sibling's commits passed that check when their own branch
+`hive/chat-*`, which nothing is built on, never a run's kept work
+(`hive/<agent>/<job>-failed`, `-failed-<machine>`, `-unchecked`: commits
+whose check failed, was refused or never ran), and never the branch under
+check itself. The sibling's commits passed that check when their own branch
 landed, and carry their own run's signature for `hive verify`; the run log
 says `N of the M commit(s) are already on the project's own branches` and
 the delivery stacks the pull request on the sibling's as it would any other.
@@ -1008,7 +1017,8 @@ uncommitted, or on a remote executor (whose hook writes its memo on the
 remote store), runs the check as before. A run whose check fails
 is a failed run - nothing is delivered, its commits are kept on
 `hive/<agent>/<job>-failed` in the project's checkout and as a patch under
-`~/.hive/patches/<slug>/` for the retry, and the job is retried as
+`~/.hive/patches/<slug>/` for the retry (a later kept run of the same job
+moves the branch to its own commits), and the job is retried as
 [Recovery](recovery.md) describes - so every branch the daemon delivers
 passed the project's own check on the commit it carries. The forge then runs
 the project's pipeline on the

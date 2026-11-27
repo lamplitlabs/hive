@@ -330,9 +330,31 @@ pub(crate) fn accepted_refs(root: &str, default_branch: &str, ref_: &str) -> Vec
     out.stdout
         .lines()
         .map(str::trim)
-        .filter(|r| !r.is_empty() && *r != own && !r.starts_with("refs/heads/hive/chat-"))
+        .filter(|r| {
+            !r.is_empty()
+                && *r != own
+                && !r.starts_with("refs/heads/hive/chat-")
+                && !is_kept_work_ref(r)
+        })
         .map(str::to_string)
         .collect()
+}
+/// Whether `ref_` (`refs/heads/hive/<agent>/<job>-failed`, the
+/// `-failed-<machine>` a kept clone is fetched to beside it, or
+/// `<job>-unchecked`) holds a run's kept work: commits whose check failed,
+/// was refused or never ran. They never passed the identity check, so a
+/// landing answers for them even when a worker built on them (review of
+/// PR 299).
+pub(crate) fn is_kept_work_ref(ref_: &str) -> bool {
+    let Some(rest) = ref_.strip_prefix("refs/heads/hive/") else {
+        return false;
+    };
+    let Some((_, job)) = rest.rsplit_once('/') else {
+        return false;
+    };
+    job.ends_with("-failed")
+        || job.contains("-failed-")
+        || job.ends_with(crate::unchecked::UNCHECKED_SUFFIX)
 }
 /// How many commits `base..ref_` adds past `accepted`: the ones this run
 /// answers for. Zero when git cannot say.

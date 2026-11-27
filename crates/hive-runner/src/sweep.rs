@@ -768,6 +768,65 @@ impl Sweeper {
         }
         String::new()
     }
+    /// The patch of the kept work whose commits are still only in the
+    /// job's clone at `path` (the `clone` of its latest `run.unchecked`,
+    /// unchecked.rs): `None` when the clone holds none, `Ok` with the patch
+    /// file once saved under `patches/<project>/` (empty on a dry run),
+    /// `Err` with why the clone must stay.
+    pub(crate) fn kept_clone_patch(
+        &mut self,
+        job_id: &str,
+        path: &str,
+    ) -> Option<Result<String, String>> {
+        let conn = self.s.conn().ok()?;
+        let ev = crate::util::query_one(
+            &conn,
+            "SELECT e.detail, j.project FROM events e JOIN jobs j ON j.id = e.subject WHERE e.action = ? AND e.subject = ? ORDER BY e.seq DESC LIMIT 1",
+            &[&crate::unchecked::UNCHECKED_EVENT, &job_id],
+        )
+        .ok()??;
+        let d = crate::util::json_map(&ev.str("detail"));
+        let text = |k: &str| {
+            d.get(k)
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string()
+        };
+        let (clone, base, branch) = (text("clone"), text("base"), text("branch"));
+        if clone.is_empty() || !same_path(&clone, path) {
+            return None;
+        }
+        if self.o.dry_run {
+            return Some(Ok(String::new()));
+        }
+        let out = crate::util::git_timeout(
+            path,
+            Duration::from_secs(120),
+            &["format-patch", "--stdout", &format!("{base}..HEAD")],
+        );
+        if !out.ok() || out.stdout.trim().is_empty() {
+            return Some(Err(format!(
+                "holds the kept commits of {branch}, which could not be saved as a patch ({}); remove it by hand",
+                first_line(if out.ok() {
+                    "no commits past the base"
+                } else {
+                    &out.stderr
+                })
+            )));
+        }
+        let folder = Path::new(&self.home)
+            .join("patches")
+            .join(ev.str("project"));
+        let file = folder.join(format!("{}.patch", branch.replace('/', "__")));
+        if let Err(err) =
+            std::fs::create_dir_all(&folder).and_then(|()| std::fs::write(&file, &out.stdout))
+        {
+            return Some(Err(format!(
+                "holds the kept commits of {branch}, which could not be saved as a patch ({err}); remove it by hand"
+            )));
+        }
+        Some(Ok(file.display().to_string()))
+    }
     pub(crate) fn job_row(&mut self, job_id: &str) -> Row {
         let Ok(conn) = self.s.conn() else {
             return Row::default();
@@ -934,6 +993,24 @@ impl Sweeper {
             if !ok {
                 continue;
             }
+            // A clone that holds kept work its job never fetched (TASK-152
+            // item 1: the fetches failed, the attempts ran out) is the only
+            // copy of those commits: they are saved as a patch before it
+            // goes, and it stays when they cannot be.
+            let going = lost || {
+                let job = self.job_row(&job_id);
+                self.finished_work_due(&job) && (self.o.pressure || age >= self.grace)
+            };
+            let kept = if kind == "clone" && known && going {
+                self.kept_clone_patch(&job_id, &path)
+            } else {
+                None
+            };
+            if let Some(Err(why)) = &kept {
+                self.held(kind.into(), path, String::new(), why.clone());
+                continue;
+            }
+            let removed_before = self.rep.removed.len();
             if lost {
                 self.remove(
                     kind.into(),
@@ -996,6 +1073,19 @@ impl Sweeper {
                         round_duration(keep)
                     ),
                 );
+            }
+            if let Some(Ok(patch)) = kept
+                && self.rep.removed.len() > removed_before
+                && let Some(item) = self.rep.removed.last_mut()
+            {
+                if patch.is_empty() {
+                    item.why
+                        .push_str("; its kept commits would be saved as a patch first");
+                } else {
+                    item.why
+                        .push_str(&format!("; its kept commits saved at {patch}"));
+                    item.patch = patch;
+                }
             }
         }
     }
@@ -3527,6 +3617,103 @@ mod tests {
         // A second sweep finds nothing more to free.
         let (freed, paths) = sweep_stale_clones(&s, &current, TEST_NOW.into());
         assert_eq!((freed, paths.len()), (0, 0));
+    }
+
+    /// TASK-152 review: a clone whose kept commits the job never fetched
+    /// (three failed fetches, the job failed) is the only copy of them; the
+    /// sweep saves them as a patch before it removes the clone, and keeps a
+    /// clone whose commits it cannot save.
+    #[test]
+    fn a_kept_clone_is_saved_as_a_patch_before_it_goes() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let s = sweep_store();
+        new_bare_repo(&s);
+        let work = Path::new(&s.home).join("work");
+        let kept_job = |commit: bool| {
+            let job = sweep_job(&s, "failed", "");
+            let run = sweep_run(&s, &job, "lost");
+            let clone = work.join(&job);
+            mkdir_file(clone.join("a.txt"), "one\n");
+            let dir = clone.display().to_string();
+            crate::test_helpers::run(&dir, &["git", "init", "-q"]);
+            for argv in [
+                vec!["git", "add", "a.txt"],
+                vec![
+                    "git",
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    "commit",
+                    "-qm",
+                    "base",
+                ],
+            ] {
+                crate::test_helpers::run(&dir, &argv);
+            }
+            let base = crate::test_helpers::run(&dir, &["git", "rev-parse", "HEAD"]);
+            if commit {
+                mkdir_file(clone.join("a.txt"), "two\n");
+                crate::test_helpers::run(
+                    &dir,
+                    &[
+                        "git",
+                        "-c",
+                        "user.name=t",
+                        "-c",
+                        "user.email=t@t",
+                        "commit",
+                        "-qam",
+                        "kept work",
+                    ],
+                );
+            }
+            let branch = crate::unchecked::unchecked_branch("w", &job);
+            crate::unchecked::record(
+                &s.conn().unwrap(),
+                TEST_NOW,
+                &job,
+                &crate::unchecked::Unchecked {
+                    run,
+                    agent: "w".into(),
+                    branch: branch.clone(),
+                    base: base.trim().into(),
+                    commits: 1,
+                    clone: dir.clone(),
+                    ..Default::default()
+                },
+            );
+            (job, dir, branch)
+        };
+        let (saved, saved_dir, branch) = kept_job(true);
+        let (stuck, stuck_dir, _) = kept_job(false);
+        let rep = sweep(&s, project_rows(&s), TEST_NOW.into(), SweepOpts::default()).unwrap();
+        assert!(rep.errors.is_empty(), "errors: {:?}", rep.errors);
+        let item = rep
+            .removed
+            .iter()
+            .find(|x| x.path == saved_dir)
+            .unwrap_or_else(|| panic!("{saved} kept {:?}", rep.held));
+        let patch = Path::new(&s.home)
+            .join("patches/proj")
+            .join(format!("{}.patch", branch.replace('/', "__")));
+        assert_eq!(item.patch, patch.display().to_string(), "{item:?}");
+        assert!(item.why.contains("kept commits saved at"), "{}", item.why);
+        assert!(
+            std::fs::read_to_string(&patch)
+                .unwrap()
+                .contains("kept work"),
+            "the patch holds the kept commit"
+        );
+        assert!(!Path::new(&saved_dir).exists());
+        // Nothing past the base to save: the clone stays for a hand.
+        assert!(Path::new(&stuck_dir).exists(), "{stuck}");
+        assert!(
+            held_why_text(&rep.held, &stuck_dir).contains("could not be saved as a patch"),
+            "{:?}",
+            rep.held
+        );
     }
 
     #[test]

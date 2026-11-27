@@ -190,6 +190,22 @@ ways a run ends are worth knowing:
 - **Lost track of it**. The run was cut off before it ended: the runner
   stopped under it, its machine stopped answering, or its agent gave no sign
   of life for `heartbeat.dead_after` seconds (300). The job is queued again.
+- **Ended from outside**. Something other than the runner stopped the
+  worker: it exited 143 (SIGTERM) or 137 (SIGKILL), on this machine or on a
+  hand, with no cancel, hold or timeout on record for the run - another
+  program's `pkill`, an out-of-memory kill. The run is not judged: it reads
+  `held`, the job goes back to the queue without using an attempt, the clone
+  stays, and its commits are kept on `hive/<agent>/<job>-failed` and as a
+  patch the next run's brief starts from. The board gets one finding on the
+  `runner/outside-signal` thread for runs that ended together. A job ended
+  this way a third time is judged as it stands.
+- **Commits refused at the landing**. Every commit must carry its
+  `Hive-Agent`, `Hive-Job` and `Hive-Executor` trailers and the run key's
+  signature. The commit hook in the job's clone adds the trailers and
+  refuses a commit that would go out without one, with a sentence that says
+  to end the message with a sentence instead. A commit that still reaches
+  the landing without them is refused there, and its work is kept on
+  `hive/<agent>/<job>-failed` and in a patch, as after a failed check.
 
 ## No pull request
 
@@ -258,6 +274,11 @@ The **Machines** page and `hive executor list` show the state of each machine:
   until it has one ([Add a second machine](add-a-machine.md)).
 - A machine that joined with `hive-hand` takes work only while that program
   is connected. Start it there with `hive-hand dial`.
+- **Hands on an older hive**. Hands from before pull request 299 write a
+  commit hook that can let a commit out without its trailers, and their
+  harness still runs `pkill`. A probe that finds them posts one finding on
+  the `runner/older-hands` thread; jobs keep running there. Refresh them
+  with `hive pair <admin@host> --name <machine>`.
 
 ## macOS asks about folder access
 
