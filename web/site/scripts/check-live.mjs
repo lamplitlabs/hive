@@ -93,7 +93,7 @@ if (isSite) {
     ["/llms.txt", (r) => r.body.startsWith("# Hive") && r.body.includes("## Guides"), "llms.txt, with the guides listed"],
     ["/docs/search.json", (r) => r.body.trimStart().startsWith("["), "the search index"],
     ["/docs/how-to/", (r) => r.type.includes("text/html") && r.body.includes("<h1"), "the page of guides"],
-    ["/docs-media/how-to/images/console-home.webp", (r) => r.type.includes("image/"), "a picture of the docs"],
+    ["/docs-media/how-to/images/console-sessions.webp", (r) => r.type.includes("image/"), "a picture of the docs"],
   ];
   const missing = [];
   for (const [p, good, what] of want) {

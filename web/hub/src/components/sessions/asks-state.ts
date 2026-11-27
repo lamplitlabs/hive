@@ -95,6 +95,17 @@ export interface ForYouInput {
 
 const first = (...v: (string | undefined | null)[]) => v.find((x) => !!x) || "";
 
+// Why a question or a proposal is the owner's, as the hub marks it: its
+// `hard_stop`, or - when the row has no such field at all (a hub from before
+// TASK-129) - the owner's by default, so an older hub's asks stay on the
+// strip and in the count instead of vanishing (TASK-149 item 15). An empty
+// `hard_stop` is the hub saying it is routine: the lead decides it.
+export const OLDER_HUB_STOP = "was asked before the hub marked hard stops";
+export function hardStopField(row: { hard_stop?: string | null }): string | undefined {
+  if (row.hard_stop === undefined || row.hard_stop === null) return OLDER_HUB_STOP;
+  return row.hard_stop || undefined;
+}
+
 // A self-improvement stop reads the same wherever it waits (Home, the
 // project, here): the question it asks, not the gate's log line.
 export const STOP_TITLE = "Self-improvement stopped. May it carry on?";
@@ -106,10 +117,10 @@ export function forYouRows(i: ForYouInput): ForYouRow[] {
   // The runner's row leads to its controls (lib/nav hrefs.runnerControls(); spelled out because this module imports nothing at run time).
   if (i.machine) rows.push({ key: "machine", section: "problems", kind: "machine", project: "", title: "The runner isn't working", meta: i.machineWhy || "Agents can't start work on this machine", href: "/settings/#daemon", at: "", urgent: true, fix: "Fix it" });
   if (i.provider) rows.push({ key: "provider:" + i.provider.name, section: "problems", kind: "tool", project: "", title: i.provider.expired ? (i.provider.label || i.provider.name) + " sign-in expired" : "Connect " + (i.provider.label || i.provider.name), meta: i.provider.expired ? "Sign in again so agents can use their model" : "Agents have no model provider yet", href: "/settings/?connect=" + encodeURIComponent(i.provider.name) + "#harness", at: "", urgent: true, fix: i.provider.expired ? "Sign in" : "Connect" });
-  for (const q of i.questions) rows.push({ key: "question:" + q.id, section: "questions", kind: "question", project: q.slug || brain, title: isStop(q) ? STOP_TITLE : q.summary, text: q.body, hardStop: q.hard_stop || undefined, at: q.date, urgent: !!q.stop, yesNo: true });
+  for (const q of i.questions) rows.push({ key: "question:" + q.id, section: "questions", kind: "question", project: q.slug || brain, title: isStop(q) ? STOP_TITLE : q.summary, text: q.body, hardStop: hardStopField(q), at: q.date, urgent: !!q.stop, yesNo: true });
   for (const r of i.decisions) rows.push({ key: "decision:" + r.id, section: "decisions", kind: "decision", project: r.project, title: r.title, meta: r.id, at: first(r.updated_at, r.date), yesNo: true });
   // A proposed project goal (TASK-117) reads as what it is and opens as its card.
-  for (const p of i.proposals) rows.push({ key: "proposal:" + p.id, section: "proposals", kind: "proposal", project: p.slug || brain, title: p.summary, text: p.proposal_text, hardStop: p.hard_stop || undefined, ...(p.kind === "goal" ? { meta: "New project goal", card: true } : {}), at: p.date, yesNo: true });
+  for (const p of i.proposals) rows.push({ key: "proposal:" + p.id, section: "proposals", kind: "proposal", project: p.slug || brain, title: p.summary, text: p.proposal_text, hardStop: hardStopField(p), ...(p.kind === "goal" ? { meta: "New project goal", card: true } : {}), at: p.date, yesNo: true });
   // A request filed on the shared board asks for a machine every project can use (compute-state ANY_PROJECT; spelled out because this module imports nothing at run time).
   for (const c of i.compute) rows.push({ key: "compute:" + c.id, section: "compute", kind: "machine", project: c.project, ...(c.project === "commons" ? { projectWord: "Any project" } : {}), title: c.size + " for " + c.hours + (c.hours === 1 ? " hour" : " hours"), meta: "Asked by " + c.requested_by, at: c.at, yesNo: true });
   for (const w of i.work) rows.push({ key: "work:" + w.id, section: "work", kind: "suggestion", project: w.project, title: w.title, text: w.brief, meta: w.id, at: first(w.reviewed_at, w.updated_at, w.created_at), yesNo: true });
@@ -217,6 +228,14 @@ export function hardStopRows(rows: ForYouRow[]): HardStopRow[] {
   }
   const rank = (r: HardStopRow) => HARD_STOP_ORDER.indexOf(r.stopKind);
   return out.sort((a, b) => rank(a) - rank(b) || Number(!!b.urgent) - Number(!!a.urgent) || (a.at < b.at ? 1 : a.at > b.at ? -1 : 0) || a.key.localeCompare(b.key));
+}
+
+// The bell's view (TASK-149 item 20): it counts what the strip lists - the
+// hard stops, not the routine asks the leads decide - and shows the first
+// five in the strip's order. `rows` is forYouRows' output.
+export function bellView(rows: ForYouRow[], n = 5): { count: number; latest: HardStopRow[] } {
+  const strip = hardStopRows(rows);
+  return { count: strip.length, latest: strip.slice(0, n) };
 }
 
 // "1 decision only you can make" / "3 decisions only you can make".

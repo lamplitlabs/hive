@@ -971,11 +971,16 @@ NAME scored the same baseline commit two ways`) and the step as `Next human
 step`. Two things clear it: a
 fixture enabled after the streak began (usually a metric fixture, `hive
 evolve fixture add --project P --name N --metric --scorer CMD`, which the loop
-notices on its own), or a review of the question - your answer (`hive post
-answer --project P --area evolution --thread loop-gate --on QUESTION_ID
---summary 'Reviewed'`) or a decision on it - which lets the loop run
-`evolve.flat_cycles` more cycles before it may ask again (the review's own
-date starts the new window, whichever question it lands on). `hive settings
+notices on its own), or a review of the question - **Yes: Run more cycles**
+on it (`hive decide QUESTION_ID yes`) or your answer (`hive post answer
+--project P --area evolution --thread loop-gate --on QUESTION_ID --summary
+'Reviewed'`) - which lets the loop run `evolve.flat_cycles` more cycles
+before it may ask again (the review's own date starts the new window,
+whichever question it lands on). The question is recommended **No: Keep it
+paused**, and a No is kept: the loop stays paused until a fixture whose
+score moves is enabled, and it never reviews a question you decided in its
+own name. The pause is the owner's like the loop's stop: an agent's answer
+does not resume it. `hive settings
 set evolve.flat_cycles 0` turns the gate off; the smallest streak it accepts
 is `2`.
 
@@ -993,7 +998,7 @@ and what was done is posted on `evolution/loop-gate` - as an answer on the
 open question when there is one, so your inbox folds it away, else as a
 finding (`Evolution healed: the loop derived fixtures from the tree`; event
 `evolution.healed`). When nothing can be derived and the question has waited
-`evolve.flat_wait_hours` (default `24`) without an owner answer, the planner
+`evolve.flat_wait_hours` (default `24`) without an owner answer or decision, the planner
 reviews it itself: one answer in the loop's name (`Reviewed by the loop: run
 N more cycles`, event `evolution.flat.self_reviewed`) lets `evolve.flat_cycles`
 more cycles run as the fixtures are, and the gate asks again after that many
@@ -1059,9 +1064,9 @@ record, read with `hive record show WF-evolve`.
 | --- | --- | --- |
 | `minutes_per_job` | `10` minutes | Worker wall-clock cap; also the deadline for each measurement harness and scorer. Measurement requires a positive value. The built-in harness gets one minute less so it stops with a report of its own. |
 | `evolve.measure_parallel` | `4` fixtures | Fixtures one measurement runs at once; `0` or `1` keeps measurement sequential. Each worker keeps only one clone live and removes it after scoring, builds with the cores divided by this value (`CARGO_BUILD_JOBS`), and runs at nice 10, so four cold builds share the machine instead of each taking all of it. |
-| `evolve.flat_cycles` | `6` cycles | Tied experiment cycles in a row (the variant's total within `evolve.tolerance` of the baseline's) before the loop pauses with one owner question on the project's `evolution/loop-gate` thread; a fixture enabled since, or an answer to the question, lets it run again. At least `2`; `0` turns the gate off. |
+| `evolve.flat_cycles` | `6` cycles | Tied experiment cycles in a row (the variant's total within `evolve.tolerance` of the baseline's) before the loop pauses with one owner question on the project's `evolution/loop-gate` thread; a fixture enabled since, a Yes on the question or your answer to it lets it run again, and a No keeps it paused until a fixture whose score moves is enabled. At least `2`; `0` turns the gate off. |
 | `evolve.heal` | `on` | `on`: when the flat-fixture gate pauses a project, the planner first heals the evaluator set itself - retires a fixture that flipped the same commit both ways twice, derives metric fixtures from the project's tree (`derived-tests`, `derived-todo-markers`), re-arms a derived fixture whose count reached its scale, except one that tied the whole window - and posts what it did on `evolution/loop-gate`; `off`: the gate waits for you alone. |
-| `evolve.flat_wait_hours` | `24` hours | How long the flat gate's question may stay unanswered before the planner reviews it itself (an answer in the loop's name that lets `evolve.flat_cycles` more cycles run; it asks again after that many more ties). `0` waits for you. |
+| `evolve.flat_wait_hours` | `24` hours | How long the flat gate's question may stay unanswered before the planner reviews it itself (an answer in the loop's name that lets `evolve.flat_cycles` more cycles run; it asks again after that many more ties). A question you decided, Yes or No, is never reviewed this way. `0` waits for you. |
 | `lane.retry_minutes` | `20` minutes | Experiment-lane retry after a failed or deferred measured experiment. |
 | `lane.short_retry_minutes` | `2` minutes | Experiment-lane short retry after a lock, STOP or transient failure; baseline failures classified as transient use this pause too. |
 | `review.merge` | `auto` | `auto`: the review job merges a pull request no complexity reason holds back; `ask`: every pull request is handed to you with the reviewer's findings under **Needs your review**, and the reviewer merges nothing ([The reviewer](review.md)). |

@@ -3,9 +3,14 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
-import { MenuIcon } from "lucide-react";
+import { MenuIcon, PlusIcon, UsersIcon } from "lucide-react";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { AddProjectDialog } from "@/components/project/project-dialogs";
 import { useHardStops } from "@/components/sessions/hard-stops";
+import { useInbox } from "@/components/hive/inbox";
+import { projectLabel, type Org } from "@/lib/api";
+import { hrefs } from "@/lib/nav";
+import { useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 import { NAV_ICON } from "./nav-icons";
 import { activeItem, MORE_GROUPS, PRIMARY_ITEMS, SETTINGS_ITEM, type NavItem } from "./nav-items";
@@ -35,13 +40,68 @@ function Cell({ item, active, count }: { item: NavItem; active: boolean; count?:
   );
 }
 
+// The projects on this machine, for the More sheet: below 1024 px the
+// sidebar is gone, and without this only Search reached a project and nothing
+// added one (TASK-149 item 21). Each row carries what waits on its lead's
+// For you tab, like the sidebar's.
+function MoreProjects({ onPick, onAdd }: { onPick: () => void; onAdd: () => void }) {
+  const { data, error } = useApi<Org>("org");
+  const inbox = useInbox();
+  const projects = data?.projects ?? [];
+  const commons = data?.commons;
+  const row = "flex min-h-11 items-center gap-2.5 rounded-md px-2.5 text-sm font-medium text-foreground hover:bg-muted";
+  return (
+    <section aria-label="Projects">
+      <div className="mb-1 flex items-center justify-between px-1">
+        <p className="text-xs font-medium text-muted-foreground">Projects</p>
+        <button type="button" onClick={onAdd} className="inline-flex min-h-9 items-center gap-1 rounded-md px-2 text-xs font-medium text-link hover:bg-muted">
+          <PlusIcon aria-hidden className="size-3.5" /> Add a project
+        </button>
+      </div>
+      {error && !data ? <p className="px-1 text-xs text-muted-foreground">Projects didn&apos;t load.</p> : null}
+      {data && !projects.length ? <p className="px-1 text-xs text-muted-foreground">No projects yet.</p> : null}
+      <ul className="grid grid-cols-2 gap-1">
+        {projects.map((p) => {
+          const n = inbox.forProject(p.slug).total;
+          return (
+            <li key={p.slug}>
+              <Link href={hrefs.project(p.slug)} onClick={onPick} className={row}>
+                <span className="inline-flex size-5 shrink-0 items-center justify-center rounded-md bg-muted text-[11px] font-semibold uppercase text-muted-foreground" aria-hidden>
+                  {projectLabel(p).slice(0, 1)}
+                </span>
+                <span className="min-w-0 flex-1 truncate">{projectLabel(p)}</span>
+                {n ? (
+                  <span className="tnum rounded-full bg-you px-1.5 text-xs font-semibold text-[oklch(0.3_0.06_60)]">
+                    {n > 99 ? "99+" : n}
+                    <span className="sr-only"> waiting</span>
+                  </span>
+                ) : null}
+              </Link>
+            </li>
+          );
+        })}
+        {commons ? (
+          <li>
+            <Link href={hrefs.project(commons.slug)} onClick={onPick} className={row}>
+              <UsersIcon aria-hidden className="size-[18px] shrink-0 text-muted-foreground" strokeWidth={1.75} />
+              <span className="min-w-0 flex-1 truncate">Shared board</span>
+            </Link>
+          </li>
+        ) : null}
+      </ul>
+    </section>
+  );
+}
+
 // Phones (spec "Phone"): Sessions, Tasks and More along the
-// bottom, safe-area padded; More opens a sheet with the Knowledge and System
-// pages, Settings, Here/Away and the status card.
+// bottom, safe-area padded; More opens a sheet with the projects (and Add a
+// project), the Knowledge and System pages, Settings, Here/Away and the
+// status card.
 export function BottomBar() {
   const pathname = usePathname();
   const total = useHardStops().rows.length;
   const [more, setMore] = useState(false);
+  const [adding, setAdding] = useState(false);
   const active = activeItem(pathname);
   const underMore = !!active && !PRIMARY_ITEMS.includes(active);
   return (
@@ -62,6 +122,13 @@ export function BottomBar() {
             <SheetDescription className="sr-only">Every other page, settings and the status of this machine.</SheetDescription>
           </SheetHeader>
           <div className="grid gap-4 px-4">
+            <MoreProjects
+              onPick={() => setMore(false)}
+              onAdd={() => {
+                setMore(false);
+                setAdding(true);
+              }}
+            />
             {MORE_GROUPS.map((g) => (
               <section key={g.label} aria-label={g.label ?? undefined}>
                 {g.label ? <p className="mb-1 px-1 text-xs font-medium text-muted-foreground">{g.label}</p> : null}
@@ -102,6 +169,7 @@ export function BottomBar() {
           </div>
         </SheetContent>
       </Sheet>
+      <AddProjectDialog open={adding} onOpenChange={setAdding} />
     </nav>
   );
 }

@@ -120,15 +120,62 @@ fn split_label(text: &str) -> (String, String) {
     (label.to_string(), effect.trim().to_string())
 }
 
-/// Reads the answers an ask names in its body (see the module docs). A
+/// Whether `line` opens or closes a fenced code block (` ``` ` or `~~~`,
+/// up to three spaces in, as Markdown reads it).
+fn is_fence(line: &str) -> bool {
+    let t = line.trim_start_matches(' ');
+    line.len() - t.len() <= 3 && (t.starts_with("```") || t.starts_with("~~~"))
+}
+
+/// The answer lines of `body` as `(word, text)` pairs, from its last block
+/// of such lines. Lines inside fenced code blocks are never answers (a diff
+/// line `-no: cache` is not a No button), and a daemon-built ask ends with
+/// its answers after free text, so a `Recommended:` or `Yes:` line earlier
+/// in a quoted note does not hide or replace them (TASK-149 item 12). A
+/// block is a run of answer lines that only blank lines may separate; any
+/// other line ends it.
+fn answer_lines(body: &str) -> Vec<(String, String)> {
+    let mut blocks: Vec<Vec<(String, String)>> = Vec::new();
+    let mut current: Vec<(String, String)> = Vec::new();
+    let mut fence = false;
+    for line in body.lines() {
+        if is_fence(line) {
+            fence = !fence;
+            if !current.is_empty() {
+                blocks.push(std::mem::take(&mut current));
+            }
+            continue;
+        }
+        if fence {
+            continue;
+        }
+        if line.trim().is_empty() {
+            continue;
+        }
+        match OPTION_RE.captures(line) {
+            Some(c) => current.push((c[1].to_ascii_lowercase(), c[2].to_string())),
+            None => {
+                if !current.is_empty() {
+                    blocks.push(std::mem::take(&mut current));
+                }
+            }
+        }
+    }
+    if !current.is_empty() {
+        blocks.push(current);
+    }
+    blocks.pop().unwrap_or_default()
+}
+
+/// Reads the answers an ask names in its body (see the module docs), from
+/// its last block of answer lines outside code fences ([`answer_lines`]). A
 /// `Yes:` or `No:` line whose label is a sentence (longer than a button) is
 /// the explanation under it, not an answer, as the hub has always read it.
 pub fn ask_options(body: &str) -> AskOptions {
     let mut out = AskOptions::default();
     let mut recommended: Option<(String, String)> = None;
-    for c in OPTION_RE.captures_iter(body) {
-        let word = c[1].to_ascii_lowercase();
-        let (label, effect) = split_label(&c[2]);
+    for (word, text) in answer_lines(body) {
+        let (label, effect) = split_label(&text);
         if label.is_empty() {
             continue;
         }
@@ -297,6 +344,41 @@ mod tests {
         );
         assert_eq!(o.options.len(), 1);
         assert_eq!(o.options[0].label, "Keep watching");
+    }
+
+    #[test]
+    fn answers_come_from_the_last_block_outside_code_fences() {
+        // A review note quoted above the answers carries its own
+        // `Recommended:` line, and the diff carries `-no:` and `+yes:` lines.
+        let body = format!(
+            "Pull request #7\n\nThe review:\n\nRecommended: squash the fixups first - they read as noise\nYes: it builds\n\n```diff\n-no: cache\n+yes: cache\n Recommended: No - stale\n```\n\n~~~\nOption: Inside a tilde fence\n~~~\n\n{}",
+            yes_no_lines(
+                ("Merge it", "it lands"),
+                ("Not yet", "it stays open"),
+                false,
+                "read the reasons first"
+            ),
+        );
+        let o = ask_options(&body);
+        assert!(o.ready(), "{o:?}");
+        assert_eq!(o.options.len(), 2, "{o:?}");
+        assert_eq!(o.options[0].label, "Not yet");
+        assert!(o.options[0].recommended);
+        assert_eq!(o.options[1].label, "Merge it");
+        assert_eq!(o.why, "read the reasons first");
+        // The answers may sit apart by blank lines and still be one block.
+        let spaced = ask_options("Why?\n\nOption: A - x\n\nOption: B - y\n\nRecommended: B - z\n");
+        assert!(spaced.ready(), "{spaced:?}");
+        assert_eq!(spaced.options[0].label, "B");
+        // Answers only inside a fence are no answers at all.
+        let fenced = ask_options("```\nYes: Go - a\nNo: Stop - b\nRecommended: Yes - c\n```\n");
+        assert!(fenced.options.is_empty(), "{fenced:?}");
+        // An unclosed fence hides everything after it.
+        assert!(
+            ask_options("```\nYes: Go\nNo: Stop\nRecommended: Yes - c")
+                .options
+                .is_empty()
+        );
     }
 
     #[test]

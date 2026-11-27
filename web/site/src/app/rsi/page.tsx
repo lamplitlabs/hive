@@ -187,7 +187,7 @@ export default function RsiPage() {
           </li>
           <li>
             Hard stops - money, what cannot be undone, credentials, publication - wait on <strong>Sessions</strong>, where the console opens,
-            and every question marked for you waits on its project&apos;s <strong>For you</strong> tab. A yes-or-no question shows two buttons, an open one an answer box.
+            and every question marked for you waits on its project&apos;s <strong>For you</strong> tab. Every question shows its answers as buttons, one marked recommended: nothing needs typing.
           </li>
         </ul>
         <p>A reply does not authorise going around a stop: a hard stop waits for your decision.</p>

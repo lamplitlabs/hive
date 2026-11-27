@@ -1417,7 +1417,7 @@ mod tests {
         let (h, _script) = fake_handler(
             &ts,
             json!([
-                {"tool": "question", "args": {"question": "Which colour?", "choices": ["red", "blue"]}},
+                {"tool": "question", "args": {"question": "Which colour?", "choices": ["red", "blue"], "recommended": "red"}},
                 {"tool": "write", "args": {"path": "colour.txt", "content": "blue\n"}},
                 {"content": "Saved blue."}
             ]),
@@ -1434,6 +1434,7 @@ mod tests {
         assert_eq!(shown["live"]["pending"]["kind"], "question");
         assert_eq!(shown["live"]["pending"]["question"], "Which colour?");
         assert_eq!(shown["live"]["pending"]["choices"][1], "blue");
+        assert_eq!(shown["live"]["pending"]["recommended"], "red");
         let (code, _, raw) = call(
             &h,
             "POST",

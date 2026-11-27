@@ -38,7 +38,7 @@ the list of keyboard shortcuts (press `?`).
 
 ## Sessions first
 
-![Sessions: the runner and sign-in notices, three decisions only you can make, and the session list](images/console-home.webp)
+![Sessions: the runner and sign-in notices, three decisions only you can make, and the session list](images/console-sessions.webp)
 
 The console opens on **Sessions**. Above the new-session form it shows only
 what needs you now, and nothing when nothing does.
