@@ -5622,7 +5622,18 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             let clone = workdir.join(job.str("id")).join("clone");
             assert!(clone.join("note.txt").exists());
             // A second run kept its clone there later; it is gone as well.
-            crate::test_helpers_daemon::queued_job(s, "job-later", "proj", "task", "owner");
+            // Its job is a task's, so the task hears of the loss (review of
+            // PR 286 item 4: before, only the daemon's line and two events
+            // said it).
+            let task = hive_tasks::new(s, "proj", "Ship the fixtures", "the brief", 30, "human")
+                .unwrap_or_else(|err| panic!("{err}"));
+            crate::test_helpers_daemon::queued_job(
+                s,
+                "job-later",
+                "proj",
+                "task",
+                &format!("task:{}", task.id),
+            );
             crate::util::exec1(
                 &s.conn().unwrap(),
                 "UPDATE jobs SET status = 'failed' WHERE id = 'job-later'",
@@ -5662,6 +5673,28 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             );
             let (_, note) = crate::executor::last_fetch_probe(s, "hands");
             assert!(note.contains("no clone for job"), "{note}");
+            let bodies = hive_tasks::messages(s, "proj", &task.id, "", "")
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|m| m.author == "daemon")
+                .map(|m| m.body)
+                .collect::<Vec<_>>();
+            assert_eq!(bodies.len(), 1, "{bodies:?}\n{lines:?}");
+            assert!(
+                bodies[0].contains("The work of job job-later")
+                    && bodies[0].contains("is lost")
+                    && bodies[0].contains("hands no longer has the clone")
+                    && bodies[0].contains("no clone for job")
+                    && bodies[0].contains("Job job-later is failed"),
+                "{}",
+                bodies[0]
+            );
+            assert!(
+                lines
+                    .iter()
+                    .any(|l| l == &format!("the loss of job-later's work is said on {}", task.id)),
+                "{lines:?}"
+            );
         });
     }
 

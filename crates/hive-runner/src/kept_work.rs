@@ -138,6 +138,13 @@ pub(crate) fn tend_kept_work(
                         "kept clone of {} is gone from {name}; its commits are lost ({note})",
                         k.job
                     ));
+                    // Whoever reads the task learns it too, as when a
+                    // released machine takes a clone with it (review of PR
+                    // 286 item 4); not when an earlier probe fetched it.
+                    let how = format!("{name} no longer has the clone ({e})");
+                    if let Some(line) = crate::compute::say_lost_clone(s, actor, &name, &k, &how) {
+                        lines.push(line);
+                    }
                 }
                 Err(e) => {
                     let note = crate::util::trunc(&format!("{}: {e}", k.job), 300);
@@ -161,7 +168,8 @@ pub(crate) fn tend_kept_work(
 /// that run itself left ([`crate::executor::mark_follows_retry`]) stays:
 /// the fault is unchanged, and lifting it again would strand one more run
 /// there each time a kept job closed (review of PR 283 item 1). A fetch that
-/// works or the owner activating the machine ends it.
+/// works or the owner activating the machine ends it; `hive executor list`
+/// says so ([`crate::executor::fetch_broken_line`]).
 fn lift_mark(s: &hive_store::Store, now: &str, actor: &str, name: &str, lines: &mut Vec<String>) {
     if !crate::executor::fetch_broken(s, name) || crate::executor::mark_follows_retry(s, name) {
         return;
@@ -426,7 +434,7 @@ fn post_fetched(
 #[cfg(test)]
 mod tests {
     use crate::executor::{
-        FETCH_FAILED_EVENT, FETCH_PROBE_EVENT, KEPT_FETCH_MINUTES, KEPT_GONE_EVENT,
+        FETCH_FAILED_EVENT, FETCH_PROBE_EVENT, KEPT_FETCH_MINUTES, KEPT_GONE_EVENT, KeptClone,
     };
     use crate::test_helpers::TEST_NOW;
     use crate::util::{event_at, exec1, plus_minutes};
@@ -549,6 +557,214 @@ mod tests {
         kept_gone(&s, &at(68.0), "job-f");
         let lines = super::tend_kept_work(&s, &cancel, &at(69.0), "daemon");
         assert!(lifted(&lines), "{lines:?}");
+    }
+
+    /// Review of PR 286 item 1: after the daemon lifted a mark, the run it
+    /// let in fetched fine, but nothing was written (the machine was not
+    /// marked any more), so the lift stayed the newest word on the machine.
+    /// Any later mark whose kept job closed then counted as following that
+    /// lift and was never lifted again: the machine took no code run until
+    /// a hand activated it. The good fetch now ends the lift.
+    #[test]
+    fn a_good_fetch_after_a_lift_lets_a_later_mark_be_lifted() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        machine_with_job(&s, "job-a", "done");
+        let cancel = hive_bus::CancellationToken::new();
+        let at = |m: f64| plus_minutes(TEST_NOW, m);
+        fetch_failed(&s, &at(1.0), "job-a");
+        kept_gone(&s, &at(2.0), "job-a");
+        let lines = super::tend_kept_work(&s, &cancel, &at(3.0), "daemon");
+        assert!(lifted(&lines), "{lines:?}");
+        // The run the lift let in commits on m1 and its fetch works.
+        let dir = tempfile::tempdir().unwrap();
+        let clone = dir.path().join("clone");
+        let root = dir.path().join("root");
+        for d in [&clone, &root] {
+            std::fs::create_dir_all(d).unwrap();
+            crate::test_helpers::run(d, &["git", "init", "-q"]);
+        }
+        std::fs::write(clone.join("note.txt"), "hi\n").unwrap();
+        crate::test_helpers::run(&clone, &["git", "add", "note.txt"]);
+        crate::test_helpers::run(
+            &clone,
+            &[
+                "git",
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "-m",
+                "note",
+            ],
+        );
+        let mut row = crate::util::Row::new();
+        row.insert("name", json!("m1"));
+        let ex = crate::exec::LocalExec {
+            row,
+            clone_dir: clone.display().to_string(),
+            ..Default::default()
+        };
+        let log = crate::exec::RunLog::default();
+        let fetched = crate::run::fetch_run_work(
+            &s,
+            &cancel,
+            &ex,
+            "job-b",
+            &root.display().to_string(),
+            "refs/heads/work",
+            &log,
+        )
+        .unwrap();
+        assert_eq!(fetched.exit_code, 0, "{}", log.text());
+        // A later run fails to fetch, and its job closes: nothing is kept,
+        // and this mark follows a fetch that worked, not the lift.
+        add_job(&s, "job-c", "done");
+        fetch_failed(&s, &at(10.0), "job-c");
+        kept_gone(&s, &at(11.0), "job-c");
+        assert!(
+            !crate::executor::mark_follows_retry(&s, "m1"),
+            "the good fetch after the lift was not written down"
+        );
+        let lines = super::tend_kept_work(&s, &cancel, &at(12.0), "daemon");
+        assert!(lifted(&lines), "the mark stays for good: {lines:?}");
+        assert!(!crate::executor::fetch_broken(&s, "m1"));
+    }
+
+    /// Review of PR 286 item 2: a machine whose mark the daemon will not
+    /// lift again, with nothing kept there, says so in `hive executor list`
+    /// and names what lifts it; before, the list said "until a fetch from
+    /// it works", which cannot come while no code run goes there.
+    #[test]
+    fn the_list_says_why_a_mark_is_not_lifted() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        machine_with_job(&s, "job-a", "done");
+        let cancel = hive_bus::CancellationToken::new();
+        let at = |m: f64| plus_minutes(TEST_NOW, m);
+        fetch_failed(&s, &at(1.0), "job-a");
+        kept_gone(&s, &at(2.0), "job-a");
+        let line = crate::executor::fetch_broken_line(&s, "m1");
+        assert!(
+            line.contains("the daemon lifts the mark on its next pass"),
+            "{line}"
+        );
+        let _ = super::tend_kept_work(&s, &cancel, &at(3.0), "daemon");
+        add_job(&s, "job-b", "done");
+        fetch_failed(&s, &at(4.0), "job-b");
+        kept_gone(&s, &at(5.0), "job-b");
+        let _ = super::tend_kept_work(&s, &cancel, &at(6.0), "daemon");
+        let list = crate::commands::executors_text(&s, &at(6.0));
+        assert!(
+            list.contains("stays marked")
+                && list.contains("does not lift it again")
+                && list.contains("only `hive executor activate m1`")
+                && !list.contains("until a fetch from it works"),
+            "{list}"
+        );
+    }
+
+    /// A task in `proj` and a job of it on m1 whose clone is kept there.
+    fn kept_task_job(s: &hive_store::Store, job: &str, status: &str) -> (String, KeptClone) {
+        let task = hive_tasks::new(s, "proj", "Ship the fixtures", "the brief", 30, "human")
+            .unwrap_or_else(|err| panic!("{err}"));
+        crate::test_helpers_daemon::queued_job(
+            s,
+            job,
+            "proj",
+            "task",
+            &format!("task:{}", task.id),
+        );
+        exec1(
+            &*s.conn().unwrap(),
+            "UPDATE jobs SET status = ? WHERE id = ?",
+            &[&status, &job],
+        );
+        fetch_failed(s, TEST_NOW, job);
+        let k = crate::executor::kept_left(s, "m1")
+            .into_iter()
+            .find(|k| k.job == job)
+            .unwrap();
+        (task.id, k)
+    }
+
+    fn said_on(s: &hive_store::Store, task: &str) -> Vec<String> {
+        hive_tasks::messages(s, "proj", task, "", "")
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|m| m.author == "daemon")
+            .map(|m| m.body)
+            .collect()
+    }
+
+    /// Review of PR 286 item 3: the loss read only the job's status. A
+    /// failed job stays failed while its copy lands the task, so a release
+    /// wrote "has to be done again" on a task that is done; and a job back
+    /// in the queue is done again by its next run. A closed task hears
+    /// nothing, and the message names the job's state.
+    #[test]
+    fn the_loss_skips_a_closed_task_and_names_the_jobs_state() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        let _ = crate::test_helpers::new_bare_repo(&s);
+        machine_with_job(&s, "job-x", "done");
+        let (done_task, failed) = kept_task_job(&s, "job-failed", "failed");
+        hive_tasks::set_status(&s, &done_task, "done", "human").unwrap();
+        let (open_task, queued) = kept_task_job(&s, "job-queued", "queued");
+        let (failed_task, still_failed) = kept_task_job(&s, "job-still-failed", "failed");
+        let lines = crate::compute::say_lost_work(
+            &s,
+            "daemon",
+            "m1",
+            &[failed, queued, still_failed],
+            "its hours are up",
+        );
+        assert!(said_on(&s, &done_task).is_empty(), "{lines:?}");
+        let bodies = said_on(&s, &open_task);
+        assert_eq!(bodies.len(), 1, "{bodies:?}");
+        assert!(
+            bodies[0].contains("is lost")
+                && bodies[0].contains("Job job-queued is back in the queue")
+                && !bodies[0].contains("has to be done again"),
+            "{}",
+            bodies[0]
+        );
+        let bodies = said_on(&s, &failed_task);
+        assert_eq!(bodies.len(), 1, "{bodies:?}");
+        assert!(
+            bodies[0].contains("Job job-still-failed is failed")
+                && bodies[0].contains("has to be done again"),
+            "{}",
+            bodies[0]
+        );
+        assert_eq!(lines.len(), 2, "{lines:?}");
+    }
+
+    /// Review of PR 286 item 4: a clone whose commits an earlier fetch
+    /// probe already brought back (it stayed only because removing it
+    /// failed) loses nothing when it goes, and its task hears nothing.
+    #[test]
+    fn the_loss_of_a_clone_fetched_before_is_not_said() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        let _ = crate::test_helpers::new_bare_repo(&s);
+        machine_with_job(&s, "job-x", "done");
+        let (task, k) = kept_task_job(&s, "job-kept", "failed");
+        super::probe_event(
+            &s,
+            &plus_minutes(TEST_NOW, 1.0),
+            "daemon",
+            "m1",
+            true,
+            "job-kept: kept as hive/aurora/job-kept-failed",
+        );
+        let lines = crate::compute::say_lost_work(&s, "daemon", "m1", &[k], "its hours are up");
+        assert!(lines.is_empty(), "{lines:?}");
+        assert!(said_on(&s, &task).is_empty());
     }
 
     /// Records each hands verb the pass sends to a machine and the token it
