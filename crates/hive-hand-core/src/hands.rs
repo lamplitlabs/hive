@@ -778,7 +778,7 @@ impl Hands {
         let mut https_said = String::new();
         if !r.ok()
             && key_file.is_some()
-            && let Some(ssh) = hive_gitenv::forge::ssh_retry_url(&clone, url, &r.stderr)
+            && let Some(ssh) = hive_gitenv::forge::ssh_retry_url(&clone, &env, url, &r.stderr)
         {
             https_said = r.stderr.trim().to_string();
             r = push_to(&ssh);

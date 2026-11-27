@@ -475,6 +475,9 @@ pub(crate) fn write_brief(o: BriefOpts) -> anyhow::Result<String> {
         "     `QUESTION: <question> | <your recommended answer - what it does> | <the alternative - what it does>`; the owner answers with one pick, never by typing, so a question without two answers goes to the lead instead"
     );
     w!(
+        "     When the question touches money, credentials, publication, deletion, the project goal, the constitution or a Tier 2 path, open it with `Hard stop: <money|credentials|publication|deletion|goal|constitution|tier 2> - `: that line keeps it the owner's whatever else it says"
+    );
+    w!(
         "   - `FINDING:` one line for anything the next agent would rediscover (optional, repeatable);"
     );
     w!(

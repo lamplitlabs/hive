@@ -1174,22 +1174,6 @@ fn github_asked(why: &str) -> bool {
     hive_gitenv::forge::credential_asked(&crate::gitapp::endpoint().web, why)
 }
 
-/// Whether git asks `url` as it is given, and not another the checkout's
-/// own config puts in its place (`url.*.insteadOf`): what `git ls-remote
-/// --get-url` answers, which reads the config and calls nobody. A host
-/// the url is sent to can send git on to GitHub, and GitHub's question for
-/// a credential is then git's own answer, whole (`github_asked`), although
-/// the command went elsewhere first.
-fn asks_as_given(root: &str, env: &[String], url: &str) -> bool {
-    let asked = crate::util::git_timeout_env(
-        root,
-        Duration::from_secs(10),
-        env,
-        &["ls-remote", "--get-url", url],
-    );
-    asked.ok() && asked.stdout.trim() == url
-}
-
 /// Runs one git command against the upstream `url`, which is one of
 /// `args`, with `env` as `remote_credential_env` chose it. Git offers a key
 /// only over ssh, so with the daemon's own key (`push.credential`) a push
@@ -1197,7 +1181,7 @@ fn asks_as_given(root: &str, env: &[String], url: &str) -> bool {
 /// the key is: nine deliveries of one project were held that way over
 /// three days. When all git says is that GitHub asked for a credential it
 /// has not got (`github_asked`), the url is GitHub's and git asks it as it
-/// is given (`asks_as_given`), the command is made once more against the
+/// is given (`hive_gitenv::forge::asks_as_given`), the command is made once more against the
 /// url's ssh form (`ssh_url`), where the key counts. A command that
 /// succeeds over https is not touched, and nothing is written to the
 /// checkout's config.
@@ -1225,7 +1209,8 @@ pub(crate) fn git_upstream_said(
     if done.ok() || !has_push_key(env) || !github_asked(&done.stderr) {
         return (done, None);
     }
-    let Some(ssh) = ssh_url(url).filter(|_| asks_as_given(root, env, url)) else {
+    let Some(ssh) = ssh_url(url).filter(|_| hive_gitenv::forge::asks_as_given(root, env, url))
+    else {
         return (done, None);
     };
     let args: Vec<&str> = args

@@ -428,9 +428,10 @@ pub(crate) fn decide_pass(s: &hive_store::Store, slug: &str, now: &str) -> Vec<S
             )),
             Err(e) => {
                 let why = crate::run::err_message(&e);
-                // A refusal because the owner came back or the mode moved
-                // between the check and the write is not the ask's: it is
-                // not recorded, so the role may answer it on a later away.
+                // A refusal because the role was turned off, or the mode
+                // moved, between the check and the write is not the ask's:
+                // it is not recorded, so the role may answer it on a later
+                // pass.
                 if !role_due(s) || s.decide_mode() != "on" {
                     lines.push(format!("decide {slug}: {} not decided: {why}", ask.id));
                     break;

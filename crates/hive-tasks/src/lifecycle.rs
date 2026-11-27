@@ -246,9 +246,15 @@ pub struct LifecycleJob {
     pub kind: String,
     /// `queued`, `leased`, `blocked`, `done`, `failed` or `cancelled`.
     pub status: String,
-    /// The job's branch, or the branch its run left when the column was
-    /// emptied by a landing.
+    /// The job's own branch (`jobs.branch`): what is still to deliver. The
+    /// runner empties it when the branch landed, was merged or closed, or
+    /// when it queued a rebase job in its place, so it alone decides
+    /// whether the job [delivers](LifecycleJob::delivers).
     pub branch: String,
+    /// The branch the job's last run left, read back from the run when the
+    /// job's column was emptied: what Verify left behind, shown and never
+    /// delivered.
+    pub ran_branch: String,
     pub created_at: String,
     pub finished_at: String,
     /// A run of the job is still going: for a `done` job, the runner's end
@@ -263,9 +269,19 @@ impl LifecycleJob {
         matches!(self.status.as_str(), "queued" | "leased" | "blocked")
             || (self.status == "done" && self.running)
     }
-    /// Finished with a branch to deliver.
+    /// Finished with a branch to deliver: `jobs.branch` alone, never the
+    /// run's, so a step whose branch the runner handed to a rebase job (and
+    /// that rebase failed) does not hold the task in Review.
     fn delivers(&self) -> bool {
         self.status == "done" && !self.running && !self.branch.is_empty()
+    }
+    /// The branch Verify left behind: the job's own, else its run's.
+    fn left_branch(&self) -> &str {
+        if self.branch.is_empty() {
+            &self.ran_branch
+        } else {
+            &self.branch
+        }
     }
 }
 
@@ -281,6 +297,9 @@ struct TaskPr {
     note: String,
     follow_up: String,
     opened_at: String,
+    /// When the pull request was merged (`land.merged` or
+    /// `review.merged`), empty while it is not.
+    merged_at: String,
     at: String,
     /// A review asked for changes at some point.
     changes_asked: bool,
@@ -302,9 +321,13 @@ fn task_pr(task_id: &str, events: &[LandEvent]) -> Option<TaskPr> {
         note: field(&newest.detail, "note"),
         follow_up: String::new(),
         opened_at: String::new(),
+        merged_at: String::new(),
         at: newest.at.clone(),
         changes_asked: false,
     };
+    if newest.action == "land.merged" {
+        pr.merged_at = newest.at.clone();
+    }
     if pr.number == 0 {
         // A hold names no number; the number of the task's last opened
         // pull request still links the page.
@@ -328,6 +351,12 @@ fn task_pr(task_id: &str, events: &[LandEvent]) -> Option<TaskPr> {
             .collect();
         of_pr.sort_by_key(|e| e.seq);
         pr.changes_asked = of_pr.iter().any(|e| e.action == "review.changes");
+        if let Some(m) = of_pr
+            .iter()
+            .find(|e| e.action == "land.merged" || e.action == "review.merged")
+        {
+            pr.merged_at = m.at.clone();
+        }
         let st = pr_state_of(&of_pr);
         pr.opened_at = st.opened_at;
         if pr.last == "land.pr" {
@@ -382,11 +411,21 @@ pub fn derive_lifecycle(
         .copied()
         .filter(|j| j.status == "failed")
         .collect();
-    let pr_open_at_first = pr.as_ref().map(|p| p.opened_at.clone()).unwrap_or_default();
-    let rework = pr.as_ref().is_some_and(|p| p.changes_asked)
-        || (!pr_open_at_first.is_empty() && jobs.iter().any(|j| j.created_at > pr_open_at_first));
+    // Work went round again: a review asked for changes, or a step was
+    // queued while the pull request was open - after it opened and before
+    // it merged. A follow-up filed after the merge is new work, not rework.
+    let rework = pr.as_ref().is_some_and(|p| {
+        p.changes_asked
+            || (!p.opened_at.is_empty()
+                && jobs.iter().any(|j| {
+                    j.created_at > p.opened_at
+                        && (p.merged_at.is_empty() || j.created_at < p.merged_at)
+                }))
+    });
 
-    // The phase whose gate is next, with who it waits on and why.
+    // The phase whose gate is next, with who it waits on and why. A
+    // cancelled task is Cancelled whatever an earlier pull request did, as
+    // the board says: the derived phase is only where it stopped.
     let (mut phase, mut waits_on, mut note) = if let Some(p) = pr
         .as_ref()
         .filter(|p| p.last == "land.merged" || p.state == "merged")
@@ -449,7 +488,7 @@ pub fn derive_lifecycle(
                 WaitsOn::Runner,
                 format!("pull request #{n}: the owner asked for the merge; the runner merges it"),
             ),
-            "needs_owner" | "review_failed" => (
+            s if owner_turn("", s) => (
                 Phase::Review,
                 WaitsOn::Owner,
                 format!("pull request #{n} waits for the owner"),
@@ -485,10 +524,14 @@ pub fn derive_lifecycle(
             ),
         )
     } else if delivering {
+        // A held pull request is the runner's: it tries a hold for a forge
+        // fault again on its own, and one about the work stands until the
+        // work changes. Either way the owner is not asked - see
+        // [`owner_turn`].
         match pr.as_ref().filter(|p| p.last == "land.pr-held") {
             Some(p) => (
                 Phase::Review,
-                WaitsOn::Owner,
+                WaitsOn::Runner,
                 if p.note.is_empty() {
                     "the pull request could not be opened".to_string()
                 } else {
@@ -528,12 +571,12 @@ pub fn derive_lifecycle(
     };
     // A task in `review` status is the lead's question to the owner: the
     // task waits on the owner whatever its jobs do.
-    if task.status == "review" && phase != Phase::Done {
+    if owner_turn(&task.status, "") && phase != Phase::Done {
         waits_on = WaitsOn::Owner;
         note = "the lead asked the owner".to_string();
     }
     let mut stopped_in = None;
-    if task.status == "cancelled" && phase != Phase::Done {
+    if task.status == "cancelled" {
         stopped_in = Some(phase);
         phase = Phase::Cancelled;
         waits_on = WaitsOn::Nobody;
@@ -581,7 +624,15 @@ pub fn derive_lifecycle(
                 .collect(),
         ),
     );
-    let verified: Vec<&LifecycleJob> = jobs.iter().copied().filter(|j| j.delivers()).collect();
+    // What Verify left: every finished step's branch, its own or the one
+    // its run left when the runner emptied the column after delivering.
+    let verified: Vec<&LifecycleJob> = jobs
+        .iter()
+        .copied()
+        .filter(|j| {
+            j.kind != "lead" && j.status == "done" && !j.running && !j.left_branch().is_empty()
+        })
+        .collect();
     left.insert(
         Phase::Verify,
         (
@@ -594,7 +645,7 @@ pub fn derive_lifecycle(
             verified
                 .iter()
                 .map(|j| {
-                    Mark::new("branch", &j.branch)
+                    Mark::new("branch", j.left_branch())
                         .note(&j.id)
                         .at(&j.finished_at)
                 })
@@ -645,7 +696,12 @@ pub fn derive_lifecycle(
     }
 
     let reached = match phase {
-        Phase::Cancelled => stopped_in.and_then(Phase::path_index).unwrap_or(0),
+        Phase::Cancelled => match stopped_in {
+            // Cancelled after an earlier pull request merged: every phase
+            // of the path had passed.
+            Some(Phase::Done) => Phase::TASK_PATH.len(),
+            s => s.and_then(Phase::path_index).unwrap_or(0),
+        },
         Phase::Done => Phase::TASK_PATH.len(),
         p => p.path_index().unwrap_or(0),
     };
@@ -692,6 +748,16 @@ pub fn derive_lifecycle(
     }
 }
 
+/// The one rule for "waits on you", the same as the Sessions list's
+/// (`web/hub/src/components/chat/task-groups.ts`, `needs_you` and
+/// `PR_NEEDS_OWNER`): the task is in `review` status (the lead asked the
+/// owner), or its pull request's review state is `needs_owner` or
+/// `review_failed`. A held pull request (`land.pr-held`) is not the
+/// owner's turn: the runner tries it again or the work changes.
+pub fn owner_turn(task_status: &str, pr_state: &str) -> bool {
+    task_status == "review" || matches!(pr_state, "needs_owner" | "review_failed")
+}
+
 fn ids<'a>(it: impl Iterator<Item = &'a str>) -> String {
     it.collect::<Vec<_>>().join(", ")
 }
@@ -705,115 +771,240 @@ pub fn by_phase(lifecycles: &[TaskLifecycle]) -> BTreeMap<Phase, Vec<String>> {
     out
 }
 
-/// The rows [`derive_lifecycle`] reads, for one task.
-fn rows(
-    conn: &rusqlite::Connection,
-    task: &crate::Task,
-) -> Result<(Vec<LifecycleJob>, Vec<LandEvent>)> {
-    let (exact, like) = hive_store::task_source_params(&task.id);
-    let mut stmt = conn.prepare(&format!(
-        "SELECT j.id, j.kind, j.status, \
-                COALESCE(NULLIF(j.branch, ''), (SELECT r.branch FROM runs r WHERE r.job_id = j.id AND r.branch != '' ORDER BY r.started_at DESC LIMIT 1), ''), \
-                j.created_at, j.finished_at, \
-                EXISTS (SELECT 1 FROM runs r WHERE r.job_id = j.id AND r.status = 'running'), \
-                j.result \
-         FROM jobs j WHERE j.project = ? AND ({} OR (? != '' AND j.id = ?)) ORDER BY j.created_at, j.id",
-        hive_store::task_source_clause("j.source")
-    ))?;
-    let jobs = stmt
-        .query_map(
-            rusqlite::params![task.project, exact, like, task.job_id, task.job_id],
-            |r| {
-                Ok(LifecycleJob {
-                    id: r.get(0)?,
-                    kind: r.get(1)?,
-                    status: r.get(2)?,
-                    branch: r.get(3)?,
-                    created_at: r.get(4)?,
-                    finished_at: r.get(5)?,
-                    running: r.get::<_, i64>(6)? != 0,
-                    result: r.get(7)?,
+/// The rows [`derive_lifecycle`] reads, for one project's tasks at once
+/// (or one task of it): a fixed number of statements however many tasks
+/// the project holds, grouped per task here in Rust. The project route is
+/// polled and refetched on every job, run, task and land event, and the
+/// brain's store holds about 18,000 jobs and 1.6 million events, so the
+/// read never runs a statement per task.
+struct ProjectRows {
+    /// The jobs of each task: those whose source names it and its own
+    /// `job_id` (the lead's).
+    jobs: BTreeMap<String, Vec<LifecycleJob>>,
+    /// Each task's `task.lead` events.
+    leads: BTreeMap<String, Vec<LandEvent>>,
+    /// The project's pull-request events (`land.pr`, `land.merged`,
+    /// `land.pr-closed`, `land.pr-held` and the `review.*` of
+    /// [`PR_ACTIONS`]), oldest first, each with its `task` and `number`.
+    prs: Vec<(String, String, LandEvent)>,
+}
+
+impl ProjectRows {
+    /// Reads the rows of `tasks`, all of one `project`. `one` names a
+    /// single task to narrow the job and lead reads to it, empty for the
+    /// whole project. Four statements whatever the number of tasks.
+    fn read(
+        conn: &rusqlite::Connection,
+        project: &str,
+        one: &str,
+        tasks: &[crate::Task],
+    ) -> Result<Self> {
+        // The sources that name a task: `task:<id>` and `task:<id>:<label>`
+        // as one exact value and one range the source index serves (a
+        // LIKE with ESCAPE cannot use it); for the whole project every
+        // `task:` source.
+        let (exact, from, to) = if one.is_empty() {
+            (
+                hive_store::TASK_SOURCE_PREFIX.to_string(),
+                hive_store::TASK_SOURCE_PREFIX.to_string(),
+                "task;".to_string(),
+            )
+        } else {
+            let exact = format!("{}{one}", hive_store::TASK_SOURCE_PREFIX);
+            (exact.clone(), format!("{exact}:"), format!("{exact};"))
+        };
+        let ids = "SELECT id FROM jobs WHERE project = ?1 AND (source = ?2 OR (source >= ?3 AND source < ?4)) \
+                   UNION SELECT job_id FROM tasks WHERE project = ?1 AND job_id != '' AND (?5 = '' OR id = ?5)";
+        let mut jobs: Vec<(String, LifecycleJob)> = conn
+            .prepare(&format!(
+                "SELECT j.id, j.kind, j.status, j.branch, j.created_at, j.finished_at, j.result, j.source \
+                 FROM jobs j WHERE j.project = ?1 AND j.id IN ({ids}) ORDER BY j.created_at, j.id"
+            ))?
+            .query_map(rusqlite::params![project, exact, from, to, one], |r| {
+                Ok((
+                    r.get::<_, String>(7)?,
+                    LifecycleJob {
+                        id: r.get(0)?,
+                        kind: r.get(1)?,
+                        status: r.get(2)?,
+                        branch: r.get(3)?,
+                        created_at: r.get(4)?,
+                        finished_at: r.get(5)?,
+                        result: r.get(6)?,
+                        ..LifecycleJob::default()
+                    },
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        // Their runs, oldest first: whether one is still going, and the
+        // branch the newest left (read back when a landing emptied the
+        // job's column).
+        let mut runs: BTreeMap<String, (bool, String)> = BTreeMap::new();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT r.job_id, r.status, r.branch FROM runs r WHERE r.job_id IN ({ids}) ORDER BY r.started_at"
+        ))?;
+        let mut rows = stmt.query(rusqlite::params![project, exact, from, to, one])?;
+        while let Some(r) = rows.next()? {
+            let job: String = r.get(0)?;
+            let status: String = r.get(1)?;
+            let branch: String = r.get(2)?;
+            let e = runs.entry(job).or_default();
+            e.0 |= status == "running";
+            if !branch.is_empty() {
+                e.1 = branch;
+            }
+        }
+        for (_, j) in &mut jobs {
+            if let Some((running, branch)) = runs.get(&j.id) {
+                j.running = *running;
+                j.ran_branch = branch.clone();
+            }
+        }
+        let mut by_task: BTreeMap<String, Vec<LifecycleJob>> = BTreeMap::new();
+        for t in tasks {
+            let mine: Vec<LifecycleJob> = jobs
+                .iter()
+                .filter(|(source, j)| {
+                    hive_store::task_source_id(source) == Some(t.id.as_str())
+                        || (!t.job_id.is_empty() && j.id == t.job_id)
                 })
-            },
-        )?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let scan = |r: &rusqlite::Row<'_>| {
-        Ok(LandEvent {
-            seq: r.get(0)?,
-            at: r.get(1)?,
-            actor: r.get(2)?,
-            action: r.get(3)?,
-            detail: r.get(4)?,
-        })
-    };
-    let mut events = conn
-        .prepare(
-            "SELECT seq, at, actor, action, detail FROM events \
-             WHERE subject = ? AND action LIKE 'task.%' ORDER BY seq",
-        )?
-        .query_map([&task.id], scan)?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let task_prs = conn
-        .prepare(
-            "SELECT seq, at, actor, action, detail FROM events WHERE subject = ? \
-             AND action IN ('land.pr', 'land.merged', 'land.pr-closed', 'land.pr-held') \
-             AND json_valid(detail) AND json_extract(detail, '$.task') = ? ORDER BY seq",
-        )?
-        .query_map(rusqlite::params![task.project, task.id], scan)?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut numbers: Vec<String> = task_prs
-        .iter()
-        .map(|e| field(&e.detail, "number"))
-        .filter(|n| !n.is_empty() && n != "0")
-        .collect();
-    numbers.dedup();
-    if let Some(number) = numbers.last() {
-        let marks = vec!["?"; PR_ACTIONS.len()].join(",");
+                .map(|(_, j)| j.clone())
+                .collect();
+            by_task.insert(t.id.clone(), mine);
+        }
+        jobs.clear();
+
+        let scan = |r: &rusqlite::Row<'_>| {
+            Ok(LandEvent {
+                seq: r.get(0)?,
+                at: r.get(1)?,
+                actor: r.get(2)?,
+                action: r.get(3)?,
+                detail: r.get(4)?,
+            })
+        };
+        let mut leads: BTreeMap<String, Vec<LandEvent>> = BTreeMap::new();
+        let mut stmt = conn.prepare(
+            "SELECT seq, at, actor, action, detail, subject FROM events \
+             WHERE action = 'task.lead' AND subject IN (SELECT id FROM tasks WHERE project = ?1 AND (?2 = '' OR id = ?2)) \
+             ORDER BY seq",
+        )?;
+        let mut rows = stmt.query(rusqlite::params![project, one])?;
+        while let Some(r) = rows.next()? {
+            let subject: String = r.get(5)?;
+            leads.entry(subject).or_default().push(scan(r)?);
+        }
+
+        let actions: Vec<&str> = PR_ACTIONS.iter().copied().chain(["land.pr-held"]).collect();
+        let marks = vec!["?"; actions.len()].join(",");
         let mut params: Vec<rusqlite::types::Value> =
-            vec![rusqlite::types::Value::Text(task.project.clone())];
+            vec![rusqlite::types::Value::Text(project.to_string())];
         params.extend(
-            PR_ACTIONS
+            actions
                 .iter()
                 .map(|a| rusqlite::types::Value::Text((*a).to_string())),
         );
-        params.push(rusqlite::types::Value::Integer(number.parse().unwrap_or(0)));
-        let of_pr = conn
+        let prs = conn
             .prepare(&format!(
-                "SELECT seq, at, actor, action, detail FROM events WHERE subject = ? AND action IN ({marks}) \
-                 AND json_valid(detail) AND json_extract(detail, '$.number') = ? ORDER BY seq"
+                "SELECT seq, at, actor, action, detail FROM events WHERE subject = ? AND action IN ({marks}) ORDER BY seq"
             ))?
             .query_map(rusqlite::params_from_iter(params), scan)?
+            .map(|e| {
+                e.map(|e| {
+                    let v: serde_json::Value =
+                        serde_json::from_str(&e.detail).unwrap_or_default();
+                    let text = |k: &str| match v.get(k) {
+                        Some(serde_json::Value::String(s)) => s.clone(),
+                        Some(serde_json::Value::Number(n)) => n.to_string(),
+                        _ => String::new(),
+                    };
+                    (text("task"), text("number"), e)
+                })
+            })
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        events.extend(of_pr);
+        Ok(Self {
+            jobs: by_task,
+            leads,
+            prs,
+        })
     }
-    for e in task_prs {
-        if !events.iter().any(|x| x.seq == e.seq) {
-            events.push(e);
+
+    /// One task's rows, as [`derive_lifecycle`] takes them: its jobs, its
+    /// `task.lead` events, the land events naming it, and every event of
+    /// its last numbered pull request.
+    fn of(&self, task: &str) -> (Vec<LifecycleJob>, Vec<LandEvent>) {
+        let jobs = self.jobs.get(task).cloned().unwrap_or_default();
+        let mut events = self.leads.get(task).cloned().unwrap_or_default();
+        let named: Vec<&(String, String, LandEvent)> = self
+            .prs
+            .iter()
+            .filter(|(t, _, e)| t == task && e.action.starts_with("land."))
+            .collect();
+        let last = named
+            .iter()
+            .rev()
+            .map(|(_, n, _)| n.as_str())
+            .find(|n| !n.is_empty() && *n != "0");
+        for (_, n, e) in &self.prs {
+            let of_pr = last.is_some_and(|l| l == n) && PR_ACTIONS.contains(&e.action.as_str());
+            if of_pr || named.iter().any(|(_, _, x)| x.seq == e.seq) {
+                events.push(e.clone());
+            }
         }
+        events.sort_by_key(|e| e.seq);
+        (jobs, events)
     }
-    events.sort_by_key(|e| e.seq);
-    Ok((jobs, events))
 }
 
 /// Where one task stands in the lifecycle, read from the store.
 pub fn lifecycle_for(s: &hive_store::Store, task_id: &str) -> Result<TaskLifecycle> {
     let (task, _) = crate::get(s, task_id)?;
     let conn = s.conn()?;
-    let (jobs, events) = rows(&conn, &task)?;
+    let rows = ProjectRows::read(&conn, &task.project, &task.id, std::slice::from_ref(&task))?;
+    let (jobs, events) = rows.of(&task.id);
     Ok(derive_lifecycle(&task, &jobs, &events))
 }
 
 /// Where every task of a project stands, newest task first; group them
-/// with [`by_phase`].
+/// with [`by_phase`]. A task that is done or cancelled is placed by its
+/// status alone (Done, Cancelled), without its rows: the board's word is
+/// final there and the project view is about the open work.
 pub fn lifecycles_for(s: &hive_store::Store, project: &str) -> Result<Vec<TaskLifecycle>> {
-    let tasks = crate::list(s, project, "")?;
     let conn = s.conn()?;
-    let mut out = Vec::with_capacity(tasks.len());
-    for task in &tasks {
-        let (jobs, events) = rows(&conn, task)?;
-        out.push(derive_lifecycle(task, &jobs, &events));
-    }
-    Ok(out)
+    project_lifecycles(&conn, project)
+}
+
+/// [`lifecycles_for`] on one connection: five statements whatever the
+/// number of tasks (the tasks, then [`ProjectRows::read`]).
+pub(crate) fn project_lifecycles(
+    conn: &rusqlite::Connection,
+    project: &str,
+) -> Result<Vec<TaskLifecycle>> {
+    let tasks = conn
+        .prepare(&format!(
+            "SELECT {} {} WHERE t.project = ? ORDER BY t.id DESC",
+            crate::tasks::TASK_COLS,
+            crate::tasks::TASK_FROM
+        ))?
+        .query_map([project], crate::tasks::scan_task)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let open: Vec<crate::Task> = tasks
+        .iter()
+        .filter(|t| !crate::tasks::terminal(&t.status))
+        .cloned()
+        .collect();
+    let rows = ProjectRows::read(conn, project, "", &open)?;
+    Ok(tasks
+        .iter()
+        .map(|t| {
+            if crate::tasks::terminal(&t.status) {
+                derive_lifecycle(t, &[], &[])
+            } else {
+                let (jobs, events) = rows.of(&t.id);
+                derive_lifecycle(t, &jobs, &events)
+            }
+        })
+        .collect())
 }
 
 #[cfg(test)]
@@ -984,7 +1175,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pull_request_that_could_not_be_opened_waits_on_the_owner() {
+    fn a_pull_request_that_could_not_be_opened_waits_on_the_runner() {
         let l = derive_lifecycle(
             &task("in_progress"),
             &[with_branch(job("J1", "done"))],
@@ -994,7 +1185,9 @@ mod tests {
                 r#"{"task": "TASK-007", "note": "does not merge cleanly"}"#,
             )],
         );
-        assert_eq!((l.phase, l.waits_on), (Phase::Review, WaitsOn::Owner));
+        // One rule for "waits on you" (owner_turn), the Sessions list's: a
+        // hold is the runner's to try again, not the owner's turn.
+        assert_eq!((l.phase, l.waits_on), (Phase::Review, WaitsOn::Runner));
         assert!(l.note.contains("does not merge cleanly"), "{}", l.note);
         assert!(
             step(&l, Phase::Review)
@@ -1213,6 +1406,78 @@ mod tests {
             ],
         );
         assert_eq!(l.phase, Phase::Review);
+    }
+
+    #[test]
+    fn owner_turn_is_the_sessions_rule() {
+        assert!(owner_turn("review", ""));
+        assert!(owner_turn("in_progress", "needs_owner"));
+        assert!(owner_turn("in_progress", "review_failed"));
+        for s in [
+            "held",
+            "pr_open",
+            "in_review",
+            "merge_waiting",
+            "merge_asked",
+            "changes_requested",
+            "",
+        ] {
+            assert!(!owner_turn("in_progress", s), "{s}");
+        }
+    }
+
+    #[test]
+    fn a_step_whose_branch_went_to_a_failed_rebase_is_not_in_review() {
+        // The runner emptied J1's branch when it queued the rebase J2; the
+        // run still names the branch it left. J2 failed: nothing is left
+        // to open, so the lead plans the next step.
+        let mut j1 = job("J1", "done");
+        j1.ran_branch = "hive/w/J1".into();
+        let l = derive_lifecycle(
+            &task("in_progress"),
+            &[j1, job("J2", "failed")],
+            &[lead_event(1)],
+        );
+        assert_eq!(
+            (l.phase, l.waits_on),
+            (Phase::Shape, WaitsOn::Lead),
+            "{l:?}"
+        );
+        // Verify still shows the branch the run left.
+        assert_eq!(step(&l, Phase::Verify).left[0].id, "hive/w/J1");
+    }
+
+    #[test]
+    fn a_cancelled_task_is_cancelled_even_after_a_merged_pull_request() {
+        let l = derive_lifecycle(
+            &task("cancelled"),
+            &[job("J1", "done")],
+            &[ev(2, "land.pr", OPENED), ev(3, "land.merged", OPENED)],
+        );
+        assert_eq!((l.phase, l.waits_on), (Phase::Cancelled, WaitsOn::Nobody));
+        assert!(
+            l.steps.iter().all(|s| s.state == StepState::Passed),
+            "{l:?}"
+        );
+    }
+
+    #[test]
+    fn a_follow_up_after_the_merge_is_not_rework() {
+        let mut after = job("J2", "queued");
+        after.created_at = "2026-11-26T13:00:00Z".into();
+        let l = derive_lifecycle(
+            &task("in_progress"),
+            &[job("J1", "done"), after.clone()],
+            &[ev(2, "land.pr", OPENED), ev(3, "land.merged", OPENED)],
+        );
+        assert!(!l.rework, "{l:?}");
+        // The same job while the pull request is open is rework.
+        let l = derive_lifecycle(
+            &task("in_progress"),
+            &[job("J1", "done"), after],
+            &[ev(2, "land.pr", OPENED)],
+        );
+        assert!(l.rework, "{l:?}");
     }
 
     #[test]

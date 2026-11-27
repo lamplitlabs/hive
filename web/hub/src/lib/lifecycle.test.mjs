@@ -120,3 +120,19 @@ test("phaseColumns without a hub answer places nothing", () => {
   const withCancelled = phaseColumns({ ...project, phases: undefined, tasks: [{ task: "TASK-1", phase: "cancelled", waits_on: "nobody", note: "cancelled", rework: false }] }, tasks);
   assert.ok(withCancelled.some((c) => c.phase === "cancelled" && c.tasks.length === 1));
 });
+
+test("phaseColumns puts the owner's waits first in each column", () => {
+  const p = {
+    project: "demo",
+    phases: [{ phase: "review", label: "Review", gate: "", tasks: ["T3", "T2", "T1"] }],
+    tasks: [
+      { task: "T3", phase: "review", waits_on: "runner", note: "", rework: false },
+      { task: "T2", phase: "review", waits_on: "reviewer", note: "", rework: false },
+      { task: "T1", phase: "review", waits_on: "owner", note: "", rework: false },
+    ],
+  };
+  const ts = ["T1", "T2", "T3"].map((id) => ({ id, title: id }));
+  const review = phaseColumns(p, ts).find((c) => c.phase === "review");
+  assert.deepEqual(review.tasks.map((t) => t.task.id), ["T1", "T2", "T3"]);
+  assert.equal(review.tasks[0].waits, "waits on you");
+});

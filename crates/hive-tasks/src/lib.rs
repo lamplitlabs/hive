@@ -22,7 +22,7 @@ pub use compute::*;
 pub use delivery::*;
 pub use lifecycle::{
     LifecycleJob, Phase, PhaseStep, StepState, TaskLifecycle, WaitsOn, by_phase, derive_lifecycle,
-    lifecycle_for, lifecycles_for,
+    lifecycle_for, lifecycles_for, owner_turn,
 };
 pub use messages::*;
 pub use owner_wait::*;

@@ -1916,6 +1916,49 @@ hive-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOCK
         );
     }
 
+    /// A machine the sweep releases as a leftover keeps the time it was made: the hours it ran
+    /// count against the day's cap. Its release had returned Ok while the provider still had
+    /// it (Azure's release is Ok when `az vm show` fails); re-saving its row at the sweep
+    /// stamped it made then, and the four hours it ran counted none.
+    #[test]
+    fn a_rental_released_by_the_sweep_still_counts_its_hours() {
+        let _serial = crate::test_helpers::serial();
+        let _lock = provider_test_lock();
+        let s = new_store();
+        let h = compute_harness(&s, AZURE_SETTINGS);
+        let az = new_fake_az();
+        let _fake = install_fake(crate::azure::set_run_az, {
+            let az = az.clone();
+            Box::new(move |ctx, args, timeout| az.run(ctx, args, timeout))
+        });
+        az.leak("hive-cr-001", "CR-001", "proj");
+        let req = approved_request(&s);
+        let made = "2026-09-06T06:00:00Z";
+        crate::compute::save_machine(
+            &s,
+            &req.id,
+            &Machine {
+                provider: "azure".into(),
+                name: "hive-cr-001".into(),
+                executor: "hands-cr-001".into(),
+                detail: BTreeMap::from([("resource_group".to_string(), "hive-hands".to_string())]),
+                ..Default::default()
+            },
+            made,
+        );
+        // released by the worker an hour ago, past the sweep's wait for the provider's list
+        crate::compute::machine_released(&s, &req.id, "2026-09-06T09:00:00Z");
+        hive_tasks::set_compute_status(&s, &req.id, "released", "", TEST_DAEMON)
+            .unwrap_or_else(|err| panic!("{err}"));
+        let log = once(&s, &h);
+        assert_eq!(az.deleted(), vec!["hive-cr-001"], "{log}");
+        let row = crate::compute::load_machine(&s, &req.id).1;
+        assert_eq!(row.str("created_at"), made, "{log}");
+        assert_eq!(row.str("released_at"), TEST_NOW, "{log}");
+        let caps = hive_tasks::get_caps(&s).unwrap_or_else(|err| panic!("{err}"));
+        assert_eq!(caps.hours_today, 4, "{log}");
+    }
+
     /// The sweep never calls the provider on a hub that has not bought a machine, releases only
     /// machines tagged with a request of this store that is over, and leaves the rest alone.
     #[test]

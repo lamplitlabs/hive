@@ -632,7 +632,9 @@ pub fn probe_remote(root: &str, remote: &str, ssh_command: &str) -> AnyResult<()
     let Err(https_said) = first else {
         return Ok(());
     };
-    let Some(ssh) = hive_gitenv::forge::ssh_retry_url(root, &push_url(root, remote), &https_said)
+    let env = [format!("GIT_SSH_COMMAND={ssh_command}")];
+    let Some(ssh) =
+        hive_gitenv::forge::ssh_retry_url(root, &env, &push_url(root, remote), &https_said)
     else {
         return Err(anyhow!(https_said));
     };

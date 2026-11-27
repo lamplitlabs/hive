@@ -27,12 +27,16 @@ import { cn } from "@/lib/utils";
 
 const enc = encodeURIComponent;
 
-export function useTaskLifecycle(id: string, refresh = 10000) {
-  return useApi<TaskLifecycle>(id ? "tasks/" + enc(id) + "/lifecycle" : null, { refresh });
+// Both poll no faster than the Sessions page reads its tasks (use-api's
+// default, 30 s): the live events already refetch them within seconds of a
+// job, run, task or land event (refresh.ts), and the poll is only the net
+// under those.
+export function useTaskLifecycle(id: string) {
+  return useApi<TaskLifecycle>(id ? "tasks/" + enc(id) + "/lifecycle" : null);
 }
 
 export function useProjectLifecycle(project: string | null) {
-  return useApi<ProjectLifecycle>(project ? "tasks/lifecycle?project=" + enc(project) : null, { refresh: 15000 });
+  return useApi<ProjectLifecycle>(project ? "tasks/lifecycle?project=" + enc(project) : null);
 }
 
 // The task header's phase chip: "Build · an agent is at work".
