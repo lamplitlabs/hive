@@ -584,6 +584,29 @@ pub(crate) fn fetch_broken(s: &hive_store::Store, name: &str) -> bool {
     last.str("action") == FETCH_FAILED_EVENT
 }
 
+/// Whether the fetch mark on `name` came after the daemon already lifted one
+/// ([`FETCH_RETRY_EVENT`]) with no fetch working, no activation and no
+/// re-pairing in between: the run the lift let in failed to fetch the same
+/// way, so the fault is the machine's and lifting again would only strand
+/// one more run there (TASK-138, review of PR 283 item 1). Such a mark stays
+/// until a fetch from the machine works or the owner activates it.
+pub(crate) fn mark_follows_retry(s: &hive_store::Store, name: &str) -> bool {
+    if !fetch_broken(s, name) {
+        return false;
+    }
+    let Ok(conn) = s.conn() else {
+        return false;
+    };
+    // fetch_broken: the last of these events is a fetch-failed; the last
+    // event that ended an earlier mark says how that one ended.
+    let last = must_one(
+        &conn,
+        "SELECT action FROM events WHERE subject = ? AND action IN (?, ?, 'executor.active', 'executor.update') ORDER BY seq DESC LIMIT 1",
+        &[&name, &FETCH_OK_EVENT, &FETCH_RETRY_EVENT],
+    );
+    last.str("action") == FETCH_RETRY_EVENT
+}
+
 /// Writes down that a fetch from `name` worked, when it was marked broken.
 pub(crate) fn note_fetch_ok(s: &hive_store::Store, name: &str, now: &str, job: &str) {
     if !fetch_broken(s, name) {

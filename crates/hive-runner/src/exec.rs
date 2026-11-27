@@ -90,14 +90,19 @@ pub(crate) trait Executor {
         agent: &str,
         base: &str,
     ) -> Result<()>;
-    fn fetch_source(&self) -> String;
+    /// Where git fetches the run's commits from. `cancel` ends whatever
+    /// the machine is asked for to make it (a dial hand's bundle).
+    fn fetch_source(&self, cancel: &hive_bus::CancellationToken) -> String;
     fn fetch_env(&self) -> Vec<String>;
     /// A second way to the run's commits when the fetch from
     /// [`fetch_source`](Self::fetch_source) failed: a git bundle file the
     /// machine made with its `bundle` verb, or empty when there is none. An
     /// ssh machine has it: a hand whose `git-upload-pack` does not answer
     /// (every hand before TASK-133) still sends its commits this way.
-    fn fetch_fallback(&self) -> String {
+    /// `cancel` ends the machine's bundle call, like the fetch it stands in
+    /// for (review of PR 283 item 3: the daemon's pass could not stop it).
+    fn fetch_fallback(&self, cancel: &hive_bus::CancellationToken) -> String {
+        let _ = cancel;
         String::new()
     }
     /// How a person gets the run's commits from the machine by hand, for a
@@ -561,7 +566,7 @@ impl Executor for LocalExec {
             ),
         )
     }
-    fn fetch_source(&self) -> String {
+    fn fetch_source(&self, _cancel: &hive_bus::CancellationToken) -> String {
         self.clone_dir.clone()
     }
     fn fetch_env(&self) -> Vec<String> {
@@ -637,12 +642,14 @@ impl SshExec {
     }
     /// Asks a dial hand for the clone's commits past the base (`bundle`
     /// verb) and writes them to `<bundle>.result`, the path git fetches.
-    /// A failure is logged and leaves no file, so the fetch says so.
-    fn dial_result_bundle(&self) -> String {
+    /// A failure is logged and leaves no file, so the fetch says so;
+    /// `cancel` ends the call.
+    fn dial_result_bundle(&self, cancel: &hive_bus::CancellationToken) -> String {
         use base64::Engine;
         let path = format!("{}.result", self.bundle);
         let _ = std::fs::remove_file(&path);
-        match self.call(
+        match self.call_until(
+            cancel,
             &["bundle".into(), self.local.job.str("id"), self.base.clone()],
             &[],
             Duration::from_secs(600),
@@ -1113,7 +1120,7 @@ impl Executor for SshExec {
         }
         Ok(out.trim().to_string())
     }
-    fn fetch_source(&self) -> String {
+    fn fetch_source(&self, cancel: &hive_bus::CancellationToken) -> String {
         // A local hive-hand's clone is on this machine: git reads it as a
         // path, no sshd in between.
         if self.pushes() {
@@ -1122,7 +1129,7 @@ impl Executor for SshExec {
         // A hand that dials in has no sshd to fetch from: its commits come
         // back as a bundle past the base, which git fetches as a file.
         if self.local.row.str("kind") == crate::dial::DIAL_KIND {
-            return self.dial_result_bundle();
+            return self.dial_result_bundle(cancel);
         }
         match crate::executor::parse_ssh_address(&self.local.row.str("address")) {
             Ok((user, host, port)) => {
@@ -1147,7 +1154,7 @@ impl Executor for SshExec {
             )]),
         )
     }
-    fn fetch_fallback(&self) -> String {
+    fn fetch_fallback(&self, cancel: &hive_bus::CancellationToken) -> String {
         // A local hand's clone is a path and a dial hand's answer already is
         // the bundle: neither has a second way.
         if self.pushes()
@@ -1156,7 +1163,7 @@ impl Executor for SshExec {
         {
             return String::new();
         }
-        let path = self.dial_result_bundle();
+        let path = self.dial_result_bundle(cancel);
         if std::fs::metadata(&path).is_ok_and(|m| m.len() > 0) {
             path
         } else {
@@ -1172,7 +1179,9 @@ impl Executor for SshExec {
             "the clone stays on {name} at {clone} until it is fetched or {name} is released; get the work with `git -C {root} fetch {src} +HEAD:refs/heads/{branch}`",
             name = self.name(),
             clone = self.local.clone_dir,
-            src = self.fetch_source(),
+            // Neither a local hand nor a dial hand gets here: the source
+            // is the ssh address, made without a call to the machine.
+            src = self.fetch_source(&hive_bus::CancellationToken::new()),
         );
         // The bundle verb answers on a hand whose upload-pack does not.
         if SHA_RE.is_match(&self.base)

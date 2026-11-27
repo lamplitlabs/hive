@@ -4832,6 +4832,65 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         });
     }
 
+    /// Review of PR 283 item 2: a kept clone that is gone from the machine
+    /// (re-imaged, removed by a hand) is recognised. The machine says so in
+    /// the bundle verb's answer, which only the run log held, and in the ssh
+    /// fetch's text before git's own closing lines; the probe read the last
+    /// line alone, so the clone's record never cleared while its job was
+    /// open, the list showed git's general line, and the probe stopped there
+    /// without trying the machine's later clones.
+    #[test]
+    fn a_kept_clone_gone_from_the_machine_clears_and_the_next_is_tried() {
+        let refuse = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let switch = refuse.clone();
+        committing_run_on_a_hand_whose_fetch_fails_switched(refuse, "", |s, run, job, workdir| {
+            assert_eq!(run.str("status"), "failed", "run {run:?}");
+            let clone = workdir.join(job.str("id")).join("clone");
+            assert!(clone.join("note.txt").exists());
+            // A second run kept its clone there later; it is gone as well.
+            crate::test_helpers_daemon::queued_job(s, "job-later", "proj", "task", "owner");
+            crate::util::exec1(
+                &s.conn().unwrap(),
+                "UPDATE jobs SET status = 'failed' WHERE id = 'job-later'",
+                &[],
+            );
+            crate::util::exec1(
+                &s.conn().unwrap(),
+                "INSERT INTO runs (id, job_id, agent, project, started_at, finished_at, status, base, executor) VALUES ('run-later', 'job-later', 'aurora', 'proj', ?, ?, 'failed', ?, 'hands')",
+                &[&s.now(), &s.now(), &run.str("base")],
+            );
+            crate::util::event_at(
+                &s.conn().unwrap(),
+                &crate::util::plus_minutes(&s.now(), 1.0),
+                "runner",
+                crate::executor::FETCH_FAILED_EVENT,
+                "hands",
+                serde_json::json!({"job": "job-later", "run": "run-later", "clone": workdir.join("job-later").join("clone").display().to_string()}),
+            );
+            assert_eq!(crate::executor::kept_work(s, "hands").len(), 2);
+            // The machine answers, but the first clone was removed there.
+            std::fs::remove_dir_all(&clone).unwrap();
+            switch.store(false, std::sync::atomic::Ordering::SeqCst);
+            let cancel = hive_bus::CancellationToken::new();
+            let now = crate::util::plus_minutes(&s.now(), 2.0);
+            let lines = crate::kept_work::tend_kept_work(s, &cancel, &now, "daemon");
+            for j in [job.str("id"), "job-later".to_string()] {
+                assert!(
+                    lines.iter().any(|l| l.starts_with(&format!(
+                        "kept clone of {j} is gone from hands; its commits are lost"
+                    )) && l.contains("no clone for job")),
+                    "{j}: {lines:?}"
+                );
+            }
+            assert!(
+                crate::executor::kept_work(s, "hands").is_empty(),
+                "the records of the missing clones stay: {lines:?}"
+            );
+            let (_, note) = crate::executor::last_fetch_probe(s, "hands");
+            assert!(note.contains("no clone for job"), "{note}");
+        });
+    }
+
     /// TASK-138 item 3: a clone kept on a machine goes once its job is
     /// closed, and a machine left with nothing kept has its mark lifted, so
     /// the next code run tests the fetch. Before, the clone, its run key and
