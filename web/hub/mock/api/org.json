@@ -324,7 +324,11 @@
       "thread_last": "2026-09-02T07:15:00Z",
       "slug": "demo-app",
       "base": "/p/demo-app",
-      "hard_stop": "the evolution loop stopped (ADR-043)"
+      "hard_stop": "the evolution loop stopped (ADR-043)",
+      "decider": "owner",
+      "options": [],
+      "recommended_why": "",
+      "needs_options": "no answers to pick (two or more `Option:` lines, or `Yes:` and `No:`)"
     },
     {
       "agent": "cinder",
@@ -337,14 +341,31 @@
       "kind": "question",
       "date": "2026-09-01T18:30:00Z",
       "summary": "Which payment sandbox should the checkout fixtures hit?",
-      "body": "The checkout fixtures need a sandbox account. Two exist in the vault: `stripe-test-eu` (used by the old suite) and `stripe-test-us` (the one billing uses today). Only you know which one stays. Yes = keep `stripe-test-us` and retire the EU one; no = keep both and I pin the fixtures to EU.",
+      "body": "The checkout fixtures need a sandbox account. Two exist in the vault: `stripe-test-eu` (used by the old suite) and `stripe-test-us` (the one billing uses today). Only you know which one stays.\n\nOption: Keep stripe-test-us - retire the EU account; the fixtures follow billing\nOption: Keep both - the fixtures stay pinned to stripe-test-eu\nRecommended: Keep stripe-test-us - billing already runs on it, so the fixtures test what ships\n",
       "on_post": "",
       "stop": false,
       "stale": false,
       "thread_last": "2026-09-01T18:30:00Z",
       "slug": "demo-app",
       "base": "/p/demo-app",
-      "hard_stop": "is about money"
+      "hard_stop": "is about money",
+      "decider": "owner",
+      "options": [
+        {
+          "label": "Keep stripe-test-us",
+          "effect": "retire the EU account; the fixtures follow billing",
+          "answer": "",
+          "recommended": true
+        },
+        {
+          "label": "Keep both",
+          "effect": "the fixtures stay pinned to stripe-test-eu",
+          "answer": "",
+          "recommended": false
+        }
+      ],
+      "recommended_why": "billing already runs on it, so the fixtures test what ships",
+      "needs_options": ""
     }
   ]
 }

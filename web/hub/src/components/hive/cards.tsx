@@ -6,6 +6,8 @@ import { CheckIcon, ChevronRightIcon, CirclePauseIcon, MessageCircleQuestionIcon
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "./confirm";
 import { AnswerPicker } from "./decide-buttons";
+import { useAnswerDialog } from "./use-answer-dialog";
+import { proposalAnswer, type YesNoAnswer } from "@/lib/answer-dialog";
 import { Sparkline } from "./charts";
 import { EmptyState } from "./panel";
 import { ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardKind, ItemCardMeta, ItemCardTitle } from "./item-card";
@@ -129,7 +131,10 @@ function ReadMore({ open, onToggle }: { open: boolean; onToggle: () => void }) {
 // ----- proposal card + decide ---------------------------------------------
 
 export function ProposalCard({ r, slug, canDecide = true }: { r: Proposal; slug: string; canDecide?: boolean }) {
-  const [open, setOpen] = useState<"yes" | "no" | null>(null);
+  // Keyed by each opening (lib/answer-dialog.ts): a note typed under one
+  // answer is never sent with the other.
+  const { answer: open, key, pick, dialog } = useAnswerDialog<YesNoAnswer>();
+  const spec = proposalAnswer(r.id, open ?? "yes");
   const awaiting = r.status === "awaiting";
   const [expanded, setExpanded] = useState(false);
   const text = (r.proposal_text || "").trim();
@@ -155,8 +160,8 @@ export function ProposalCard({ r, slug, canDecide = true }: { r: Proposal; slug:
         <OnTheBoard slug={s} id={r.id} thread={r.thread_key} />
         {awaiting && canDecide && r.can_decide !== false ? (
           <span className="flex w-full flex-wrap justify-start gap-2 sm:ml-auto sm:w-auto sm:justify-end">
-            <Button variant="outline" onClick={() => setOpen("no")} aria-label={"No, decline: " + r.summary}><XIcon /> No, decline</Button>
-            <Button onClick={() => setOpen("yes")} aria-label={"Yes, accept: " + r.summary}><CheckIcon /> Yes, accept</Button>
+            <Button variant="outline" onClick={() => pick("no")} aria-label={"No, decline: " + r.summary}><XIcon /> No, decline</Button>
+            <Button onClick={() => pick("yes")} aria-label={"Yes, accept: " + r.summary}><CheckIcon /> Yes, accept</Button>
           </span>
         ) : awaiting ? (
           <span className="ml-auto text-[13px] text-muted-foreground">To answer, open Hive on the machine that runs it.</span>
@@ -165,15 +170,15 @@ export function ProposalCard({ r, slug, canDecide = true }: { r: Proposal; slug:
         ) : null}
       </ItemCardActions>
       <ConfirmDialog
-        open={open !== null}
-        onOpenChange={(o) => !o && setOpen(null)}
+        key={key}
+        {...dialog}
         title={open === "yes" ? "Accept this proposal?" : "Decline this proposal?"}
         description={<><span className="block font-medium text-foreground">{sentence(r.summary)}</span><span className="mt-2 block">{open === "yes" ? "The agents go ahead as proposed. If it asks for work, a job is queued." : "The agents won't pursue it as written."}</span></>}
-        action={open === "yes" ? "Yes, accept" : "No, decline"}
-        destructive={open === "no"}
-        words={{ label: "A note for the agents (optional)", placeholder: open === "yes" ? "Accepted: keep the scope as written." : "Not now, because…" }}
-        success={open === "yes" ? "Accepted. The agents will go ahead." : "Declined. The agents won't pursue it."}
-        onConfirm={(words) => writes.decide(r.id, open === "yes" ? "yes" : "no", words)}
+        action={spec.action}
+        destructive={spec.destructive}
+        words={spec.words}
+        success={spec.success}
+        onConfirm={(words) => spec.send(writes, words)}
       />
     </ItemCard>
   );

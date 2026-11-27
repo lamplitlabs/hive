@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
 import { ArrowRightIcon, CheckIcon, ServerIcon, XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useAnswerDialog } from "@/components/hive/use-answer-dialog";
+import { computeAnswer, type ComputeAnswer } from "@/lib/answer-dialog";
 import { ConfirmDialog } from "@/components/hive/confirm";
 import { ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardKind, ItemCardMeta, ItemCardTitle } from "@/components/hive/item-card";
 import { ListRow } from "@/components/hive/list-row";
@@ -22,30 +23,34 @@ const CHANGES = (p: string) => p.startsWith("compute") || p.startsWith("executor
 // Approve is the primary move, Deny stays quiet in the bad tone; `sm` by
 // default so they are easy to hit on a card, `xs` for dense rows.
 export function ComputeDecide({ r, size = "sm" }: { r: ComputeRequest; size?: "xs" | "sm" | "default" }) {
-  const [which, setWhich] = useState<"approve" | "deny" | null>(null);
+  // Keyed by each opening (lib/answer-dialog.ts): a note typed under Deny is
+  // never sent with Approve, and the dialog closes with its exit animation.
+  const { answer, key, pick, dialog } = useAnswerDialog<ComputeAnswer>();
   if (r.status !== "pending") return null;
+  const approve = answer === "approve";
+  const spec = computeAnswer(r.id, answer ?? "approve");
   return (
     <span className="inline-flex flex-wrap items-center gap-2">
-      <Button size={size} variant="outline" onClick={() => setWhich("deny")} aria-label={"Deny " + r.id}>
+      <Button size={size} variant="outline" onClick={() => pick("deny")} aria-label={"Deny " + r.id}>
         <XIcon /> Deny
       </Button>
-      <Button size={size} onClick={() => setWhich("approve")} aria-label={"Approve " + r.id}>
+      <Button size={size} onClick={() => pick("approve")} aria-label={"Approve " + r.id}>
         <CheckIcon /> Approve
       </Button>
       <ConfirmDialog
-        open={which !== null}
-        onOpenChange={(o) => !o && setWhich(null)}
-        title={which === "approve" ? "Approve the extra machine?" : "Deny the extra machine?"}
+        key={key}
+        {...dialog}
+        title={approve ? "Approve the extra machine?" : "Deny the extra machine?"}
         description={
           <span>
-            {agentName(r.requested_by)} asks for one extra machine (<Mono>{r.size}</Mono>) for {plural(r.hours, "hour")}. {which === "approve" ? "Hive starts it within the limits you set, and removes it when the time is up." : "The agent sees your answer the next time it checks."}
+            {agentName(r.requested_by)} asks for one extra machine (<Mono>{r.size}</Mono>) for {plural(r.hours, "hour")}. {approve ? "Hive starts it within the limits you set, and removes it when the time is up." : "The agent sees your answer the next time it checks."}
           </span>
         }
-        action={which === "approve" ? "Approve" : "Deny"}
-        destructive={which === "deny"}
-        words={{ label: which === "deny" ? "Tell the agent why" : "A note for the agent (optional)", placeholder: which === "approve" ? "Approved: needed for the load test." : "Not now. Use the machines you have.", required: which === "deny" }}
-        success={which === "approve" ? "Approved. Hive will start the machine." : "Denied. The agent will see your note."}
-        onConfirm={(w) => (which === "approve" ? writes.approveCompute(r.id, w) : writes.denyCompute(r.id, w))}
+        action={spec.action}
+        destructive={spec.destructive}
+        words={spec.words}
+        success={spec.success}
+        onConfirm={(w) => spec.send(writes, w)}
         invalidates={CHANGES}
       />
     </span>
