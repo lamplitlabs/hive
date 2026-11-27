@@ -140,8 +140,8 @@ recorded yes as 20261123T041949Z-human
 queued job-20261123T041949Z-52c3cc: Act on the human's yes: Return 429 when a key passes its limit
 ```
 
-In the console the same proposal is on the **For you** page under
-**Proposals**, with **Accept** and **Decline**. A yes queues one job that
+In the console the same proposal is on the project's **For you** tab
+under **Proposals**, with **Accept** and **Decline**. A yes queues one job that
 acts on the proposal. A no queues nothing, and your words go on the board.
 A post takes one answer: a new proposal needs a new post.
 
