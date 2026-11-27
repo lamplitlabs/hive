@@ -5157,6 +5157,33 @@ fn manifest_needs_take_a_list_or_one_string_and_name_a_bad_word() {
     assert!(problems[0].contains("x/code"), "{problems:?}");
 }
 
+/// TASK-156 item 2: the brain's own `.hive/hive.yaml` says its work needs
+/// macOS, so no code job of the brain is offered to a rented Linux machine
+/// (where the check was red and no work landed) and nobody marks jobs by
+/// hand. The file is read from the tree the test runs in, as the daemon
+/// reads it from the default branch.
+#[test]
+fn the_brains_own_manifest_says_its_work_needs_macos() {
+    let manifest = hive_testutil::manifest_dir(env!("CARGO_MANIFEST_DIR"));
+    let root = manifest
+        .parent()
+        .and_then(Path::parent)
+        .expect("the workspace root holds crates/");
+    let path = root.join(manifest::MANIFEST_PATHS[0]);
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("{path:?}: {e}; the brain says what it needs there"));
+    let m = manifest::parse(&text).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+    assert!(
+        manifest::static_problems(&m).is_empty(),
+        "{:?}",
+        manifest::static_problems(&m)
+    );
+    let needs = hive_store::needs::canonical(&m.needs.unwrap_or_default().join(",")).unwrap();
+    assert_eq!(needs, "macos", "{path:?}");
+    let linux = hive_store::needs::caps_of("linux", "amd64", "");
+    assert!(!hive_store::needs::met(&needs, &linux));
+}
+
 #[test]
 fn manifest_sync_sets_the_project_needs_and_clears_them_on_an_empty_list() {
     let _serial = crate::test_helpers::serial();

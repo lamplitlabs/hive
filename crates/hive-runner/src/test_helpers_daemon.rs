@@ -310,7 +310,7 @@ for a in "$@"; do
 done
 if [ -n "$key" ]; then
   if [ ! -f "$key" ]; then echo "fake ssh: key $key missing" >&2; exit 255; fi
-  mode=$(stat -f '%Lp' "$key" 2>/dev/null || stat -c '%a' "$key")
+  mode=$(stat -c '%a' "$key" 2>/dev/null || stat -f '%Lp' "$key")
   echo "$mode" > "$HIVE_TEST_SSH_RECORD.mode"
   head -c 30 "$key" > "$HIVE_TEST_SSH_RECORD.head"
 fi

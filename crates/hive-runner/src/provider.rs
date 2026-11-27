@@ -1205,7 +1205,7 @@ hive-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOCK
         // The run ends: the machine goes on the next tick.
         exec1(
             &s,
-            "UPDATE runs SET status = 'done', finished_at = ? WHERE id = 'run-1'",
+            "UPDATE runs SET status = 'done', commits = 1, finished_at = ? WHERE id = 'run-1'",
             &[&after(125.0)],
         );
         let lines = tick(&after(125.25));
@@ -1216,8 +1216,25 @@ hive-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOCK
             "{lines:?}"
         );
         assert_eq!(az.deleted(), vec!["hive-cr-001"], "{lines:?}");
-        // Nothing waits after the release: the queue still waits, so the daemon asks for a
-        // fresh machine on its usual terms.
+        // Its work has not landed yet: no other machine for proj until it has
+        // (TASK-156 item 4).
+        let Err(crate::daemon::NoAutoCompute::Why(why)) = rent(&after(125.5)) else {
+            panic!("a second machine before the first one's work landed");
+        };
+        assert!(
+            why.starts_with("no rented machine has landed work for proj yet"),
+            "{why}"
+        );
+        exec1(
+            &s,
+            "INSERT INTO events (at, actor, action, subject, detail) VALUES (?, 'daemon', 'land.landed', 'hive/aurora/job-1', ?)",
+            &[
+                &after(125.4),
+                &serde_json::json!({"job": "job-1", "project": "proj"}).to_string(),
+            ],
+        );
+        // Nothing waits after the release and its work landed: the queue still
+        // waits, so the daemon asks for a fresh machine on its usual terms.
         let next = rent(&after(125.5)).expect("a fresh machine is asked for");
         assert_eq!(
             (next.id.as_str(), next.status.as_str(), next.hours),
