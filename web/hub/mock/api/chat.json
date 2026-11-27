@@ -197,7 +197,13 @@
           "cost": 0,
           "steps": 15
         }
-      ]
+      ],
+      "owner_turn": true,
+      "hold": {
+        "state": "held_for_owner",
+        "note": "does not merge cleanly into main; job job-20260901T190200Z-87e2d1 already rebased the task's work once, so this one is for you",
+        "at": "2026-09-01T19:12:00Z"
+      }
     },
     {
       "id": "TASK-001",

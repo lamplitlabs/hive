@@ -17,6 +17,11 @@ test("a task's pull request: open links PR #N, merged links it, held names the n
   const held = deliveryView({ state: "held", note: "gh is not logged in" });
   assert.equal(held.before, "Held: gh is not logged in");
   assert.equal(held.tone, "warn");
+  // A conflict is the owner's: the runner waits for the work to change.
+  const mine = deliveryView({ state: "held_for_owner", note: "does not merge cleanly; this one is for you" });
+  assert.equal(line(mine), "Held for you: does not merge cleanly; this one is for you. The runner tries again once the work changes.");
+  assert.equal(mine.tone, "warn");
+  assert.equal(line(deliveryView({ state: "held_for_owner" })), "Held for you. The runner tries again once the work changes.");
   assert.equal(deliveryView({ state: "none" }), null);
   assert.equal(deliveryView(null), null);
 });

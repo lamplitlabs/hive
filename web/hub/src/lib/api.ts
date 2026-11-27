@@ -1974,9 +1974,16 @@ export interface ChatTask {
   last_message_at: string;
   last_author: string;
   needs_you: boolean; // the lead waits for your reply (status review)
+  // The one rule for "waits on you" (hive_tasks::owner_turn): the lead's
+  // question, or a pull request only the owner moves. Absent from older hubs.
+  owner_turn?: boolean;
   sessions: ChatTaskSession[];
   // The task's pull request and where its review stands; null before one.
   pr?: PrState | null;
+  // A pull request that could not be opened while a finished step waits
+  // on it: `held` the runner tries again, `held_for_owner` only the owner
+  // moves. Null otherwise; absent from older hubs.
+  hold?: { state: string; note: string; at: string } | null;
 }
 
 // A step of a task as a conversation: the job and, once an agent took it,
@@ -2853,7 +2860,8 @@ export type TaskDeliveryState =
   | "changes_requested"
   | "review_failed"
   | "merged"
-  | "held"
+  | "held" // could not be opened; the runner tries again on its own
+  | "held_for_owner" // could not be opened; only the owner moves it (a conflict)
   | "waiting"
   | "landed"
   | "asked"

@@ -449,12 +449,39 @@ pub struct LandEvent {
     pub detail: String,
 }
 
+/// The state of a task's pull request that could not be opened and that
+/// only the owner moves on: its `land.pr-held` carries no `tries`. The
+/// runner tries a hold again on its own only when the hold names a fault on
+/// the way to the forge (`hive-runner` `delivery.rs` `hold_as` counts those
+/// as `tries` and waits a growing pause between them); any other hold - a
+/// conflict after the task's one rebase or join ("this one is for you"),
+/// a branch that does not build - stands until the work changes, and
+/// nothing changes the work unless someone is asked (TASK-153). Until a
+/// second join becomes a job (TASK-143) such a hold is the owner's turn.
+pub const HELD_FOR_OWNER: &str = "held_for_owner";
+
+/// The state word of a `land.pr-held` detail: [`HELD_FOR_OWNER`] for a hold
+/// without `tries`, `held` for one the runner tries again.
+pub fn hold_state(detail: &str) -> &'static str {
+    let v: serde_json::Value = serde_json::from_str(detail).unwrap_or_default();
+    if v.get("tries").is_some() {
+        "held"
+    } else {
+        HELD_FOR_OWNER
+    }
+}
+
 /// A detail field as text: strings as they are, numbers rendered (a pull
 /// request `number` is numeric), anything else empty.
 pub(crate) fn field(detail: &str, key: &str) -> String {
     serde_json::from_str::<serde_json::Value>(detail)
         .map(|v| text_of(&v, key))
         .unwrap_or_default()
+}
+
+/// [`field`] for other crates: a detail field as text.
+pub fn detail_field(detail: &str, key: &str) -> String {
+    field(detail, key)
 }
 
 /// The task's steps and the branches they worked on: the jobs' ids, their
@@ -644,7 +671,7 @@ pub fn task_landings(conn: &rusqlite::Connection, task: &crate::Task) -> Result<
 /// The newest pull-request event of the task's own pull request
 /// (`land.pr`, `land.merged`, `land.pr-closed`, `land.pr-held`, detail
 /// `task`), written by the daemon's per-task delivery.
-fn task_pr_event(
+pub fn task_pr_event(
     conn: &rusqlite::Connection,
     project: &str,
     task: &str,
@@ -731,7 +758,7 @@ pub fn delivery_for(s: &hive_store::Store, task_id: &str) -> Result<TaskDelivery
                 return Ok(d);
             }
             "land.pr-held" if work.waiting > 0 => {
-                d.state = "held".into();
+                d.state = hold_state(&e.detail).into();
                 d.note = field(&e.detail, "note");
                 return Ok(d);
             }

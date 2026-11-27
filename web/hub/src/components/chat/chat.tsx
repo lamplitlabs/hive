@@ -229,6 +229,8 @@ import {
   sessionWords,
   taskFinished,
   taskMood,
+  taskOwnerTurn,
+  taskPrState,
   taskTitleOf,
   type ListGroup,
   type Mood,
@@ -1370,7 +1372,7 @@ export function ChatPageClient() {
   const current = rows.find((c) => c.id === id);
   const attention =
     rows.filter((c) => (c.live?.status || c.status) === "waiting").length +
-    tasks.filter((t) => t.needs_you).length;
+    tasks.filter(taskOwnerTurn).length;
 
   // The tab says when an agent waits on you, even from another window
   // (the shell names the page; this only adds the count).
@@ -1776,7 +1778,7 @@ function TaskItem({
             aria-label={`Steps of ${t.title || t.id}`}
           >
             {steps.map((s) => {
-              const w = sessionWords(s, t.pr?.state);
+              const w = sessionWords(s, taskPrState(t));
               const body = (
                 <>
                   <span
