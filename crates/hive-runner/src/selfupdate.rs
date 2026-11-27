@@ -78,6 +78,13 @@ pub(crate) struct SelfUpdateState {
     /// has stood for `daemon.self_update_settle_minutes`.
     pub(crate) settle_rev: String,
     pub(crate) settle_since: String,
+    /// Since when (store clock) the brain's default branch has been ahead
+    /// of the running binary, whatever HEAD it stood at: kept across new
+    /// HEADs and cleared only when HEAD is no longer due or the build
+    /// starts. The settle wait ends once this is older than the restart
+    /// bound (`refused_wait_minutes`), so landings closer together than
+    /// the settle time cannot hold the build back for ever.
+    pub(crate) ahead_since: String,
     /// Since when (store clock) the build has waited for queued work the
     /// restart it ends in would refuse: set by the first pass that waits for
     /// it and kept until the build starts or HEAD is no longer due, so a
@@ -489,6 +496,7 @@ pub(crate) fn tend_binary(s: &hive_store::Store, now: String, env: SelfUpdateEnv
     // already found neutral: the diff and the probes below are spared.
     if !co.due(&st, &env) {
         st.refused_since.clear();
+        st.ahead_since.clear();
         return lines;
     }
     // The binary the daemon runs next is the installed one when a build or a
@@ -678,6 +686,7 @@ pub(crate) fn gate(
 ) -> Gate {
     if !co.due(st, env) {
         st.refused_since.clear();
+        st.ahead_since.clear();
         return Gate::Quiet;
     }
     let rev = co.rev.clone();
@@ -722,13 +731,27 @@ pub(crate) fn gate(
     // in a restart; a fleet lands a burst of brain branches minutes apart.
     // The build waits until HEAD has stood unchanged for a while, so the
     // burst builds once, from its last commit. A new HEAD restarts the clock.
+    //
+    // The new HEAD restarts only the settle clock, not the one that counts
+    // how long the default branch has been ahead of the running build: once
+    // that is older than the restart bound the settle wait passes, so
+    // landings closer together than the settle time do not starve the build
+    // (TASK-152).
+    if st.ahead_since.is_empty() {
+        st.ahead_since = now.to_string();
+    }
     if settle > 0 {
         if st.settle_rev != rev {
             st.settle_rev = rev.clone();
             st.settle_since = now.to_string();
         }
         let due = crate::util::plus_minutes(&st.settle_since, settle as f64);
-        if crate::util::must_iso(now) < crate::util::must_iso(&due) {
+        let bound = crate::util::plus_minutes(
+            &st.ahead_since,
+            refused_wait_minutes(env.restart_max_minutes),
+        );
+        let now_at = crate::util::must_iso(now);
+        if now_at < crate::util::must_iso(&due) && now_at < crate::util::must_iso(&bound) {
             return Gate::Wait(format!(
                 "brain HEAD {} differs from the running {}; building once it has stood for {settle} min (daemon.self_update_settle_minutes), so a burst of landings builds once",
                 short_rev(rev.clone()),
@@ -756,6 +779,15 @@ pub(crate) fn gate(
             && let Ok(armed) = crate::util::parse_iso(&env.restart_armed)
         {
             from = from.min(armed);
+        }
+        // Nor does the wait start over when the ladder flips from the
+        // settle wait to this one (a new HEAD in between): with a bound it
+        // counts from when the default branch went ahead of the running
+        // build, the clock the settle wait keeps (TASK-152).
+        if env.restart_max_minutes > 0
+            && let Ok(ahead) = crate::util::parse_iso(&st.ahead_since)
+        {
+            from = from.min(ahead);
         }
         let until = crate::util::plus_minutes(&crate::util::format_iso(from), minutes);
         if crate::util::must_iso(now) < crate::util::must_iso(&until) {
@@ -803,6 +835,7 @@ pub(crate) fn gate(
         ));
     }
     st.refused_since.clear();
+    st.ahead_since.clear();
     Gate::Build(past)
 }
 
@@ -1938,6 +1971,128 @@ mod tests {
             Gate::Quiet
         );
         assert!(st.refused_since.is_empty());
+    }
+
+    #[test]
+    fn landings_closer_than_the_settle_time_do_not_starve_the_build() {
+        let env = SelfUpdateEnv {
+            binary: "/nonexistent/hive".into(),
+            cargo_cmd: "cargo".into(),
+            revision: "a".repeat(40),
+            restart_max_minutes: 30,
+            ..Default::default()
+        };
+        let bench = Bench {
+            cargo_on_path: true,
+            ..Default::default()
+        };
+        let co_at = |c: char| Checkout {
+            repo: "/nonexistent".into(),
+            rev: c.to_string().repeat(40),
+            branch: "main".into(),
+            default_branch: "main".into(),
+            changed: Some(vec!["crates/hive-runner/src/daemon.rs".into()]),
+            base: "a".repeat(40),
+            ..Default::default()
+        };
+        let at = |minutes: f64| crate::util::plus_minutes(TEST_NOW, minutes);
+        let mut st = SelfUpdateState::default();
+        // A landing every ten minutes, the settle time fifteen: each new
+        // HEAD restarts the settle clock, so it alone would never pass.
+        for (minute, c) in [(0.0, 'b'), (10.0, 'c'), (20.0, 'd')] {
+            assert!(
+                matches!(
+                    gate(&mut st, 15, &at(minute), &env, &co_at(c), &bench),
+                    Gate::Wait(line) if line.contains("building once it has stood for 15 min")
+                ),
+                "minute {minute} settles"
+            );
+        }
+        assert_eq!(st.ahead_since, at(0.0), "the ahead clock keeps its start");
+        // Thirty minutes ahead of the running build (the restart bound): the
+        // next HEAD builds at once, unsettled.
+        assert_eq!(
+            gate(&mut st, 15, &at(30.0), &env, &co_at('e'), &bench),
+            Gate::Build(String::new())
+        );
+        assert!(st.ahead_since.is_empty(), "the build clears the clock");
+        // With no bound on the restart the hour it always had is the most.
+        let unbounded = SelfUpdateEnv {
+            restart_max_minutes: 0,
+            ..env.clone()
+        };
+        let mut st = SelfUpdateState::default();
+        for minute in [0.0, 10.0, 20.0, 30.0, 40.0, 50.0] {
+            let c = char::from(b'b' + (minute as u8) / 10);
+            assert!(matches!(
+                gate(&mut st, 15, &at(minute), &unbounded, &co_at(c), &bench),
+                Gate::Wait(_)
+            ));
+        }
+        assert!(matches!(
+            gate(&mut st, 15, &at(60.0), &unbounded, &co_at('z'), &bench),
+            Gate::Build(_)
+        ));
+    }
+
+    #[test]
+    fn the_refused_wait_keeps_its_clock_when_its_reason_flips() {
+        let env = SelfUpdateEnv {
+            binary: "/nonexistent/hive".into(),
+            cargo_cmd: "cargo".into(),
+            revision: "a".repeat(40),
+            restart_max_minutes: 30,
+            refused_queued: "task runs on brain".into(),
+            ..Default::default()
+        };
+        let bench = Bench {
+            cargo_on_path: true,
+            ..Default::default()
+        };
+        let co_at = |c: char| Checkout {
+            repo: "/nonexistent".into(),
+            rev: c.to_string().repeat(40),
+            branch: "main".into(),
+            default_branch: "main".into(),
+            changed: Some(vec!["crates/hive-runner/src/daemon.rs".into()]),
+            base: "a".repeat(40),
+            ..Default::default()
+        };
+        let at = |minutes: f64| crate::util::plus_minutes(TEST_NOW, minutes);
+        let mut st = SelfUpdateState::default();
+        // Settled at minute 0 (no settle time yet): the queued work waits.
+        assert!(matches!(
+            gate(&mut st, 0, &at(0.0), &env, &co_at('b'), &bench),
+            Gate::Wait(line) if line.contains(&format!("or at {}", at(30.0)))
+        ));
+        // A new HEAD and a settle time: the wait flips to the settle reason
+        // at minute 10, and back to the queued work at minute 25. The queued
+        // wait still ends at minute 30, not 30 minutes after it came back.
+        assert!(matches!(
+            gate(&mut st, 15, &at(10.0), &env, &co_at('c'), &bench),
+            Gate::Wait(line) if line.contains("building once it has stood")
+        ));
+        assert!(matches!(
+            gate(&mut st, 15, &at(25.0), &env, &co_at('c'), &bench),
+            Gate::Wait(line) if line.contains(&format!("or at {}", at(30.0)))
+        ));
+        // Only settle waits come first: the queued wait, reached at minute
+        // 35, counts from when the branch went ahead and builds at once.
+        let mut st = SelfUpdateState::default();
+        for (minute, c) in [(0.0, 'b'), (10.0, 'c'), (20.0, 'd')] {
+            assert!(matches!(
+                gate(&mut st, 15, &at(minute), &env, &co_at(c), &bench),
+                Gate::Wait(line) if line.contains("building once it has stood")
+            ));
+        }
+        st.ahead_since = at(5.0);
+        assert!(
+            matches!(
+                gate(&mut st, 15, &at(35.0), &env, &co_at('d'), &bench),
+                Gate::Build(ref past) if past.contains(&format!("waited for since {}", at(5.0)))
+            ),
+            "{st:?}"
+        );
     }
 
     #[test]

@@ -422,3 +422,18 @@ test("a pending restart says since when and when new runs stop", () => {
   assert.equal(updatePendingText(pendingUpdate({ note: "restarting: 2 in flight" }, now), now), "");
   assert.equal(updatePendingText(pendingUpdate({ note: "x", restart: { since: "", inflight: 1, dispatching: false, waits_for: [] } }, now), now), "Nothing new starts");
 });
+
+// Review of PR 282, item 3: once the daemon waits after its loop (the drain is
+// over, or Restart now) the page said "It has stopped taking new work" and,
+// beside it, "new runs, yours included, stop starting in 59 minutes". A daemon
+// that dispatches nothing says that nothing new starts, whatever its bound.
+test("a daemon past its loop does not say new runs stop starting later", () => {
+  const now = Date.parse("2026-11-26T06:52:00Z");
+  const r = runner("alive");
+  r.daemon.note = "restarting: 1 in flight";
+  r.daemon.restart = { since: "2026-11-26T06:42:00Z", inflight: 1, dispatching: false, until: "2026-11-26T07:51:00Z", waits_for: [{ agent: "fjord", kind: "task", project: "brain", job: "j1", started_at: "2026-11-26T06:42:00Z" }] };
+  const state = daemonControlState(inputs({ runner: snapshot(r) }), now);
+  assert.equal(updatePendingText(state.update, now), "Pending for 10 minutes; nothing new starts");
+  assert.match(state.description, /It has stopped taking new work\. Pending for 10 minutes; nothing new starts/);
+  assert.doesNotMatch(state.description, /stop starting in/);
+});
