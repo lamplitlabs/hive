@@ -4205,6 +4205,25 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             !check(&accepted).is_empty(),
             "a chat branch exempted the sibling's commit"
         );
+        git(&["branch", "-D", "hive/chat-20261105T120000-abcdef"]);
+        // Kept work (review of PR 299) never passed the identity check: a
+        // failed, refused or outside-ended run's `-failed` branch, the
+        // `-failed-<machine>` one beside it and a stopped check's
+        // `-unchecked` one exempt nothing.
+        for kept in [
+            "hive/aurora/JOB-1-failed",
+            "hive/aurora/JOB-1-failed-hands",
+            "hive/aurora/JOB-1-unchecked",
+        ] {
+            git(&["branch", kept, &sibling]);
+            let accepted = crate::keys::accepted_refs(&root, "main", "work");
+            assert_eq!(accepted, vec!["refs/heads/main".to_string()], "{kept}");
+            assert!(
+                !check(&accepted).is_empty(),
+                "kept work on {kept} exempted the sibling's commit"
+            );
+            git(&["branch", "-D", kept]);
+        }
         // The branch under check never exempts itself, named either way.
         git(&["branch", "hive/bob/JOB-3", "work"]);
         for own in ["hive/bob/JOB-3", "refs/heads/hive/bob/JOB-3"] {
@@ -5431,6 +5450,20 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         verify_cmd: &str,
         check: impl FnOnce(&hive_store::Store, &crate::util::Row, &crate::util::Row, &std::path::Path),
     ) {
+        committing_run_on_a_hand_whose_fetch_fails_worker(
+            refuse,
+            verify_cmd,
+            "sh -c 'echo hi > note.txt && git add note.txt && git commit -q -m note && echo SUMMARY: noted on the machine'",
+            check,
+        );
+    }
+    /// The same with the worker command `worker` (it must make one commit).
+    fn committing_run_on_a_hand_whose_fetch_fails_worker(
+        refuse: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        verify_cmd: &str,
+        worker: &str,
+        check: impl FnOnce(&hive_store::Store, &crate::util::Row, &crate::util::Row, &std::path::Path),
+    ) {
         let _serial = crate::test_helpers::serial();
         let _guard = hive_testutil::env_lock();
         if which::which("ssh-keygen").is_err() {
@@ -5537,7 +5570,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             crate::test_helpers::TEST_NOW,
             crate::run::RunOpts {
                 executor: "hands".into(),
-                worker_cmd: "sh -c 'echo hi > note.txt && git add note.txt && git commit -q -m note && echo SUMMARY: noted on the machine'".into(),
+                worker_cmd: worker.into(),
                 ..Default::default()
             },
         )
@@ -5687,6 +5720,47 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         );
     }
 
+    /// Review of PR 299 item 1: a worker on a machine ended from outside
+    /// after it committed, with neither the fetch nor the bundle bringing the
+    /// commits back. Before, the run was requeued and its clone on the
+    /// machine cleaned: the only copy of the commits went, unmarked. Now the
+    /// clone stays as after a failed check, the machine is marked and the
+    /// summary says how to get the work.
+    #[test]
+    fn an_outside_ended_run_on_a_machine_whose_fetch_fails_keeps_its_clone() {
+        let refuse = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        committing_run_on_a_hand_whose_fetch_fails_worker(
+            refuse,
+            "",
+            "sh -c 'echo hi > note.txt && git add note.txt && git commit -q -m note && kill -TERM $$'",
+            |s, run, job, workdir| {
+                assert_eq!(run.str("status"), "held", "run {run:?}");
+                let summary = run.str("summary");
+                assert!(
+                    summary.starts_with("ended by an outside SIGTERM")
+                        && summary.contains("stay in the clone only")
+                        && summary.contains("the clone stays on hands at")
+                        && summary
+                            .contains(&crate::land::failed_work_branch("aurora", &job.str("id"))),
+                    "the summary does not say how to get the work: {summary}"
+                );
+                assert!(
+                    workdir
+                        .join(job.str("id"))
+                        .join("clone")
+                        .join("note.txt")
+                        .exists(),
+                    "the machine's clone was cleaned"
+                );
+                assert!(crate::executor::fetch_broken(s, "hands"));
+                assert!(
+                    crate::executor::kept_clones(s, "hands").contains(&job.str("id")),
+                    "the kept clone is not written down"
+                );
+            },
+        );
+    }
+
     /// TASK-138 item 2: a machine marked after one failed fetch finds its
     /// way back without a hand. `hive executor list` says why it takes no
     /// code work; the daemon's fetch probe tries the kept clone again on its
@@ -5782,7 +5856,18 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             let clone = workdir.join(job.str("id")).join("clone");
             assert!(clone.join("note.txt").exists());
             // A second run kept its clone there later; it is gone as well.
-            crate::test_helpers_daemon::queued_job(s, "job-later", "proj", "task", "owner");
+            // Its job is a task's, so the task hears of the loss (review of
+            // PR 286 item 4: before, only the daemon's line and two events
+            // said it).
+            let task = hive_tasks::new(s, "proj", "Ship the fixtures", "the brief", 30, "human")
+                .unwrap_or_else(|err| panic!("{err}"));
+            crate::test_helpers_daemon::queued_job(
+                s,
+                "job-later",
+                "proj",
+                "task",
+                &format!("task:{}", task.id),
+            );
             crate::util::exec1(
                 &s.conn().unwrap(),
                 "UPDATE jobs SET status = 'failed' WHERE id = 'job-later'",
@@ -5822,6 +5907,28 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             );
             let (_, note) = crate::executor::last_fetch_probe(s, "hands");
             assert!(note.contains("no clone for job"), "{note}");
+            let bodies = hive_tasks::messages(s, "proj", &task.id, "", "")
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|m| m.author == "daemon")
+                .map(|m| m.body)
+                .collect::<Vec<_>>();
+            assert_eq!(bodies.len(), 1, "{bodies:?}\n{lines:?}");
+            assert!(
+                bodies[0].contains("The work of job job-later")
+                    && bodies[0].contains("is lost")
+                    && bodies[0].contains("hands no longer has the clone")
+                    && bodies[0].contains("no clone for job")
+                    && bodies[0].contains("Job job-later is failed"),
+                "{}",
+                bodies[0]
+            );
+            assert!(
+                lines
+                    .iter()
+                    .any(|l| l == &format!("the loss of job-later's work is said on {}", task.id)),
+                "{lines:?}"
+            );
         });
     }
 

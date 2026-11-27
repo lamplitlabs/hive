@@ -607,21 +607,43 @@ pub(crate) fn mark_follows_retry(s: &hive_store::Store, name: &str) -> bool {
     last.str("action") == FETCH_RETRY_EVENT
 }
 
-/// Writes down that a fetch from `name` worked, when it was marked broken.
+/// Writes down that a fetch from `name` worked, when it was marked broken or
+/// the daemon lifted its mark ([`FETCH_RETRY_EVENT`]) and nothing has said
+/// since that a fetch from it works. Before, the good fetch of the run the
+/// lift let in wrote nothing (the machine was no longer marked), so the lift
+/// stayed the last word: any later mark found it, counted as following a
+/// retry ([`mark_follows_retry`]) and was never lifted again - a paired
+/// machine took no code run until a hand activated it (review of PR 286
+/// item 1).
 pub(crate) fn note_fetch_ok(s: &hive_store::Store, name: &str, now: &str, job: &str) {
-    if !fetch_broken(s, name) {
+    if name.is_empty() || name == LOCAL_EXECUTOR {
         return;
     }
-    if let Ok(conn) = s.conn() {
-        event_at(
-            &conn,
-            now,
-            "runner",
-            FETCH_OK_EVENT,
-            name,
-            json!({"job": job}),
-        );
+    let Ok(conn) = s.conn() else {
+        return;
+    };
+    let last = must_one(
+        &conn,
+        "SELECT action FROM events WHERE subject = ? AND action IN (?, ?, ?, 'executor.active', 'executor.update') ORDER BY seq DESC LIMIT 1",
+        &[
+            &name,
+            &FETCH_FAILED_EVENT,
+            &FETCH_OK_EVENT,
+            &FETCH_RETRY_EVENT,
+        ],
+    )
+    .str("action");
+    if last != FETCH_FAILED_EVENT && last != FETCH_RETRY_EVENT {
+        return;
     }
+    event_at(
+        &conn,
+        now,
+        "runner",
+        FETCH_OK_EVENT,
+        name,
+        json!({"job": job}),
+    );
 }
 
 /// The event that says a kept clone is gone from the machine (subject: the
@@ -700,6 +722,29 @@ pub(crate) fn kept_clones(s: &hive_store::Store, name: &str) -> BTreeSet<String>
     kept_work(s, name).into_iter().map(|k| k.job).collect()
 }
 
+/// Whether a fetch probe of `name` already brought the commits of the kept
+/// clone `k` back (its `executor.fetch-probe` is ok and names the job), after
+/// the clone was kept: the clone stayed only because removing it failed, so
+/// losing it later loses nothing.
+pub(crate) fn kept_fetched_before(s: &hive_store::Store, name: &str, k: &KeptClone) -> bool {
+    let Ok(conn) = s.conn() else {
+        return false;
+    };
+    must_one(
+        &conn,
+        "SELECT COUNT(*) AS n FROM events WHERE action = ? AND subject = ? AND at >= ? AND json_valid(detail) AND json_extract(detail, '$.ok') AND substr(json_extract(detail, '$.note'), 1, ?) = ?",
+        &[
+            &FETCH_PROBE_EVENT,
+            &name,
+            &k.at,
+            &((k.job.len() + 2) as i64),
+            &format!("{}: ", k.job),
+        ],
+    )
+    .int("n")
+        > 0
+}
+
 /// When the daemon tried the kept clones of `name` last, and what it found
 /// (empty when it never did).
 pub(crate) fn last_fetch_probe(s: &hive_store::Store, name: &str) -> (String, String) {
@@ -731,6 +776,28 @@ pub(crate) fn fetch_broken_line(s: &hive_store::Store, name: &str) -> String {
         &[&FETCH_FAILED_EVENT, &name],
     );
     let kept = kept_work(s, name);
+    if kept_left(s, name).is_empty() {
+        // Nothing kept there: no fetch probe can clear the mark, and no
+        // code run goes there to fetch (review of PR 286 item 2).
+        if mark_follows_retry(s, name) {
+            let lift = must_one(
+                &conn,
+                "SELECT at FROM events WHERE action = ? AND subject = ? ORDER BY seq DESC LIMIT 1",
+                &[&FETCH_RETRY_EVENT, &name],
+            );
+            return format!(
+                "fetch FAILED at {} (job {}): it takes no run that changes code and stays marked: the daemon lifted an earlier mark at {} and the run it let in failed to fetch the same way, so the daemon does not lift it again; nothing is kept there to fetch, so only `hive executor activate {name}` (or pairing it again) lifts it",
+                last.str("at"),
+                last.str("job"),
+                lift.str("at")
+            );
+        }
+        return format!(
+            "fetch FAILED at {} (job {}): it takes no run that changes code; nothing is kept there, so the daemon lifts the mark on its next pass and the next code run there tests the fetch (or `hive executor activate {name}`)",
+            last.str("at"),
+            last.str("job")
+        );
+    }
     let mut line = format!(
         "fetch FAILED at {} (job {}): it takes no run that changes code until a fetch from it works or `hive executor activate {name}`",
         last.str("at"),

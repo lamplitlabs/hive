@@ -1081,8 +1081,8 @@ pub(crate) fn task_of_source(source: &str) -> &str {
 /// branch and patch they would have been kept as do not exist and the work
 /// has to be done again. Before, the loss was named only on the compute card
 /// and in a finding, which whoever reads the task never saw (review of PR 283
-/// item 4). A cancelled job's work is wanted by nobody and is not said.
-/// Returns the daemon's lines.
+/// item 4). Returns the daemon's lines; what is not said is in
+/// [`say_lost_clone`].
 pub(crate) fn say_lost_work(
     s: &hive_store::Store,
     actor: &str,
@@ -1090,47 +1090,91 @@ pub(crate) fn say_lost_work(
     kept: &[crate::executor::KeptClone],
     why: &str,
 ) -> Vec<String> {
-    let mut lines = Vec::new();
-    let Ok(conn) = s.conn() else {
-        return lines;
+    let how = format!("{executor} is released ({why}) and the clone went with it");
+    kept.iter()
+        .filter_map(|k| say_lost_clone(s, actor, executor, k, &how))
+        .collect()
+}
+
+/// Says on the job's task that the work of the kept clone `k` on `executor`
+/// is lost; `how` says how the clone went ("m1 is released (...) and the
+/// clone went with it", "m1 no longer has the clone (...)"). Returns the
+/// daemon's line, or `None` when nothing is said: the job is cancelled
+/// (nobody wants its work), it is no task's job, its task is closed (done:
+/// a copy of the failed job landed it; cancelled), or an earlier fetch
+/// probe already brought the commits back (the clone stayed only because
+/// its removal failed). The message names the job's state: a job back in
+/// the queue is done again by its next run, a failed one is not unless
+/// someone retries it (review of PR 286 items 3 and 4).
+pub(crate) fn say_lost_clone(
+    s: &hive_store::Store,
+    actor: &str,
+    executor: &str,
+    k: &crate::executor::KeptClone,
+    how: &str,
+) -> Option<String> {
+    if k.job_status == "cancelled" || k.job_status == "done" {
+        return None;
+    }
+    let conn = s.conn().ok()?;
+    let job = crate::util::must_one(
+        &conn,
+        "SELECT j.project, j.source, j.title, j.status, COALESCE(r.agent, j.lease_agent, '') AS agent FROM jobs j LEFT JOIN runs r ON r.id = ? WHERE j.id = ?",
+        &[&k.run, &k.job],
+    );
+    let source = job.str("source");
+    let task = task_of_source(&source);
+    if task.is_empty() {
+        return None;
+    }
+    let task_status =
+        crate::util::must_one(&conn, "SELECT status FROM tasks WHERE id = ?", &[&task])
+            .str("status");
+    if matches!(task_status.as_str(), "done" | "cancelled") {
+        return None;
+    }
+    if crate::executor::kept_fetched_before(s, executor, k) {
+        return None;
+    }
+    let branch = crate::land::failed_work_branch(&job.str("agent"), &k.job);
+    let patch = std::path::Path::new(&s.home)
+        .join("patches")
+        .join(job.str("project"))
+        .join(format!("{}.patch", branch.replace('/', "__")));
+    let state = match job.str("status").as_str() {
+        "queued" => format!(
+            "Job {} is back in the queue, so its next run does the work again from the start.",
+            k.job
+        ),
+        "leased" => format!(
+            "Job {} is running again, so that run does the work again from the start.",
+            k.job
+        ),
+        "failed" => format!(
+            "Job {} is failed, so nothing does the work again until the job is retried or the task planned again; it has to be done again.",
+            k.job
+        ),
+        "" => "It has to be done again.".to_string(),
+        other => format!("Job {} is {other}; the work has to be done again.", k.job),
     };
-    for k in kept {
-        if k.job_status == "cancelled" {
-            continue;
-        }
-        let job = crate::util::must_one(
-            &conn,
-            "SELECT j.project, j.source, j.title, COALESCE(r.agent, j.lease_agent, '') AS agent FROM jobs j LEFT JOIN runs r ON r.id = ? WHERE j.id = ?",
-            &[&k.run, &k.job],
-        );
-        let source = job.str("source");
-        let task = task_of_source(&source);
-        if task.is_empty() {
-            continue;
-        }
-        let branch = crate::land::failed_work_branch(&job.str("agent"), &k.job);
-        let patch = std::path::Path::new(&s.home)
-            .join("patches")
-            .join(job.str("project"))
-            .join(format!("{}.patch", branch.replace('/', "__")));
-        let body = format!(
-            "The work of job {job_id} ({title}) is lost. Its run {run} committed on the rented machine {executor}, but neither the fetch nor the bundle brought the commits back, so its clone was kept there (since {at}). {executor} is released ({why}) and the clone went with it, so the branch {branch} and the patch {patch} were never made. Nothing of that run's work can be fetched any more; it has to be done again.",
-            job_id = k.job,
-            title = job.str("title"),
-            run = k.run,
-            at = k.at,
-            patch = patch.display(),
-        );
+    let body = format!(
+        "The work of job {job_id} ({title}) is lost. Its run {run} committed on the machine {executor}, but neither the fetch nor the bundle brought the commits back, so its clone was kept there (since {at}). {how}, so the branch {branch} and the patch {patch} were never made. Nothing of that run's work can be fetched any more. {state}",
+        job_id = k.job,
+        title = job.str("title"),
+        run = k.run,
+        at = k.at,
+        patch = patch.display(),
+    );
+    Some(
         match hive_tasks::send_message(s, &job.str("project"), task, actor, &body) {
-            Ok(_) => lines.push(format!("the loss of {}'s work is said on {task}", k.job)),
-            Err(e) => lines.push(format!(
+            Ok(_) => format!("the loss of {}'s work is said on {task}", k.job),
+            Err(e) => format!(
                 "the loss of {}'s work is not said on {task}: {}",
                 k.job,
                 crate::run::err_message(&e)
-            )),
-        }
-    }
-    lines
+            ),
+        },
+    )
 }
 
 /// The jobs of kept clones, for a line: `job-a, job-b`.

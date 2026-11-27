@@ -2036,15 +2036,22 @@ pub(crate) fn run_job(
                     commits: ex.commit_count(&base),
                     ..Default::default()
                 };
+                // How to get commits the fetch could not bring back from the
+                // machine; the clone there stays for it (as after a failed
+                // check, below).
+                let mut how = String::new();
                 if stop.commits > 0 && !root.is_empty() {
                     let kept_branch = crate::land::failed_work_branch(agent, &job.str("id"));
+                    let mut fetch_failed = false;
                     let kept = crate::land::keep_failed_work(
                         &root,
                         |dst| {
-                            matches!(
+                            let ok = matches!(
                                 fetch_run_work(s, &cancel, ex.as_ref(), &job.str("id"), &root, dst, &log),
                                 Ok(o) if o.exit_code == 0
-                            )
+                            );
+                            fetch_failed = !ok;
+                            ok
                         },
                         &base,
                         &kept_branch,
@@ -2056,11 +2063,21 @@ pub(crate) fn run_job(
                         if let Some((_, patch)) = kept.split_once(" and in ") {
                             stop.patch = patch.trim().to_string();
                         }
+                    } else if fetch_failed {
+                        // The commits are only on the machine: its clone
+                        // is not cleaned, and the machine is marked.
+                        how = ex.fetch_by_hand(&root, &kept_branch);
+                        if !how.is_empty() {
+                            work_not_fetched = true;
+                        }
                     }
                 }
                 commits = stop.commits;
                 status = "held".into();
                 summary = stop.summary();
+                if !how.is_empty() {
+                    summary.push_str(&format!("; {how}"));
+                }
                 stop.record(s, &s.now(), "runner");
                 log.put(&summary);
                 return Ok(());
