@@ -32,7 +32,7 @@
 //!
 //! Since the same day `lease_job` lets the owner's work job past a
 //! project's narrowed lanes at once (one beyond the count, its commit cap
-//! widened for the checks it shares the lock with, `commit_cap_over_lanes`),
+//! widened for the checks it shares the lock with, `owner_commit_cap`),
 //! so the owner's job leases on the tick it is queued; the fleet run in its
 //! way is still asked to hold, so the lanes return to their count and its
 //! own commit is not killed waiting on the owner's check. Once the owner's
@@ -82,26 +82,109 @@ pub(crate) fn yield_lanes_to_owner(
 /// (docs/owner-reservation.md). `everywhere` is what closes every slot this
 /// tick (a console drain, bulk storage away, the disk floor); `local` what
 /// closes this machine's alone (the login gate, the load governor:
-/// `daemon_load::owner_refusal`). None admits. `free_slots` is how many
+/// `daemon_load::owner_refusal`). None admits. `free_slots` lists the
 /// slots the dispatch would offer the owner's work this tick with no run
 /// asked to hold - the paired machines' free slots and this machine's
 /// governor room (`daemon_load::owner_room`); none free is a full fleet.
 /// None counts the jobs in flight against the fleet's nominal total
-/// (`capacity::fleet`), for callers without a governor.
+/// (`capacity::fleet`), for callers without a governor. Each entry names
+/// the machine of one free slot (`executor::LOCAL_EXECUTOR` for this one),
+/// and a slot counts for an owner job only when its machine could run that
+/// job ([`Machines::refuses`]): an idle paired machine that does not serve
+/// the project or lacks what the job needs is no room for it (review of
+/// PR 284, item b). `local_kept` says a
+/// slot freed on this machine would be its last free one under the cap,
+/// which the dispatch keeps back from the owner's work past its project's
+/// share (`jobs::LeaseOpts::keep_slot`): a local run is then not asked to
+/// hold for such a job, since the slot it frees would not start it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct OwnerAdmission {
     pub(crate) everywhere: Option<String>,
     pub(crate) local: Option<String>,
-    pub(crate) free_slots: Option<usize>,
+    pub(crate) free_slots: Option<Vec<String>>,
+    pub(crate) local_kept: bool,
 }
 
+/// The machines a yield pass reads, each looked up once: whether a slot of
+/// one could take a given owner job.
+struct Machines<'a> {
+    s: &'a hive_store::Store,
+    now: &'a str,
+    rows: std::collections::BTreeMap<String, (Row, std::collections::BTreeMap<String, String>)>,
+}
+
+impl<'a> Machines<'a> {
+    fn new(s: &'a hive_store::Store, now: &'a str) -> Self {
+        Self {
+            s,
+            now,
+            rows: std::collections::BTreeMap::new(),
+        }
+    }
+
+    /// Why a slot of machine `name` (empty is this one) could not take the
+    /// owner's job `job`, or None when it could - the checks the lease
+    /// makes of a machine (`run::take_job_first`, `jobs::lease_job`): it is
+    /// active, serves the job's project, offers every word the job needs,
+    /// takes a job that needs nothing only when it is not kept for the work
+    /// that needs it, and is not marked unfit for the project.
+    fn refuses(&mut self, name: &str, job: &Row) -> Option<String> {
+        let name = if name.is_empty() {
+            crate::executor::LOCAL_EXECUTOR
+        } else {
+            name
+        };
+        let (ex, unfit) = self.rows.entry(name.to_string()).or_insert_with(|| {
+            let ex = crate::executor::executor_row(self.s, name);
+            let unfit = match self.s.conn() {
+                Ok(conn) => crate::recipe::unfit_projects(&*conn, name, self.now),
+                Err(_) => std::collections::BTreeMap::new(),
+            };
+            (ex, unfit)
+        });
+        let slug = job.str("project");
+        if ex.str("status") != "active" {
+            return Some(format!("machine {name} is not active"));
+        }
+        if !crate::executor::executor_allows(ex, &slug) {
+            return Some(format!("machine {name} does not serve {slug}"));
+        }
+        let needs = job.str("needs");
+        let missing = hive_store::needs::missing(&needs, &crate::executor::caps(ex));
+        if !missing.is_empty() {
+            return Some(format!(
+                "machine {name} does not offer {}, which the job needs",
+                missing.join(", ")
+            ));
+        }
+        if crate::executor::reserved(ex) && needs.trim().is_empty() {
+            return Some(format!("machine {name} is kept for the work that needs it"));
+        }
+        unfit.get(&slug).map(|why| {
+            format!(
+                "machine {name} {} for {slug}",
+                crate::recipe::unfit_phrase(why)
+            )
+        })
+    }
+}
+
+/// The refusal a slot freed on this machine meets when it would be the
+/// last free one, kept back from the owner's work past its share.
+const KEPT_SLOT: &str = "the slot freed here would be this machine's last free one, kept back from the owner's work past its project's share";
+
 impl OwnerAdmission {
-    /// Why a lane freed on `executor` would not start the owner's job.
-    fn refusal(&self, executor: &str) -> Option<&str> {
+    /// Why a lane freed on `executor` would not start the owner's job;
+    /// `past_share` says the job is past its project's share, so the
+    /// machine's kept slot does not take it.
+    fn refusal(&self, executor: &str, past_share: bool) -> Option<&str> {
         self.everywhere.as_deref().or_else(|| {
-            (executor.is_empty() || executor == crate::executor::LOCAL_EXECUTOR)
-                .then_some(self.local.as_deref())
-                .flatten()
+            if !(executor.is_empty() || executor == crate::executor::LOCAL_EXECUTOR) {
+                return None;
+            }
+            self.local
+                .as_deref()
+                .or_else(|| (past_share && self.local_kept).then_some(KEPT_SLOT))
         })
     }
 }
@@ -134,7 +217,7 @@ pub(crate) fn yield_lanes_if_admitted(
     let waiting = must_rows(
         &conn,
         &format!(
-            "SELECT j.id, j.project, j.kind FROM jobs j JOIN projects p ON p.slug = j.project WHERE j.status = 'queued' AND p.status = 'active' AND j.kind IN ({work}) AND {} ORDER BY j.created_at, j.id",
+            "SELECT j.id, j.project, j.kind, j.needs FROM jobs j JOIN projects p ON p.slug = j.project WHERE j.status = 'queued' AND p.status = 'active' AND j.kind IN ({work}) AND {} ORDER BY j.created_at, j.id",
             crate::jobs::OWNER_DRIVEN_SQL
         ),
         &[],
@@ -148,9 +231,11 @@ pub(crate) fn yield_lanes_if_admitted(
     // project gives its slot up. Full is the governor's room this tick, not
     // the fleet's nominal total: with the cap halved by the kernel's memory
     // warning the jobs in flight never reached the total, and nothing was
-    // asked while the owner's task waited (review of PR 276).
-    let fleet_full = match admission.free_slots {
-        Some(free) => free == 0,
+    // asked while the owner's task waited (review of PR 276). A free slot
+    // counts only for an owner job its machine could run (review of PR
+    // 284, item b), so that is read per job below.
+    let nominal_full = match admission.free_slots {
+        Some(_) => false,
         None => {
             let taken = crate::util::must_one(
                 &conn,
@@ -164,12 +249,19 @@ pub(crate) fn yield_lanes_if_admitted(
             taken >= crate::capacity::fleet(s).total.max(1)
         }
     };
+    let mut machines = Machines::new(s, now);
     let mut seen = std::collections::BTreeSet::new();
     for owner in waiting {
         let slug = owner.str("project");
         if !seen.insert(slug.clone()) {
             continue;
         }
+        let fleet_full = match &admission.free_slots {
+            Some(slots) => !slots
+                .iter()
+                .any(|name| machines.refuses(name, &owner).is_none()),
+            None => nominal_full,
+        };
         // The lanes stand in the owner's way only where they are narrowed
         // (its checks take turns and fewer fit the commit cap than the
         // share) or where its own work is at its bound (owner_work_bound).
@@ -189,6 +281,14 @@ pub(crate) fn yield_lanes_if_admitted(
         );
         let is_work = |k: &Row| crate::jobs::WORK_KINDS.contains(&k.str("kind").as_str());
         let work_held = occupied.iter().filter(|k| is_work(k)).count() as i32;
+        // The owner's work past its share does not take the machine's last
+        // free slot (jobs.rs keep_slot, counting the project's owner work
+        // jobs): a run freeing that slot is not asked to hold for it.
+        let owner_held = occupied
+            .iter()
+            .filter(|k| is_work(k) && crate::jobs::is_owner_driven(k))
+            .count() as i32;
+        let past_share = owner_held >= crate::jobs::parallel_per_project(s);
         let lanes_held =
             narrowed.is_some_and(|n| work_held >= n) || bound.is_some_and(|b| work_held >= b);
         let in_the_way: Vec<Row> = if lanes_held {
@@ -212,18 +312,25 @@ pub(crate) fn yield_lanes_if_admitted(
             .collect::<Vec<_>>();
         fleet.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
         // The youngest run whose lane would start the owner's job; when no
-        // freed lane would, nothing is asked and the pass says why once.
+        // freed lane would, nothing is asked and the pass says why once. A
+        // lane frees on the machine the run is on, so that machine must be
+        // one that could run the owner's job: a run on a paired machine
+        // that does not serve the project, or lacks what the job needs,
+        // would lose its step for nothing (review of PR 284, item c).
         let mut refusal = None;
-        let pick =
-            fleet
-                .into_iter()
-                .find(|(_, _, _, executor)| match admission.refusal(executor) {
-                    Some(why) => {
-                        refusal.get_or_insert_with(|| why.to_string());
-                        false
-                    }
-                    None => true,
-                });
+        let pick = fleet.into_iter().find(|(_, _, _, executor)| {
+            let why = admission
+                .refusal(executor, past_share)
+                .map(str::to_string)
+                .or_else(|| machines.refuses(executor, &owner));
+            match why {
+                Some(why) => {
+                    refusal.get_or_insert(why);
+                    false
+                }
+                None => true,
+            }
+        });
         let Some((_, run_id, job, _)) = pick else {
             if let Some(why) = refusal {
                 pass.refused.push(format!(
@@ -419,6 +526,7 @@ mod tests {
         assert_eq!(yields(), 0);
         // A refusal of this machine alone does not stop a yield on a paired
         // one: that machine carries its own load.
+        paired(&s, "hands-1", "*", "", false);
         s.conn()
             .unwrap()
             .execute("UPDATE runs SET executor = 'hands-1' WHERE id = ?", [&run])
@@ -504,7 +612,7 @@ mod tests {
         let _run = running(&s, &fleet, "aurora", "2026-09-01T01:00:00Z");
         let task = queue(&s, "task", "task:TASK-001");
         let free = |n: usize| OwnerAdmission {
-            free_slots: Some(n),
+            free_slots: Some(vec![crate::executor::LOCAL_EXECUTOR.to_string(); n]),
             ..Default::default()
         };
         // A slot the governor would offer: the owner's task takes it.
@@ -520,6 +628,339 @@ mod tests {
             "{pass:?}"
         );
         assert!(hold_requested(&s, &fleet));
+    }
+
+    #[test]
+    fn no_local_run_holds_for_owner_work_past_its_share_when_it_would_free_the_kept_slot() {
+        // Review of PR 276, item B: the fleet full, the project runs fleet
+        // job F and the owner's task T1, and T2 waits. F was asked to hold,
+        // but the slot it freed was the machine's last, kept back from the
+        // owner's work past its share, and T2 was refused it: F lost its
+        // step for nothing.
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        assert_eq!(crate::jobs::parallel_per_project(&s), 1);
+        for name in ["aurora", "borealis", "cinder"] {
+            join(&s, name);
+        }
+        let fleet = queue(&s, "improve", "suggestion:abc");
+        assert_eq!(lease(&s, "aurora", Vec::new()).str("id"), fleet);
+        let _run = running(&s, &fleet, "aurora", "2026-09-01T01:00:00Z");
+        let first = queue(&s, "task", "task:TASK-001");
+        assert_eq!(lease(&s, "borealis", Vec::new()).str("id"), first);
+        let _first_run = running(&s, &first, "borealis", "2026-09-01T01:10:00Z");
+        let second = queue(&s, "task", "task:TASK-002");
+        let full = |local_kept: bool| OwnerAdmission {
+            free_slots: Some(Vec::new()),
+            local_kept,
+            ..Default::default()
+        };
+        // The freed slot would be the kept one: nothing is asked, and the
+        // pass says why.
+        let pass =
+            yield_lanes_if_admitted(&s, crate::test_helpers::TEST_NOW, "daemon", &full(true));
+        assert!(pass.asked.is_empty(), "{pass:?}");
+        assert_eq!(pass.refused.len(), 1, "{pass:?}");
+        assert!(
+            pass.refused[0].contains(&second) && pass.refused[0].contains("kept back"),
+            "{pass:?}"
+        );
+        assert!(!hold_requested(&s, &fleet));
+        // A slot that would not be the last one starts T2: F holds.
+        let pass =
+            yield_lanes_if_admitted(&s, crate::test_helpers::TEST_NOW, "daemon", &full(false));
+        assert_eq!(pass.asked.len(), 1, "{pass:?}");
+        assert!(pass.asked[0].contains(&fleet), "{pass:?}");
+        assert!(hold_requested(&s, &fleet));
+    }
+
+    #[test]
+    fn the_owners_first_task_in_its_share_is_not_refused_the_kept_slot() {
+        // The kept slot refuses only the owner's work past its share: the
+        // owner's first task in a project the fleet fills takes it, so the
+        // fleet run in the way is asked to hold.
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        assert_eq!(crate::jobs::parallel_per_project(&s), 1);
+        join(&s, "aurora");
+        let fleet = queue(&s, "improve", "suggestion:abc");
+        assert_eq!(lease(&s, "aurora", Vec::new()).str("id"), fleet);
+        let _run = running(&s, &fleet, "aurora", "2026-09-01T01:00:00Z");
+        let task = queue(&s, "task", "task:TASK-001");
+        let pass = yield_lanes_if_admitted(
+            &s,
+            crate::test_helpers::TEST_NOW,
+            "daemon",
+            &OwnerAdmission {
+                free_slots: Some(Vec::new()),
+                local_kept: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(pass.asked.len(), 1, "{pass:?}");
+        assert!(
+            pass.asked[0].contains(&fleet) && pass.asked[0].contains(&task),
+            "{pass:?}"
+        );
+    }
+
+    #[test]
+    fn a_fleet_run_holds_when_the_owners_work_is_at_the_locks_bound_with_slots_free() {
+        // Review of PR 276, item G: the yield's bound branch. With the
+        // verify lock on and a share of one, the owner's work runs to two
+        // work jobs; at that bound a fleet work run of the project is in
+        // the owner's way though slots are free, and it is asked to hold.
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        s.set_setting(hive_store::HUMAN_AGENT, "capacity", "4")
+            .unwrap();
+        assert_eq!(crate::jobs::parallel_per_project(&s), 1);
+        s.set_setting(
+            hive_store::HUMAN_AGENT,
+            crate::verify_lock::SETTING,
+            crate::verify_lock::PROJECT,
+        )
+        .unwrap();
+        assert_eq!(crate::jobs::owner_work_bound(&s), Some(2));
+        for name in ["aurora", "borealis"] {
+            join(&s, name);
+        }
+        let fleet = queue(&s, "improve", "suggestion:abc");
+        assert_eq!(lease(&s, "aurora", Vec::new()).str("id"), fleet);
+        let _run = running(&s, &fleet, "aurora", "2026-09-01T01:00:00Z");
+        let first = queue(&s, "task", "task:TASK-001");
+        assert_eq!(lease(&s, "borealis", Vec::new()).str("id"), first);
+        let _first_run = running(&s, &first, "borealis", "2026-09-01T01:10:00Z");
+        let second = queue(&s, "task", "task:TASK-002");
+        let free = OwnerAdmission {
+            free_slots: Some(vec![crate::executor::LOCAL_EXECUTOR.to_string(); 2]),
+            ..Default::default()
+        };
+        let pass = yield_lanes_if_admitted(&s, crate::test_helpers::TEST_NOW, "daemon", &free);
+        assert_eq!(pass.asked.len(), 1, "{pass:?}");
+        assert!(
+            pass.asked[0].contains(&fleet) && pass.asked[0].contains(&second),
+            "{pass:?}"
+        );
+        assert!(hold_requested(&s, &fleet));
+        // The owner's own run is never asked.
+        assert!(!hold_requested(&s, &first));
+    }
+
+    #[test]
+    fn under_the_bound_with_slots_free_no_fleet_run_holds_for_a_locked_project() {
+        // The bound branch's other side: one owner run in flight beside the
+        // fleet's under a bound of three (a share of two), slots free.
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        crate::capacity::pin_per_project(&s, 2);
+        s.set_setting(
+            hive_store::HUMAN_AGENT,
+            crate::verify_lock::SETTING,
+            crate::verify_lock::PROJECT,
+        )
+        .unwrap();
+        assert_eq!(crate::jobs::owner_work_bound(&s), Some(3));
+        for name in ["aurora", "borealis"] {
+            join(&s, name);
+        }
+        let fleet = queue(&s, "improve", "suggestion:abc");
+        assert_eq!(lease(&s, "aurora", Vec::new()).str("id"), fleet);
+        let _run = running(&s, &fleet, "aurora", "2026-09-01T01:00:00Z");
+        let first = queue(&s, "task", "task:TASK-001");
+        assert_eq!(lease(&s, "borealis", Vec::new()).str("id"), first);
+        let _first_run = running(&s, &first, "borealis", "2026-09-01T01:10:00Z");
+        let _second = queue(&s, "task", "task:TASK-002");
+        let pass = yield_lanes_if_admitted(
+            &s,
+            crate::test_helpers::TEST_NOW,
+            "daemon",
+            &OwnerAdmission {
+                free_slots: Some(vec![crate::executor::LOCAL_EXECUTOR.to_string(); 2]),
+                ..Default::default()
+            },
+        );
+        assert!(pass.asked.is_empty(), "{pass:?}");
+        assert!(!hold_requested(&s, &fleet));
+    }
+
+    /// A paired machine `name` serving `projects`, active, offering
+    /// `labels` and marked reserved or not, as the probe leaves it.
+    fn paired(s: &hive_store::Store, name: &str, projects: &str, labels: &str, reserved: bool) {
+        crate::executor::add_executor(
+            s,
+            crate::test_helpers::TEST_NOW,
+            name,
+            "ci@box",
+            "/w",
+            1,
+            projects,
+            "human",
+        )
+        .unwrap();
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE executors SET status = 'active', os = 'linux', arch = 'x86_64', labels = ?, reserved = ? WHERE name = ?",
+                rusqlite::params![labels, i64::from(reserved), name],
+            )
+            .unwrap();
+    }
+
+    /// A fleet run of `job` in flight on `executor`.
+    fn running_on(s: &hive_store::Store, job: &str, agent: &str, started_at: &str, executor: &str) {
+        let run_id = running(s, job, agent, started_at);
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE runs SET executor = ? WHERE id = ?",
+                rusqlite::params![executor, run_id],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn a_free_paired_slot_the_owners_job_cannot_use_is_no_room_for_it() {
+        // Review of PR 284, item b: every free slot of a paired machine
+        // counted as room, whatever the waiting job needs, so a fleet run
+        // was never asked to hold while an idle machine that could not run
+        // the owner's job stood by. A slot now counts only on a machine
+        // that serves the project, offers what the job needs, is not kept
+        // for other work and is not marked unfit for the project.
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        for name in ["aurora", "borealis"] {
+            join(&s, name);
+        }
+        paired(&s, "other", "elsewhere", "", false);
+        paired(&s, "kept", "*", "", true);
+        paired(&s, "unfit", "*", "", false);
+        crate::recipe::mark_unfit(
+            &*s.conn().unwrap(),
+            crate::test_helpers::TEST_NOW,
+            "unfit",
+            "proj",
+            "cargo",
+        );
+        let fleet = queue(&s, "improve", "suggestion:abc");
+        assert_eq!(lease(&s, "aurora", Vec::new()).str("id"), fleet);
+        let _run = running(&s, &fleet, "aurora", "2026-09-01T01:00:00Z");
+        let task = queue(&s, "task", "task:TASK-001");
+        let slots = |names: &[&str]| OwnerAdmission {
+            free_slots: Some(names.iter().map(|n| n.to_string()).collect()),
+            ..Default::default()
+        };
+        // None of these four could run the owner's task: the fleet is
+        // full for it, and the fleet's run here is asked to hold.
+        let pass = yield_lanes_if_admitted(
+            &s,
+            crate::test_helpers::TEST_NOW,
+            "daemon",
+            &slots(&["other", "kept", "unfit"]),
+        );
+        assert_eq!(pass.asked.len(), 1, "{pass:?}");
+        assert!(pass.asked[0].contains(&task), "{pass:?}");
+        assert!(hold_requested(&s, &fleet));
+        // A job needing cuda: only the gpu machine is room for it.
+        let s2 = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s2);
+        for name in ["aurora", "borealis"] {
+            join(&s2, name);
+        }
+        paired(&s2, "gpu", "*", "cuda", false);
+        paired(&s2, "box", "*", "", false);
+        let fleet2 = queue(&s2, "improve", "suggestion:abc");
+        assert_eq!(lease(&s2, "aurora", Vec::new()).str("id"), fleet2);
+        // The fleet's run is on the gpu: the slot it frees could take a
+        // job that needs cuda.
+        running_on(&s2, &fleet2, "aurora", "2026-09-01T01:00:00Z", "gpu");
+        let task2 = queue(&s2, "task", "task:TASK-001");
+        s2.conn()
+            .unwrap()
+            .execute("UPDATE jobs SET needs = 'cuda' WHERE id = ?", [&task2])
+            .unwrap();
+        // The gpu's free slot is room for it: nothing is asked.
+        let pass = yield_lanes_if_admitted(
+            &s2,
+            crate::test_helpers::TEST_NOW,
+            "daemon",
+            &slots(&["gpu"]),
+        );
+        assert!(pass.asked.is_empty(), "{pass:?}");
+        assert!(!hold_requested(&s2, &fleet2));
+        // A free slot on a machine without cuda is not.
+        let pass = yield_lanes_if_admitted(
+            &s2,
+            crate::test_helpers::TEST_NOW,
+            "daemon",
+            &slots(&["box"]),
+        );
+        assert_eq!(pass.asked.len(), 1, "{pass:?}");
+        assert!(pass.asked[0].contains(&task2), "{pass:?}");
+        assert!(hold_requested(&s2, &fleet2));
+    }
+
+    #[test]
+    fn a_fleet_run_on_a_paired_machine_the_owners_job_cannot_use_is_not_asked_to_hold() {
+        // Review of PR 284, item c: the yield asks only when the slot it
+        // frees could take the job it is asked for. The fleet's two runs
+        // fill the fleet; the younger is on a paired machine that does not
+        // serve the project, so freeing it would not start the owner's
+        // task: the older, on this machine, is asked instead. When only
+        // the paired machine's run is in the way, none is asked and the
+        // pass says why.
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        for name in ["aurora", "borealis", "cinder"] {
+            join(&s, name);
+        }
+        crate::capacity::pin_per_project(&s, 4);
+        paired(&s, "other", "elsewhere", "", false);
+        let older = queue(&s, "improve", "suggestion:abc");
+        assert_eq!(lease(&s, "aurora", Vec::new()).str("id"), older);
+        running_on(&s, &older, "aurora", "2026-09-01T01:00:00Z", "local");
+        let younger = queue(&s, "improve", "suggestion:def");
+        assert_eq!(lease(&s, "borealis", Vec::new()).str("id"), younger);
+        running_on(&s, &younger, "borealis", "2026-09-01T02:00:00Z", "other");
+        let task = queue(&s, "task", "task:TASK-001");
+        let full = OwnerAdmission {
+            free_slots: Some(Vec::new()),
+            ..Default::default()
+        };
+        let pass = yield_lanes_if_admitted(&s, crate::test_helpers::TEST_NOW, "daemon", &full);
+        assert_eq!(pass.asked.len(), 1, "{pass:?}");
+        assert!(
+            pass.asked[0].contains(&older) && pass.asked[0].contains(&task),
+            "{pass:?}"
+        );
+        assert!(hold_requested(&s, &older));
+        assert!(!hold_requested(&s, &younger));
+        // The local run gone, the paired one alone stands in the way.
+        let s2 = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s2);
+        for name in ["aurora", "borealis"] {
+            join(&s2, name);
+        }
+        paired(&s2, "other", "elsewhere", "", false);
+        let only = queue(&s2, "improve", "suggestion:abc");
+        assert_eq!(lease(&s2, "aurora", Vec::new()).str("id"), only);
+        running_on(&s2, &only, "aurora", "2026-09-01T01:00:00Z", "other");
+        let task2 = queue(&s2, "task", "task:TASK-001");
+        let pass = yield_lanes_if_admitted(&s2, crate::test_helpers::TEST_NOW, "daemon", &full);
+        assert!(pass.asked.is_empty(), "{pass:?}");
+        assert!(!hold_requested(&s2, &only));
+        assert_eq!(pass.refused.len(), 1, "{pass:?}");
+        assert!(
+            pass.refused[0].contains(&task2)
+                && pass.refused[0].contains("machine other does not serve proj"),
+            "{pass:?}"
+        );
     }
 
     #[test]

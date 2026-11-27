@@ -8,24 +8,25 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { KindTile } from "@/components/hive/kind-tile";
 import { useInbox } from "@/components/hive/inbox";
 import { When } from "@/components/hive/who";
-import { forYouRows, latestRows, waitingWords } from "@/components/sessions/asks-state";
+import { bellView, forYouRows, waitingWords } from "@/components/sessions/asks-state";
 import { rowHref } from "@/components/sessions/row-href";
 import { projectLabel, type Org } from "@/lib/api";
 import { hrefs } from "@/lib/nav";
 import { useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 
-// The top bar's bell (spec "Top bar"): the count of what waits on you in
-// marigold and, opened, the five most pressing - machine problems first,
-// then stop questions, then the newest - each a link to where it is
-// answered, with "See all" to the hard-stop strip on Sessions (For you went
-// with TASK-129).
+// The top bar's bell (spec "Top bar"): the count of the decisions only you
+// can make in marigold - the hard-stop strip's rows, the same number the
+// sidebar's Sessions item shows - and, opened, the first five in the strip's
+// order (money first, then urgent, then newest), each a link to where it is
+// answered, with "See all" to the strip on Sessions (For you went with
+// TASK-129). A broken runner is the attention strip's, not the bell's.
 export function Bell({ className }: { className?: string }) {
   const inbox = useInbox();
   const { data: org } = useApi<Org>("org");
-  const rows = forYouRows({ ...inbox, brain: org?.totals.brain || "" });
-  const five = latestRows(rows, 5);
-  const n = inbox.total;
+  // The bell counts what the hard-stop strip lists (docs/console.md); the
+  // routine asks are their leads' and wait on each project's For you tab.
+  const { count: n, latest: five } = bellView(forYouRows({ ...inbox, brain: org?.totals.brain || "", machineWhy: inbox.downWhy[0] }));
   const name = (slug: string) => {
     const p = [...(org?.projects ?? []), ...(org?.commons ? [org.commons] : [])].find((x) => x.slug === slug);
     return p ? projectLabel(p) : slug;
@@ -49,7 +50,7 @@ export function Bell({ className }: { className?: string }) {
       </Tooltip>
       <DropdownMenuContent align="end" className="w-80 p-1.5">
         <DropdownMenuLabel className="flex items-center justify-between px-2 py-1.5 text-xs font-medium text-muted-foreground">
-          <span>Waiting on you</span>
+          <span>Only you can decide</span>
           {n > 0 ? <span className="tnum">{n}</span> : null}
         </DropdownMenuLabel>
         {five.length ? (
@@ -60,7 +61,7 @@ export function Bell({ className }: { className?: string }) {
                 <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                   <span className="truncate text-[13px] font-medium leading-5 text-foreground">{r.title}</span>
                   <span className="flex min-w-0 items-center gap-1.5 truncate text-xs text-muted-foreground">
-                    {r.project ? <span className="truncate">{name(r.project)}</span> : <span>This machine</span>}
+                    {r.project ? <span className="truncate">{r.projectWord || name(r.project)}</span> : <span>This machine</span>}
                     {r.at ? (
                       <>
                         <span aria-hidden>·</span>
@@ -73,7 +74,7 @@ export function Bell({ className }: { className?: string }) {
             </DropdownMenuItem>
           ))
         ) : (
-          <div className="px-2 py-4 text-center text-[13px] text-muted-foreground">{inbox.ready ? "Nothing waits on you." : "Checking…"}</div>
+          <div className="px-2 py-4 text-center text-[13px] text-muted-foreground">{inbox.ready ? "Nothing waits on you. The leads decide the rest." : "Checking…"}</div>
         )}
         <DropdownMenuSeparator />
         <DropdownMenuItem asChild className="justify-center rounded-md text-[13px] font-medium text-link focus:text-link">

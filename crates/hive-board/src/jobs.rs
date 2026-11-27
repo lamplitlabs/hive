@@ -120,27 +120,50 @@ pub static AGENT_SPEC_CHECK: RwLock<Option<AgentSpecCheckFn>> = RwLock::new(None
 /// A `task:` source makes the job the owner's work: it leases past its
 /// project's share and may take every free slot but the one kept back
 /// (TASK-136). `hive job add` takes such a source only when it names a
-/// task that exists and is still open (not done or cancelled); a typo or a
-/// closed task would otherwise queue fleet work with the owner's priority.
-/// Any other source passes unchecked.
-pub fn check_task_source(s: &hive_store::Store, source: &str) -> Result<()> {
-    if !source.starts_with(hive_store::TASK_SOURCE_PREFIX) {
-        return Ok(());
+/// task of `project` that exists and is still open (not done or
+/// cancelled); a typo, a closed task or another project's task would
+/// otherwise queue fleet work with the owner's priority, and a job of
+/// another project's task would count as that task's (hive-tasks `jobs`).
+/// The prefix is read in any case, as the lease's SQL `LIKE 'task:%'` reads
+/// it: `TASK:x` was owner-driven there and passed this check unread (review
+/// of PR 284, item a). Returns the source to store, its prefix written
+/// `task:` so every reader of the source finds the task. Any other source
+/// passes unchecked and unchanged.
+pub fn check_task_source(s: &hive_store::Store, project: &str, source: &str) -> Result<String> {
+    let prefix = hive_store::TASK_SOURCE_PREFIX;
+    let Some(head) = source.get(..prefix.len()) else {
+        return Ok(source.to_string());
+    };
+    if !head.eq_ignore_ascii_case(prefix) {
+        return Ok(source.to_string());
     }
+    let source = format!("{prefix}{}", &source[prefix.len()..]);
     let fix = "hive task list shows the open tasks; queue the job with --source task:TASK-NNN (or task:TASK-NNN:label) of one of them, or with another source";
-    let Some(id) = hive_store::task_source_id(source) else {
+    let Some(id) = hive_store::task_source_id(&source) else {
         return Err(refuse_fix(
             2,
-            format!("{} names no task", py_repr(source)),
+            format!("{} names no task", py_repr(&source)),
             "a task: source is the owner's work and leases past its project's share",
             fix,
         ));
     };
-    let status: Option<String> = s
+    let task: Option<(String, String)> = s
         .conn()?
-        .query_row("SELECT status FROM tasks WHERE id = ?", [id], |r| r.get(0))
+        .query_row(
+            "SELECT project, status FROM tasks WHERE id = ?",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
         .optional()?;
-    match status.as_deref() {
+    if let Some((owner, _)) = task.as_ref().filter(|(p, _)| p != project) {
+        return Err(refuse_fix(
+            2,
+            format!("Task {id} is {owner}'s, not {project}'s"),
+            "a task: source is the owner's work of the task's own project and leases past that project's share",
+            format!("queue it in {owner} with --project {owner}; {fix}"),
+        ));
+    }
+    match task.map(|(_, status)| status).as_deref() {
         None => Err(refuse_fix(
             2,
             format!("No task {id}"),
@@ -153,7 +176,7 @@ pub fn check_task_source(s: &hive_store::Store, source: &str) -> Result<()> {
             "a closed task queues no more work as the owner's",
             format!("hive task show {id} says how it ended; {fix}"),
         )),
-        Some(_) => Ok(()),
+        Some(_) => Ok(source),
     }
 }
 
@@ -3352,7 +3375,101 @@ mod tests {
             assert!(out.trim().starts_with("job-"), "{source}: {out:?}");
         }
         assert_eq!(queued(), 4);
-        assert!(check_task_source(&s, "").is_ok());
+        assert_eq!(check_task_source(&s, "demo", "").unwrap(), "");
+    }
+
+    #[test]
+    fn job_add_takes_a_task_source_only_of_its_own_project_in_any_case() {
+        // Review of PR 284, item a: the check read the task's status alone,
+        // so another project's open task was taken and the job counted as
+        // that task's; and `TASK:x` in capitals, owner-driven to the
+        // lease's SQL LIKE, passed the check unread.
+        let _serial = crate::test_helpers::serial();
+        no_tty();
+        let (dir, s, _p) = fixture();
+        s.conn()
+            .unwrap()
+            .execute("INSERT INTO projects (slug, name, path, remote, brain, verify_cmd, default_branch, status, added_at, added_by, last_seen) VALUES ('other', 'other', ?, '', 0, '', 'main', 'active', ?, 'human', ?)",
+                params![dir.path().join("other").display().to_string(), TEST_NOW, TEST_NOW])
+            .unwrap();
+        task_row(&s, "TASK-007", "open");
+        task_row(&s, "TASK-008", "done");
+        s.conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO tasks (id, project, title, status, priority, created_by, created_at, updated_at, current_rev) VALUES ('TASK-010', 'other', 'Theirs', 'open', 0, 'human', ?, ?, 1)",
+                params![TEST_NOW, TEST_NOW],
+            )
+            .unwrap();
+        let add = |project: &str, source: &str| {
+            run_cmd(
+                &s,
+                Some(hive_cli::Context {
+                    agent: "alice".into(),
+                    project: project.into(),
+                    ..test_context()
+                }),
+                &["job", "add", "--title", source, "--source", source],
+            )
+        };
+        let sources = || {
+            s.conn()
+                .unwrap()
+                .prepare("SELECT source FROM jobs ORDER BY source")
+                .unwrap()
+                .query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        for (project, source, what) in [
+            (
+                "demo",
+                "task:TASK-010",
+                "Task TASK-010 is other's, not demo's",
+            ),
+            (
+                "demo",
+                "task:TASK-010:ui",
+                "Task TASK-010 is other's, not demo's",
+            ),
+            (
+                "other",
+                "task:TASK-007",
+                "Task TASK-007 is demo's, not other's",
+            ),
+            ("demo", "TASK:TASK-404", "No task TASK-404"),
+            ("demo", "Task:TASK-008", "Task TASK-008 is done"),
+            (
+                "demo",
+                "TASK:TASK-010",
+                "Task TASK-010 is other's, not demo's",
+            ),
+            ("demo", "TASK:", "'task:' names no task"),
+        ] {
+            let (_, err) = add(project, source);
+            let err = err.expect_err(source);
+            assert_eq!(what_any(&err), what, "{project} {source}");
+            assert_eq!(code(Some(&err)), 2, "{project} {source}");
+        }
+        assert!(sources().is_empty(), "a refused source queues nothing");
+        // The task's own project takes it, and a prefix in capitals is
+        // stored as `task:` so the task's readers find the job.
+        for (project, source) in [
+            ("demo", "TASK:TASK-007"),
+            ("other", "task:TASK-010"),
+            ("demo", "tasks-board"),
+        ] {
+            let (out, err) = add(project, source);
+            assert!(err.is_ok(), "{source}: {err:?}");
+            assert!(out.trim().starts_with("job-"), "{source}: {out:?}");
+        }
+        assert_eq!(
+            sources(),
+            ["task:TASK-007", "task:TASK-010", "tasks-board"],
+            "{:?}",
+            sources()
+        );
     }
 
     #[test]

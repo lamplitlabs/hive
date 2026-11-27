@@ -317,6 +317,9 @@ export interface Proposal extends Who {
   kind?: string;
   decided_agent?: string;
   decided_name?: string;
+  // A proposed project goal (TASK-117): the hub's org row carries it as
+  // `goal_proposal`; the inbox folds it in here (goal-proposal-state.ts).
+  goal?: GoalProposal;
 }
 
 // A question that waits for the owner: a post marked for_owner, or one of the
@@ -531,6 +534,9 @@ export interface ProjectCardData extends Partial<EvolveGate> {
   // goal - and a hub that predates the field sends neither.
   goal_source?: GoalSource;
   goal_preview?: string; // the first line of the goal, at most ~120 characters; "" when nothing is stored
+  // The goal a lead or Hive's draft proposes, waiting for the owner's yes
+  // (TASK-117); null when none waits, absent on a hub that predates it.
+  goal_proposal?: GoalProposal | null;
   // What kind of machine this project's jobs need, comma-separated words
   // such as "macos,xcode"; "" means any machine. Project rows only.
   needs?: string;
@@ -1763,7 +1769,10 @@ export interface ChatPendingQuestion {
   kind: "question";
   id: number;
   question: string;
+  // The answers to pick from (the `question` tool requires 2-6) and the one
+  // the agent recommends; absent from a question asked by an older build.
   choices: string[];
+  recommended?: string;
 }
 export interface ChatPendingApproval {
   kind: "approval";
@@ -1968,9 +1977,16 @@ export interface ChatTask {
   last_message_at: string;
   last_author: string;
   needs_you: boolean; // the lead waits for your reply (status review)
+  // The one rule for "waits on you" (hive_tasks::owner_turn): the lead's
+  // question, or a pull request only the owner moves. Absent from older hubs.
+  owner_turn?: boolean;
   sessions: ChatTaskSession[];
   // The task's pull request and where its review stands; null before one.
   pr?: PrState | null;
+  // A pull request that could not be opened while a finished step waits
+  // on it: `held` the runner tries again, `held_for_owner` only the owner
+  // moves. Null otherwise; absent from older hubs.
+  hold?: { state: string; note: string; at: string } | null;
 }
 
 // A step of a task as a conversation: the job and, once an agent took it,
@@ -2847,7 +2863,8 @@ export type TaskDeliveryState =
   | "changes_requested"
   | "review_failed"
   | "merged"
-  | "held"
+  | "held" // could not be opened; the runner tries again on its own
+  | "held_for_owner" // could not be opened; only the owner moves it (a conflict)
   | "waiting"
   | "landed"
   | "asked"
@@ -3368,6 +3385,8 @@ export type AddMachineInput =
     }
   | {
       mode: "request";
+      // Whose work the machine takes: a project's slug, or "commons" (the
+      // console's "Any project") for a machine every project can use.
       project: string;
       size?: string;
       hours?: number;

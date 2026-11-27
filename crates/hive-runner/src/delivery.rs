@@ -985,12 +985,15 @@ fn carried_elsewhere(
 /// Whether `rev` merges onto `start` alone without a conflict, read from
 /// objects only (`git merge-tree --write-tree`: exit 0 clean, 1 conflicts).
 /// False when git cannot say, so a branch is taken for one at odds with
-/// its base, as before.
+/// its base, as before. No `--quiet`: git learned it in 2.46, and the
+/// git of a rented Ubuntu 24.04 machine (2.43) refused it, so every branch
+/// read as at odds with its base there and two delivery tests were red on
+/// Linux only (TASK-156 item 1). The tree it prints is not read.
 fn merges_alone(dir: &str, start: &str, rev: &str) -> bool {
     let out = crate::util::git_timeout(
         dir,
         Duration::from_secs(120),
-        &["merge-tree", "--write-tree", "--quiet", start, rev],
+        &["merge-tree", "--write-tree", start, rev],
     );
     out.err.is_none() && out.code == 0
 }
@@ -8858,12 +8861,26 @@ exit 0
             &repo,
             &["git", "merge", "-q", "--no-ff", "--no-edit", &a_tip],
         );
+        // With the identity `run` gives git: a user without a name in the
+        // password database (a rented Linux machine's) otherwise fails the
+        // merge on "empty ident name" before it stops at the conflict, and
+        // the commit below finds no merge message.
         let merged = std::process::Command::new("git")
             .args(["merge", "-q", "--no-ff", "--no-edit", &b_tip])
             .current_dir(&repo)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@x")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@x")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .output()
             .unwrap();
         assert!(!merged.status.success(), "the two conflict");
+        assert!(
+            String::from_utf8_lossy(&merged.stdout).contains("CONFLICT"),
+            "the merge stops at the conflict: {}",
+            String::from_utf8_lossy(&merged.stderr)
+        );
         std::fs::write(std::path::Path::new(&repo).join("shared.txt"), "both\n").unwrap();
         run(&repo, &["git", "add", "shared.txt"]);
         run(&repo, &["git", "commit", "-q", "--no-edit"]);

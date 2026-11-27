@@ -1417,7 +1417,7 @@ mod tests {
         let (h, _script) = fake_handler(
             &ts,
             json!([
-                {"tool": "question", "args": {"question": "Which colour?", "choices": ["red", "blue"]}},
+                {"tool": "question", "args": {"question": "Which colour?", "choices": ["red", "blue"], "recommended": "red"}},
                 {"tool": "write", "args": {"path": "colour.txt", "content": "blue\n"}},
                 {"content": "Saved blue."}
             ]),
@@ -1434,6 +1434,7 @@ mod tests {
         assert_eq!(shown["live"]["pending"]["kind"], "question");
         assert_eq!(shown["live"]["pending"]["question"], "Which colour?");
         assert_eq!(shown["live"]["pending"]["choices"][1], "blue");
+        assert_eq!(shown["live"]["pending"]["recommended"], "red");
         let (code, _, raw) = call(
             &h,
             "POST",
@@ -2512,5 +2513,78 @@ mod tests {
             .map(|t| t["id"].as_str().unwrap())
             .collect();
         assert_eq!(ids, vec![task.id.as_str(), old.id.as_str()]);
+    }
+
+    // A pull request that could not be opened: a hold the runner tries
+    // again (`tries`, a fault on the way to the forge) leaves the task to
+    // the runner; a hold without (a conflict, "this one is for you") stands
+    // until the work changes and nobody is woken to change it, so the task
+    // waits on the owner - the lifecycle view's rule (TASK-153).
+    #[test]
+    fn the_list_says_a_pull_request_held_for_a_conflict_is_the_owners_turn() {
+        let _env = hive_testutil::env_lock();
+        let ts = additions_store(false);
+        additions_project(&ts, "one");
+        let h = handler(&ts);
+        let task = hive_tasks::new(&ts, "one", "Ship the spec", "the brief", 10, "human").unwrap();
+        let conn = ts.conn().unwrap();
+        conn.execute(
+            "UPDATE tasks SET status='in_progress', lead='one-lead' WHERE id=?",
+            [&task.id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO jobs (id, project, kind, title, source, status, lease_agent, created_at, branch) VALUES \
+             ('job-c', 'one', 'task', 'Wire it up', ?1, 'done', 'iris', '2026-10-31T10:03:00Z', 'hive/iris/job-c')",
+            [format!("task:{}", task.id)],
+        )
+        .unwrap();
+        drop(conn);
+        let group = || {
+            let (code, body, raw) = call(&h, "GET", "/api/v1/chat", Value::Null);
+            assert_eq!(code, 200, "{raw}");
+            body["tasks"].as_array().unwrap()[0].clone()
+        };
+        let g = group();
+        assert!(g["hold"].is_null(), "{g}");
+        assert_eq!(g["owner_turn"], false);
+
+        let hold = |detail: Value| {
+            hive_bus::emit(
+                &ts.store,
+                "daemon",
+                "land.pr-held",
+                "one",
+                detail.to_string(),
+            )
+            .unwrap();
+            group()
+        };
+        let g = hold(
+            json!({"project": "one", "task": task.id, "note": "gh: could not resolve host", "tries": 2}),
+        );
+        assert_eq!(g["hold"]["state"], "held", "{g}");
+        assert_eq!(g["owner_turn"], false);
+        let g = hold(
+            json!({"project": "one", "task": task.id, "note": "does not merge cleanly; this one is for you"}),
+        );
+        assert_eq!(g["hold"]["state"], "held_for_owner", "{g}");
+        assert_eq!(
+            g["hold"]["note"],
+            "does not merge cleanly; this one is for you"
+        );
+        assert_eq!(g["owner_turn"], true);
+        // The lifecycle view says the same.
+        let l = hive_tasks::lifecycle_for(&ts.store, &task.id).unwrap();
+        assert_eq!(l.waits_on, hive_tasks::WaitsOn::Owner, "{l:?}");
+
+        // Once the step's branch is delivered the hold is old news.
+        ts.conn()
+            .unwrap()
+            .execute("UPDATE jobs SET branch = '' WHERE id = 'job-c'", [])
+            .unwrap();
+        let g = group();
+        assert!(g["hold"].is_null(), "{g}");
+        assert_eq!(g["owner_turn"], false);
     }
 }

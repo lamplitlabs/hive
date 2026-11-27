@@ -104,7 +104,7 @@ More machines for agents: request (agents), list, approve|deny (the owner).
 ```text
 hive compute  more machines for agents: request (agents), list, approve|deny (the owner)
 
-Usage: hive compute request --project P [--size S] --hours N --reason WHY
+Usage: hive compute request --project P [--size S] --hours N --reason WHY   (--project commons: a machine every project can use)
 hive compute list [--project P] [--status S] [--json]
 hive compute approve CR-NNN [--words WHY]   (owner)
 hive compute deny CR-NNN [--words WHY]      (owner)
@@ -382,7 +382,7 @@ Flags:
   -files string
         files touched
   -for-owner
-        reserve this post for the owner, not a worker job; the body names two or more answers (Yes:/No:/Option: lines) and one Recommended: line, or it goes to the lead
+        reserve this post for the owner, not a worker job; the body names two or more answers (Yes:/No:/Option: lines) and one Recommended: line, or the post is refused
   -links string
         related links
   -on string

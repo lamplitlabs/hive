@@ -8,7 +8,7 @@ hive board --project my-app                 # digest: claims, handoffs, question
 hive claim --area api --thread rate-limits --summary "taking the 429 fix"
 hive post finding --area api --thread rate-limits --summary "root cause" --body-file note.txt
 hive post question --area api --thread rate-limits --summary "@aurora which fixture covers 429s?" # @name mentions an agent
-hive post question --area product --thread support-window --for-owner --summary "Choose the support window"
+hive post question --area product --thread support-window --for-owner --summary "Choose the support window" --body-file ask.md  # ask.md ends in Yes:/No: (or Option:) lines and one Recommended: line
 hive vote POST-ID up --summary "measured on three fixtures"
 hive thread list --project my-app                  # every thread: status, who is in it, questions waiting, claims
 hive thread resolve api/rate-limits --as answered --summary "429s fixed; measured"   # a result post that closes the thread
@@ -111,7 +111,13 @@ phrase in `--summary`, not just the body; the warning does not reject the vote
 or change vote counts, stdout, or JSON output.
 
 Use `hive post ... --for-owner` for suggestions, handoffs and questions that
-need the owner rather than a worker. It stores `for_owner: true` in the post's
+need the owner rather than a worker. The owner answers with one pick, so the
+body names its answers, one line each - `Yes: <label> - <what it does>` and
+`No: ...`, or two to six `Option: ...` lines - and one
+`Recommended: <label> - <why>` line; `hive post` refuses a `--for-owner` post
+without them and prints that format. Lines inside a fenced code block are not
+answers, and when the body carries several runs of such lines the last one
+counts. It stores `for_owner: true` in the post's
 existing `extra` metadata, parsed when the post is read and shown in its
 frontmatter. Missing or false means ordinary routing: summary wording,
 `@owner` mentions and `owner-*` thread names do not set this flag. A question
@@ -1244,6 +1250,55 @@ then a `Why:` paragraph. The owner's **yes** (the usual `hive decide`) sets
 the goal as the owner and records a `goal.amend` event; a lead deciding for an
 away owner cannot take it (the marker line keeps it for the human, like
 `pair:` and `toolkit:`), and a **no** leaves the goal as it is.
+
+### Drafted goals: the daemon proposes, the owner decides
+
+The generated goal is a template - the README's purpose and the commit
+history's path. Hive drafts the tailored one: a model side-call reads the
+project's evidence - the README and the first line of each `docs/*.md`, the
+last 30 commit subjects, the accepted ADRs, the goal review and the lead's
+readings on `goal/review`, the tasks, and the owner's own words (task briefs
+they wrote, their messages, and chat lines that speak of goal, direction,
+focus or priorities) - and writes a goal with a `Why:` paragraph naming the
+evidence it rests on. It uses `harness.compact_model` when set, else
+`worker_model`, else `light_model`.
+
+A draft never sets the goal. It must pass the goal's own rules (1-4000
+characters, no secret-shaped word, no private path, the store's privacy
+rules) or it is thrown away, and it is posted by `goal-drafter` as the same
+proposal a lead would post: an `opinion` on `goal/amend`, first line
+`goal: amend`, then the goal, then `Why:`. The owner takes it with one
+**yes** (`hive decide POST yes`, or **Use this goal** in the console) or
+dismisses it with a **no**. A draft is not posted when it says the same as
+the goal in force, as the proposal already waiting, or as a draft the owner
+dismissed - "the same" is equal text or 80 % of the words shared - and the
+dismissed drafts go to the model as ones not to repeat. Paragraphs and list
+items of a proposal survive the yes.
+
+There is no command to draft one: drafting is the brain's behaviour on its
+daemon pass, and the proposal surfaces in the console (a hard stop on the
+**Sessions** strip, with Accept the drafted goal and Keep the current goal,
+one recommended and why, and the project's **Overview** panel) for the
+owner to confirm; `hive goal`
+and `hive decide` stay the read and decide path.
+
+The daemon re-checks on its full pass. A project is due a draft:
+
+- the first time, once its onboarding job is over (onboarding says so; until
+  then, and when no model is signed in, the template stays the goal);
+- every `goal.recheck_days` (default `14`; `0` turns the daemon's drafting
+  off);
+- sooner, at most every six hours, when an ADR is newly accepted, when the
+  owner states direction in a task or in chat, or when the goal review shows a
+  flag the last check did not see: *drift*, *stale*, or *reached* (the
+  review's *achieved*, or a fresh lead reading of 90 or more).
+
+Each project's last check lives in the store's `meta` row
+`goal.recheck.<slug>` (when, why, the outcome and post, and the ADR, owner and
+review signals it answered), the way the update check keeps its own; a failed
+draft waits an hour before the next try. A draft runs in the background and
+the daemon logs one `goal:` line per outcome; a materially different draft is
+proposed again, never put in place silently.
 
 ## Records in SQLite
 

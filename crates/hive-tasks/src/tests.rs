@@ -1321,6 +1321,69 @@ fn compute_request_says_how_many_machine_runs_landed() {
     );
 }
 
+/// A request for the shared board is a request for a machine every project can use: it is
+/// filed like any other, its proposal says whose work the machine takes, and the projects its
+/// machine is paired for are `*`. Read as a project's slug, "commons" would keep the machine
+/// for a board, which is not a project whose jobs a machine runs.
+#[test]
+fn compute_request_for_any_project_serves_every_project() {
+    let _serial = crate::test_helpers::serial();
+    let s = new_store();
+    assert_eq!(ANY_PROJECT, hive_store::COMMONS_SLUG);
+    assert_eq!(machine_projects(ANY_PROJECT), "*");
+    assert_eq!(machine_projects("demo"), "demo");
+    assert_eq!(machine_projects_words(ANY_PROJECT), "every project");
+    assert_eq!(machine_projects_words("demo"), "project `demo`");
+    let any = request_compute(
+        &s,
+        ANY_PROJECT,
+        "demo-lead",
+        "Standard_B2ms",
+        4,
+        "a full queue",
+    )
+    .unwrap();
+    assert_eq!(
+        (any.project.as_str(), any.status.as_str()),
+        (ANY_PROJECT, "pending")
+    );
+    let body_of = |post: &str| -> (String, String) {
+        s.conn()
+            .unwrap()
+            .query_row(
+                "SELECT project, body FROM posts WHERE id = ?",
+                [post],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+    };
+    let (project, body) = body_of(&any.proposal_post);
+    assert_eq!(project, ANY_PROJECT);
+    assert!(
+        body.starts_with(
+            "demo-lead asks for one Standard_B2ms machine for 4 hours. Every project's work can run on it.\n"
+        ),
+        "{body}"
+    );
+    // One project's request says nothing of the kind.
+    let one = request_compute(&s, "demo", "demo-lead", "Standard_B2ms", 4, "one build").unwrap();
+    let (_, body) = body_of(&one.proposal_post);
+    assert!(
+        body.starts_with("demo-lead asks for one Standard_B2ms machine for 4 hours.\n\nReason:"),
+        "{body}"
+    );
+    // The owner's yes is recorded where the request was filed, and the list finds it there.
+    let yes = approve(&s, &any.id, "go ahead", "human").unwrap();
+    assert_eq!(yes.status, "approved");
+    let listed = list_compute(&s, ANY_PROJECT, "approved").unwrap();
+    assert_eq!(
+        listed.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+        vec![any.id.as_str()]
+    );
+    // A slug that names no project is still refused.
+    assert!(request_compute(&s, "nobody", "demo-lead", "Standard_B2ms", 4, "x").is_err());
+}
+
 #[test]
 fn compute_auto_approve_under_caps_else_proposal() {
     let _serial = crate::test_helpers::serial();
@@ -5157,6 +5220,33 @@ fn manifest_needs_take_a_list_or_one_string_and_name_a_bad_word() {
     assert!(problems[0].contains("x/code"), "{problems:?}");
 }
 
+/// TASK-156 item 2: the brain's own `.hive/hive.yaml` says its work needs
+/// macOS, so no code job of the brain is offered to a rented Linux machine
+/// (where the check was red and no work landed) and nobody marks jobs by
+/// hand. The file is read from the tree the test runs in, as the daemon
+/// reads it from the default branch.
+#[test]
+fn the_brains_own_manifest_says_its_work_needs_macos() {
+    let manifest = hive_testutil::manifest_dir(env!("CARGO_MANIFEST_DIR"));
+    let root = manifest
+        .parent()
+        .and_then(Path::parent)
+        .expect("the workspace root holds crates/");
+    let path = root.join(manifest::MANIFEST_PATHS[0]);
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("{path:?}: {e}; the brain says what it needs there"));
+    let m = manifest::parse(&text).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+    assert!(
+        manifest::static_problems(&m).is_empty(),
+        "{:?}",
+        manifest::static_problems(&m)
+    );
+    let needs = hive_store::needs::canonical(&m.needs.unwrap_or_default().join(",")).unwrap();
+    assert_eq!(needs, "macos", "{path:?}");
+    let linux = hive_store::needs::caps_of("linux", "amd64", "");
+    assert!(!hive_store::needs::met(&needs, &linux));
+}
+
 #[test]
 fn manifest_sync_sets_the_project_needs_and_clears_them_on_an_empty_list() {
     let _serial = crate::test_helpers::serial();
@@ -6725,6 +6815,171 @@ fn project_lifecycles_read_a_fixed_number_of_statements() {
     );
     // The done task is placed by its status alone.
     assert_eq!(all.iter().filter(|l| l.phase == Phase::Done).count(), 1);
+}
+
+thread_local! {
+    static ROWS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn count_row(e: rusqlite::trace::TraceEvent<'_>) {
+    if let rusqlite::trace::TraceEvent::Row(..) = e {
+        ROWS.with(|c| c.set(c.get() + 1));
+    }
+}
+
+/// The rows one read of a project's lifecycles brings back on `conn`.
+fn lifecycle_rows(s: &hive_store::Store, project: &str) -> (usize, Vec<TaskLifecycle>) {
+    let conn = s.conn().unwrap();
+    ROWS.with(|c| c.set(0));
+    conn.trace_v2(
+        rusqlite::trace::TraceEventCodes::SQLITE_TRACE_ROW,
+        Some(count_row),
+    );
+    let all = crate::lifecycle::project_lifecycles(&conn, project).unwrap();
+    conn.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+    (ROWS.with(std::cell::Cell::get), all)
+}
+
+/// Adds `n` closed tasks to `demo`, each with a lead, a step with a run and
+/// a merged pull request with its review: a project's long history.
+fn closed_tasks(s: &hive_store::Store, n: usize) {
+    for i in 0..n {
+        let t = new(s, "demo", &format!("Old {i}"), "", 0, "human").unwrap();
+        set_lead(s, &t.id, "demo-lead", "", "daemon").ok();
+        let conn = s.conn().unwrap();
+        let id = format!("J-{}", t.id);
+        conn.execute(
+            "INSERT INTO jobs (id, project, kind, title, source, status, branch, created_at, finished_at) \
+             VALUES (?, 'demo', 'task', 'T', ?, 'done', '', '2026-09-06T21:01:00Z', '2026-09-06T21:30:00Z')",
+            params![id, format!("task:{}", t.id)],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO runs (id, job_id, agent, project, started_at, status, branch) \
+             VALUES (?, ?, 'w', 'demo', '2026-09-06T21:02:00Z', 'done', 'hive/w/old')",
+            params![format!("run-{id}"), id],
+        )
+        .unwrap();
+        conn.execute("UPDATE tasks SET status = 'done' WHERE id = ?", [&t.id])
+            .unwrap();
+        drop(conn);
+        let number = 500 + i as i64;
+        for (actor, action) in [
+            ("daemon", "land.pr"),
+            ("reviewer", "review.queued"),
+            ("daemon", "land.merged"),
+        ] {
+            hive_bus::emit(
+                s,
+                actor,
+                action,
+                "demo",
+                serde_json::json!({"project": "demo", "task": t.id, "number": number, "kind": "task"}),
+            )
+            .unwrap();
+        }
+    }
+}
+
+/// The project view reads the rows of its open tasks only: a project's
+/// closed tasks - their jobs, their runs and every pull-request event
+/// older than the oldest open task - add nothing but their own task row
+/// (TASK-153: the read was every task's jobs and every land and review
+/// event of the project).
+#[test]
+fn project_lifecycles_read_no_rows_of_closed_tasks() {
+    let rows_with = |closed: usize| {
+        let s = new_store();
+        closed_tasks(&s, closed);
+        busy_tasks(&s, 2);
+        let (rows, all) = lifecycle_rows(&s, "demo");
+        assert_eq!(all.len(), closed + 3);
+        let open: Vec<_> = all.iter().filter(|l| l.phase != Phase::Done).collect();
+        assert_eq!(open.len(), 2);
+        assert!(
+            open.iter()
+                .all(|l| (l.phase, l.waits_on) == (Phase::Build, WaitsOn::Agent)),
+            "{open:?}"
+        );
+        rows
+    };
+    let few = rows_with(2);
+    let many = rows_with(40);
+    // One task row each, nothing else.
+    assert_eq!(
+        many - few,
+        38,
+        "{few} rows with 2 closed tasks, {many} with 40"
+    );
+}
+
+/// A task without its `task.created` event (written before the event, or
+/// by hand) still reads its whole pull-request history.
+#[test]
+fn a_task_without_its_created_event_reads_every_pull_request_event() {
+    let s = new_store();
+    closed_tasks(&s, 1);
+    s.conn()
+        .unwrap()
+        .execute(
+            "INSERT INTO tasks (id, project, title, status, created_by, created_at, updated_at, current_rev) \
+             VALUES ('TASK-900', 'demo', 'By hand', 'in_progress', 'human', ?1, ?1, 1)",
+            [s.now()],
+        )
+        .unwrap();
+    hive_bus::emit(
+        &s,
+        "daemon",
+        "land.pr",
+        "demo",
+        serde_json::json!({"project": "demo", "task": "TASK-900", "number": 9, "kind": "task"}),
+    )
+    .unwrap();
+    let l = lifecycle_for(&s, "TASK-900").unwrap();
+    assert_eq!(
+        (l.phase, l.waits_on),
+        (Phase::Review, WaitsOn::Reviewer),
+        "{l:?}"
+    );
+    let all = lifecycles_for(&s, "demo").unwrap();
+    let mine = all.iter().find(|l| l.task == "TASK-900").unwrap();
+    assert_eq!(mine.phase, Phase::Review, "{mine:?}");
+}
+
+/// The `EXPLAIN QUERY PLAN` lines of one of the lifecycle's reads.
+fn lifecycle_plan(s: &hive_store::Store, sql: &str) -> Vec<String> {
+    s.conn()
+        .unwrap()
+        .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+        .unwrap()
+        .query_map(params!["demo", r#"["TASK-001"]"#], |r| {
+            r.get::<_, String>(3)
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+}
+
+/// The runs of a task's jobs are found through `runs_job`, not a scan of
+/// every run the store holds, and the jobs through their source, not every
+/// job of the project (TASK-153).
+#[test]
+fn the_runs_and_jobs_reads_use_their_indexes() {
+    let s = new_store();
+    let plan = lifecycle_plan(&s, &crate::lifecycle::runs_sql());
+    assert!(plan.iter().any(|l| l.contains("runs_job")), "{plan:#?}");
+    assert!(!plan.iter().any(|l| l == "SCAN r"), "{plan:#?}");
+    for plan in [plan, lifecycle_plan(&s, &crate::lifecycle::jobs_sql())] {
+        // Only the task ids (`json_each`) are scanned; no jobs table read
+        // takes every job of the project.
+        assert!(
+            !plan
+                .iter()
+                .any(|l| l.starts_with("SCAN") && !l.contains("VIRTUAL TABLE")),
+            "{plan:#?}"
+        );
+        assert!(!plan.iter().any(|l| l.contains("(project=?)")), "{plan:#?}");
+    }
 }
 
 /// Measures the project view on a copy of a real store (never the live

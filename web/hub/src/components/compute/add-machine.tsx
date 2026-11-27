@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Select, SelectContent, SelectItem, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { showApiError } from "@/components/hive/confirm";
@@ -20,6 +20,7 @@ import { errorText, writes, type AddMachineInput, type Compute, type ComputeCaps
 import { rel } from "@/lib/format";
 import { invalidate, useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
+import { ANY_PROJECT, ANY_PROJECT_WORD, requestProject, requestProjectHint } from "./compute-state";
 import { TUNNEL_LOGIN, joinTunnelLines, parseJoinAddress } from "./join-address";
 
 // Adding a machine from the console, as a few short steps instead of a
@@ -42,6 +43,8 @@ import { TUNNEL_LOGIN, joinTunnelLines, parseJoinAddress } from "./join-address"
 //   added as drained and checked right away when asked.
 // - Rent one (`hive compute request` + approve): the owner asks the
 //   configured cloud provider for a machine for a few hours, like an agent.
+//   The project list starts with "Any project": the request then names the
+//   shared board and the brain pairs the machine for every project.
 
 export const refreshMachines = () => invalidate((p) => p === "compute" || p === "runner" || p === "org" || p.startsWith("org?") || p.startsWith("projects/"));
 
@@ -203,6 +206,7 @@ function MachineWizard({ caps, close, lockRef }: { caps?: ComputeCaps; close: ()
   const workersOk = Number.isInteger(workersN) && workersN >= 1 && workersN <= 64;
   const ownOk = !ownWord.trim() || WORD.test(ownWord.trim().toLowerCase());
   const chosenProject = project || (active.length === 1 ? active[0]!.slug : "");
+  const projectName = (s: string) => active.find((p) => p.slug === s)?.name;
   const hoursN = Number(hours);
   const hoursOk = Number.isInteger(hoursN) && hoursN >= 1 && hoursN <= 72;
   const sizes = SIZES[provider];
@@ -370,7 +374,7 @@ function MachineWizard({ caps, close, lockRef }: { caps?: ComputeCaps; close: ()
       </Button>
     );
   } else if (step === "details") {
-    why = !chosenProject ? "Pick the project." : !hoursOk ? "Hours: 1 to 72." : !reason.trim() ? "Say why in one line." : "";
+    why = !chosenProject ? "Pick a project, or Any project." : !hoursOk ? "Hours: 1 to 72." : !reason.trim() ? "Say why in one line." : "";
     next = (
       <Button onClick={() => go("review")} disabled={!!why}>
         Continue <ArrowRightIcon />
@@ -569,11 +573,13 @@ function MachineWizard({ caps, close, lockRef }: { caps?: ComputeCaps; close: ()
             <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_8rem]">
               <div className="grid gap-1.5">
                 <Label htmlFor="request-project">For project</Label>
-                <Select value={chosenProject} onValueChange={setProject} disabled={active.length === 0}>
+                <Select value={chosenProject} onValueChange={setProject}>
                   <SelectTrigger id="request-project" className="w-full">
-                    <SelectValue placeholder={projectsQ.data ? (active.length ? "Choose a project" : "No active project") : "Loading…"} />
+                    <SelectValue placeholder="Choose a project" />
                   </SelectTrigger>
                   <SelectContent>
+                    <SelectItem value={ANY_PROJECT}>{ANY_PROJECT_WORD}</SelectItem>
+                    {active.length ? <SelectSeparator /> : null}
                     {active.map((p) => (
                       <SelectItem key={p.slug} value={p.slug}>
                         {p.name || p.slug}
@@ -581,7 +587,7 @@ function MachineWizard({ caps, close, lockRef }: { caps?: ComputeCaps; close: ()
                     ))}
                   </SelectContent>
                 </Select>
-                <p className={hint}>Whose work it runs; its hours count there.</p>
+                <p className={hint}>{requestProjectHint(chosenProject, projectName(chosenProject))}</p>
               </div>
               <div className="grid gap-1.5">
                 <Label htmlFor="request-hours">Hours</Label>
@@ -634,7 +640,7 @@ function MachineWizard({ caps, close, lockRef }: { caps?: ComputeCaps; close: ()
               {mode === "request" ? (
                 <>
                   <Row label="Provider">{providerName}</Row>
-                  <Row label="Project">{active.find((p) => p.slug === chosenProject)?.name || chosenProject}</Row>
+                  <Row label="Project">{requestProject(chosenProject, projectName)}</Row>
                   <Row label="Size">{sizeValue ? <Mono>{sizeValue}</Mono> : "As set in Settings"}</Row>
                   <Row label="For">{hoursN === 1 ? "1 hour" : hoursN + " hours"}</Row>
                   <Row label="Why">{reason.trim()}</Row>
@@ -840,7 +846,7 @@ function DoneView({ done, running, name, onFix }: { done: { kind: "pair" } | { k
     const r = done.r;
     return (
       <Result tone="ok" title={r.status === "approved" ? "The runner starts it on its next pass" : "It waits for your yes"}>
-        {r.status === "approved" ? "A " + (r.size || "machine") + " for " + r.hours + (r.hours === 1 ? " hour" : " hours") + ". It joins the machines list when it answers, and stops when the hours are up." : "The request is under Waiting for you on the Machines page until you approve it."}
+        {r.status === "approved" ? "A " + (r.size || "machine") + " for " + r.hours + (r.hours === 1 ? " hour" : " hours") + (r.project === ANY_PROJECT ? ", for any project's work" : "") + ". It joins the machines list when it answers, and stops when the hours are up." : "The request is under Waiting for you on the Machines page until you approve it."}
       </Result>
     );
   }

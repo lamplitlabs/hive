@@ -423,6 +423,50 @@ mod tests {
         assert!(cx.text.chars().count() <= context::MAX_CHARS);
     }
 
+    /// A request for a machine every project can use is filed on the shared board. A
+    /// question about one project sees it beside that project's own, named "any project";
+    /// another project's request stays out.
+    #[test]
+    fn context_lists_a_machine_for_any_project_under_each_project() {
+        let (_h, s) = store();
+        let conn = s.conn().unwrap();
+        for (id, project, reason) in [
+            ("CR-001", "demo", "a long build"),
+            ("CR-002", hive_store::COMMONS_SLUG, "a full queue"),
+            ("CR-003", "other", "not this project"),
+        ] {
+            conn.execute(
+                "INSERT INTO compute_requests (id, project, requested_by, size, hours, reason, status, at, updated_at) VALUES (?, ?, 'aurora', 'small', 4, ?, 'ready', ?, ?)",
+                rusqlite::params![id, project, reason, NOW, NOW],
+            )
+            .unwrap();
+        }
+        drop(conn);
+        let cx = context::build(&s, Some("demo"), "which machines are up?").unwrap();
+        assert!(
+            cx.text.contains(
+                "- CR-001 ready: small for 4h, asked by aurora on 2026-10-13 for demo: a long build"
+            ),
+            "{}",
+            cx.text
+        );
+        assert!(
+            cx.text.contains(
+                "- CR-002 ready: small for 4h, asked by aurora on 2026-10-13 for any project: a full queue"
+            ),
+            "{}",
+            cx.text
+        );
+        assert!(!cx.text.contains("CR-003"), "{}", cx.text);
+        let all = context::build(&s, None, "which machines are up?").unwrap();
+        assert!(
+            all.text.contains("for any project: a full queue"),
+            "{}",
+            all.text
+        );
+        assert!(all.text.contains("CR-003"), "{}", all.text);
+    }
+
     #[test]
     fn context_for_every_project_lists_them() {
         let (_h, s) = store();

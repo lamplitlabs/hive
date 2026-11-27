@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
 import { ArrowRightIcon, CheckIcon, ServerIcon, XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useAnswerDialog } from "@/components/hive/use-answer-dialog";
+import { computeAnswer, type ComputeAnswer } from "@/lib/answer-dialog";
 import { ConfirmDialog } from "@/components/hive/confirm";
 import { ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardKind, ItemCardMeta, ItemCardTitle } from "@/components/hive/item-card";
 import { ListRow } from "@/components/hive/list-row";
@@ -13,7 +14,7 @@ import { agentName, statusWord } from "@/lib/words";
 import { writes, type ComputeCaps, type ComputeRequest } from "@/lib/api";
 import { num, plural } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
-import { meterPercent, requestReason, requestTitle } from "./compute-state";
+import { ANY_PROJECT, ANY_PROJECT_WORD, meterPercent, requestReason, requestTitle } from "./compute-state";
 import { Meter } from "./meter";
 
 const CHANGES = (p: string) => p.startsWith("compute") || p.startsWith("executors") || p.startsWith("events") || p.startsWith("runner");
@@ -22,30 +23,34 @@ const CHANGES = (p: string) => p.startsWith("compute") || p.startsWith("executor
 // Approve is the primary move, Deny stays quiet in the bad tone; `sm` by
 // default so they are easy to hit on a card, `xs` for dense rows.
 export function ComputeDecide({ r, size = "sm" }: { r: ComputeRequest; size?: "xs" | "sm" | "default" }) {
-  const [which, setWhich] = useState<"approve" | "deny" | null>(null);
+  // Keyed by each opening (lib/answer-dialog.ts): a note typed under Deny is
+  // never sent with Approve, and the dialog closes with its exit animation.
+  const { answer, key, pick, dialog } = useAnswerDialog<ComputeAnswer>();
   if (r.status !== "pending") return null;
+  const approve = answer === "approve";
+  const spec = computeAnswer(r.id, answer ?? "approve");
   return (
     <span className="inline-flex flex-wrap items-center gap-2">
-      <Button size={size} variant="outline" onClick={() => setWhich("deny")} aria-label={"Deny " + r.id}>
+      <Button size={size} variant="outline" onClick={() => pick("deny")} aria-label={"Deny " + r.id}>
         <XIcon /> Deny
       </Button>
-      <Button size={size} onClick={() => setWhich("approve")} aria-label={"Approve " + r.id}>
+      <Button size={size} onClick={() => pick("approve")} aria-label={"Approve " + r.id}>
         <CheckIcon /> Approve
       </Button>
       <ConfirmDialog
-        open={which !== null}
-        onOpenChange={(o) => !o && setWhich(null)}
-        title={which === "approve" ? "Approve the extra machine?" : "Deny the extra machine?"}
+        key={key}
+        {...dialog}
+        title={approve ? "Approve the extra machine?" : "Deny the extra machine?"}
         description={
           <span>
-            {agentName(r.requested_by)} asks for one extra machine (<Mono>{r.size}</Mono>) for {plural(r.hours, "hour")}. {which === "approve" ? "Hive starts it within the limits you set, and removes it when the time is up." : "The agent sees your answer the next time it checks."}
+            {agentName(r.requested_by)} asks for one extra machine (<Mono>{r.size}</Mono>) for {plural(r.hours, "hour")}. {approve ? "Hive starts it within the limits you set, and removes it when the time is up." : "The agent sees your answer the next time it checks."}
           </span>
         }
-        action={which === "approve" ? "Approve" : "Deny"}
-        destructive={which === "deny"}
-        words={{ label: which === "deny" ? "Tell the agent why" : "A note for the agent (optional)", placeholder: which === "approve" ? "Approved: needed for the load test." : "Not now. Use the machines you have.", required: which === "deny" }}
-        success={which === "approve" ? "Approved. Hive will start the machine." : "Denied. The agent will see your note."}
-        onConfirm={(w) => (which === "approve" ? writes.approveCompute(r.id, w) : writes.denyCompute(r.id, w))}
+        action={spec.action}
+        destructive={spec.destructive}
+        words={spec.words}
+        success={spec.success}
+        onConfirm={(w) => spec.send(writes, w)}
         invalidates={CHANGES}
       />
     </span>
@@ -54,6 +59,19 @@ export function ComputeDecide({ r, size = "sm" }: { r: ComputeRequest; size?: "x
 
 // Approved requests that are starting or running: their machine is live.
 const LIVE = new Set(["approved", "provisioning", "ready"]);
+
+// Whose work a request's machine takes: a link to the one project it was
+// asked for, or "Any project" - plain words, since it has no one page - for
+// a machine every project can use.
+function RequestProject({ slug, className }: { slug: string; className?: string }) {
+  if (slug === ANY_PROJECT)
+    return (
+      <span className={className} title="Every project's work can run on this machine">
+        {ANY_PROJECT_WORD}
+      </span>
+    );
+  return <ProjectLink slug={slug} className={className} />;
+}
 
 // One request as a card: who asked for what and why, with Approve / Deny in
 // reach while it is pending and your answer once made. There is no detail
@@ -71,7 +89,7 @@ export function ComputeRequestCard({ r, compact, caps }: { r: ComputeRequest; co
     <ItemCard highlight={pending} ariaLabel={"Request " + r.id + ": " + statusWord(r.status)}>
       <ItemCardHeader right={<When d={r.at} />}>
         <ItemCardKind icon={ServerIcon} tone={pending ? "you" : LIVE.has(r.status) ? "ok" : "neutral"}>{"Extra machine for " + agentName(r.requested_by)}</ItemCardKind>
-        <ProjectLink slug={r.project} className="font-normal text-muted-foreground" />
+        <RequestProject slug={r.project} className="font-normal text-muted-foreground" />
       </ItemCardHeader>
       <ItemCardTitle>
         <span title={"Request " + r.id + ", machine type " + r.size}>{"One extra machine for " + plural(r.hours, "hour")}</span>
@@ -104,7 +122,8 @@ export function ComputeRequestCard({ r, compact, caps }: { r: ComputeRequest; co
 }
 
 // A request waiting on you as one compact row (spec "Machines"): the
-// asking agent's face, "Extra machine for 8 h · demo-lib", the reason in
+// asking agent's face, "Extra machine for 8 h · demo-lib" ("… · Any project"
+// for a machine every project can use), the reason in
 // one muted line, Deny / Approve at the right (ComputeDecide confirms each).
 export function ComputeRequestListRow({ r }: { r: ComputeRequest }) {
   const reason = requestReason(r.reason);
@@ -139,7 +158,7 @@ export function ComputeRequestRow({ r }: { r: ComputeRequest }) {
             {"Extra machine for " + plural(r.hours, "hour")}
           </span>
           <span className="text-[13px] text-muted-foreground">{"asked by " + agentName(r.requested_by)}</span>
-          <ProjectLink slug={r.project} className="text-[13px] font-normal text-muted-foreground" />
+          <RequestProject slug={r.project} className="text-[13px] font-normal text-muted-foreground" />
           <span className="ml-auto flex items-center gap-2 text-[13px] text-muted-foreground">
             <StatusBadge status={r.status} />
             <When d={r.at} />
@@ -190,7 +209,7 @@ export function ComputeInboxCard({ r, caps, here }: { r: ComputeRequest; caps?: 
     <ItemCard highlight ariaLabel={"Compute request " + r.id + " from " + r.requested_by}>
       <ItemCardHeader right={<When d={r.at} />}>
         <ItemCardKind icon={ServerIcon} tone="you">{"Extra machine for " + agentName(r.requested_by)}</ItemCardKind>
-        <ProjectLink slug={r.project} className="font-normal text-muted-foreground" />
+        <RequestProject slug={r.project} className="font-normal text-muted-foreground" />
       </ItemCardHeader>
       <ItemCardTitle>
         <span title={"Machine type " + r.size}>{"One extra machine for " + plural(r.hours, "hour")}</span>

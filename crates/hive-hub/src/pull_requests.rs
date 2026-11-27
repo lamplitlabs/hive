@@ -228,6 +228,18 @@ fn merge_refusal(state: &str, number: i64, note: &str, follow_up: &str) -> (Stri
             ),
             "The daemon tries again on its next pass.".to_string(),
         ),
+        "held_for_owner" => (
+            format!(
+                "The pull request could not be opened{}.",
+                if note.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {note}")
+                }
+            ),
+            "The daemon tries again only once the work changes: resolve it on the branch, or tell the lead what to do on the task's thread."
+                .to_string(),
+        ),
         _ => (
             "This task has no open pull request.".to_string(),
             "The daemon opens one once every step is done; it can be merged after its review."

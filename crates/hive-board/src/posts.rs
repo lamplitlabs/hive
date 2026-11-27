@@ -400,7 +400,24 @@ pub(crate) fn create_post_conn(
     } else {
         input.session.clone()
     };
+    // A re-ask that names its answers replaces an open ask of the same
+    // summary that named none (TASK-149 item 11): folded onto the bare one,
+    // the owner never saw the answers, and the lead's answer on the bare one
+    // left nothing open at all. The bare ask is closed with an answer that
+    // points at the new one, dated just before it so that no reader takes it
+    // as settling the new one.
+    let mut replaces: Option<Post> = None;
     if input.kind == "question"
+        && input.for_owner
+        && let Some(normalized) = owner_question_dedupe_key(&summary)
+        && let Some(existing) = open_owner_question_with_summary(conn, &input.project, &normalized)?
+        && is_bare_owner_ask(&existing)
+        && crate::ask_options::ask_options(&input.body).ready()
+    {
+        replaces = Some(existing);
+    }
+    if replaces.is_none()
+        && input.kind == "question"
         && input.for_owner
         && let Some(normalized) = owner_question_dedupe_key(&summary)
         && let Some(mut existing) =
@@ -518,6 +535,9 @@ pub(crate) fn create_post_conn(
         input.date.clone()
     };
     parse_iso(&date)?;
+    if let Some(bare) = replaces {
+        return replace_bare_owner_ask(s, conn, input, &bare, &date, &agent_name);
+    }
     let branch = if let Some(b) = &input.branch {
         b.clone()
     } else if input.project != hive_store::COMMONS_SLUG {
@@ -645,6 +665,89 @@ pub(crate) fn create_post_conn(
         )?;
     }
     post_by_id_conn(conn, &pid)?.ok_or_else(|| anyhow::anyhow!("inserted post disappeared"))
+}
+
+/// Whether an open owner ask names no answers the owner could pick, even
+/// with the answers the board supplies itself (the daemon's, the loop's).
+fn is_bare_owner_ask(p: &Post) -> bool {
+    !crate::ask_options::ask_options(&crate::owner_asks::with_default_owner_answers(
+        &p.kind, &p.agent, &p.summary, &p.body, false,
+    ))
+    .ready()
+}
+
+/// Posts `input` (a re-ask with answers) and closes `bare`, the open ask of
+/// the same summary that named none, with an answer pointing at it - in one
+/// savepoint, so a failed post leaves the bare ask as it was. The answer is
+/// dated a second before the new question (never before the bare one), so
+/// that every reader that takes a later answer in the thread as settling its
+/// earlier questions settles only the bare one.
+fn replace_bare_owner_ask(
+    s: &hive_store::Store,
+    conn: &Connection,
+    input: PostInput,
+    bare: &Post,
+    date: &str,
+    agent: &str,
+) -> Result<Post> {
+    let before = plus_hours(date, -1.0 / 3600.0)?;
+    let answer_date = if before.as_str() < bare.date.as_str() {
+        bare.date.clone()
+    } else {
+        before
+    };
+    conn.execute_batch("SAVEPOINT reask_owner_question")?;
+    let run = || -> Result<Post> {
+        create_post_conn(
+            s,
+            conn,
+            PostInput {
+                kind: "answer".into(),
+                project: input.project.clone(),
+                area: bare.area.clone(),
+                thread: bare.thread.clone(),
+                on: bare.id.clone(),
+                summary: "Asked again with answers to pick".into(),
+                body: "This ask named no answers the owner could pick (TASK-129: the owner answers with one pick), so it was asked again on this thread with them; that question replaces this one.".into(),
+                agent: agent.into(),
+                agent_row: input.agent_row.clone(),
+                session: input.session.clone(),
+                no_agent_check: true,
+                date: answer_date.clone(),
+                ..Default::default()
+            },
+        )?;
+        let post = create_post_conn(
+            s,
+            conn,
+            PostInput {
+                date: date.to_string(),
+                ..input
+            },
+        )?;
+        event_conn(
+            conn,
+            s,
+            agent,
+            "question.replaced",
+            &bare.id,
+            hive_store::Detail::json(
+                json!({"bare": bare.id, "by": post.id, "project": post.project}),
+            )?,
+        )?;
+        Ok(post)
+    };
+    match run() {
+        Ok(post) => {
+            conn.execute_batch("RELEASE reask_owner_question")?;
+            Ok(post)
+        }
+        Err(e) => {
+            let _ = conn
+                .execute_batch("ROLLBACK TO reask_owner_question; RELEASE reask_owner_question");
+            Err(e)
+        }
+    }
 }
 
 pub fn claim_expiry(s: &hive_store::Store, mut hours: f64) -> Result<String> {
@@ -1002,6 +1105,79 @@ mod tests {
         .unwrap();
         let after_answer = owner_question(&s, "demo", "Pick a deployment window");
         assert_ne!(after_answer.id, first.id);
+    }
+
+    /// TASK-149 item 11: asking a bare owner question again, with answers,
+    /// does not fold onto the bare one (the owner would never see the
+    /// answers): the new one is posted and the bare one closed with an
+    /// answer that leaves the new one open. A second bare re-ask still
+    /// folds onto the open one.
+    #[test]
+    fn a_reask_with_answers_replaces_the_bare_owner_question() {
+        let _serial = crate::test_helpers::serial();
+        let (_home_dir, _, s, _project, _repo) = fixture();
+        let ask = |body: &str| {
+            create_post(
+                &s,
+                PostInput {
+                    kind: "question".into(),
+                    project: "demo".into(),
+                    area: "ops".into(),
+                    thread: "token".into(),
+                    summary: "Rotate the deploy token?".into(),
+                    body: body.into(),
+                    agent: "alice".into(),
+                    for_owner: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        let bare = ask("It leaked into a log.");
+        assert!(!ask("It leaked into a log, still.").id.is_empty());
+        assert_eq!(
+            ask("Again.").id,
+            bare.id,
+            "a bare re-ask folds onto the bare one"
+        );
+        let reask = ask(
+            "It leaked.\n\nYes: Rotate it - a job rotates it\nNo: Keep it - nothing changes\nRecommended: Yes - it leaked",
+        );
+        assert_ne!(reask.id, bare.id);
+        assert!(!reask.deduped);
+        let conn = s.conn().unwrap();
+        let answers: Vec<(String, String)> = conn
+            .prepare("SELECT on_post, date FROM posts WHERE kind = 'answer' AND thread = 'token'")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
+        assert_eq!(answers.len(), 1, "{answers:?}");
+        assert_eq!(answers[0].0, bare.id);
+        assert!(answers[0].1 <= reask.date, "{answers:?} vs {}", reask.date);
+        assert!(
+            open_owner_question_with_summary(
+                &conn,
+                "demo",
+                &owner_question_dedupe_key(&reask.summary).unwrap()
+            )
+            .unwrap()
+            .is_some_and(|p| p.id == reask.id)
+        );
+        let replaced: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE action = 'question.replaced' AND subject = ?",
+                [&bare.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(replaced, 1);
+        // Asked once more, with answers, it folds onto the new one.
+        assert_eq!(
+            ask("Yes: Rotate it - a\nNo: Keep it - b\nRecommended: Yes - c").id,
+            reask.id
+        );
     }
 
     #[test]

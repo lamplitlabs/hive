@@ -20,12 +20,37 @@ export function meterPercent(used: number | null | undefined, total: number | nu
   return Math.max(0, Math.min(100, Math.round((used / total) * 100)));
 }
 
-// The request row's title: "Extra machine for 8 h · demo-lib". Hours are
+// A request for a machine every project can use names the shared board
+// (hive_tasks::ANY_PROJECT): the brain pairs its machine for `*`. The
+// console never shows that slug for a request; it says "Any project".
+export const ANY_PROJECT = "commons";
+export const ANY_PROJECT_WORD = "Any project";
+
+// Whose work a request's machine takes, as the console words it: the
+// project's name (its slug when no name is known), "Any project" for a
+// machine every project can use, "" when the request names none.
+export function requestProject(project: string | null | undefined, nameOf?: (slug: string) => string | null | undefined): string {
+  const slug = (project || "").trim();
+  if (!slug) return "";
+  if (slug === ANY_PROJECT) return ANY_PROJECT_WORD;
+  return (nameOf?.(slug) || "").trim() || slug;
+}
+
+// The line under the form's project list: what the choice means for the
+// machine. `name` is the chosen project's name; "" while nothing is chosen.
+export function requestProjectHint(project: string, name?: string): string {
+  if (!project) return "Whose work it runs. Any project lets every project use it.";
+  if (project === ANY_PROJECT) return "Every project's work can run on it.";
+  return "Only " + ((name || "").trim() || project) + "'s work runs on it.";
+}
+
+// The request row's title: "Extra machine for 8 h · demo-lib", or
+// "… · Any project" for a machine every project can use. Hours are
 // whole when they are; a half hour keeps one decimal.
 export function requestTitle(req: { hours: number; project: string }): string {
   const h = Number.isFinite(req.hours) ? req.hours : 0;
   const hours = Number.isInteger(h) ? String(h) : String(Math.round(h * 10) / 10);
-  const project = (req.project || "").trim();
+  const project = requestProject(req.project);
   return "Extra machine for " + hours + " h" + (project ? " · " + project : "");
 }
 

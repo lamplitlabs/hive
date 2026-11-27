@@ -340,7 +340,7 @@ pub static DAEMON_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new
     }
 });
 pub static LEAD_SETTINGS: LazyLock<BTreeMap<String, String>> = LazyLock::new(
-    || map! {"lead.idle_hours"=>"6","lead.idle_max_jobs"=>"3","lead.stuck_thread_jobs"=>"3","lead.research_minutes"=>"60","lead.research_per_day"=>"12","lead.idle_factor"=>"3","lead.ballot_hours"=>"1","lead.ballot_cap"=>"10","plan.operating_layer_per_day"=>"3","plan.operating_layer_fill"=>"on","plan.loop_per_day"=>"1","schedule.min_minutes"=>"30","schedule.max_per_project"=>"10","schedule.script_timeout_minutes"=>"20","schedule.scripts_per_tick"=>"2","manifest.load"=>"on","lead.suggest_days"=>"30","toolkit.suggest_days"=>"30","goal.review_days"=>"7",},
+    || map! {"lead.idle_hours"=>"6","lead.idle_max_jobs"=>"3","lead.stuck_thread_jobs"=>"3","lead.research_minutes"=>"60","lead.research_per_day"=>"12","lead.idle_factor"=>"3","lead.ballot_hours"=>"1","lead.ballot_cap"=>"10","plan.operating_layer_per_day"=>"3","plan.operating_layer_fill"=>"on","plan.loop_per_day"=>"1","schedule.min_minutes"=>"30","schedule.max_per_project"=>"10","schedule.script_timeout_minutes"=>"20","schedule.scripts_per_tick"=>"2","manifest.load"=>"on","lead.suggest_days"=>"30","toolkit.suggest_days"=>"30","goal.review_days"=>"7","goal.recheck_days"=>"14",},
 );
 pub static LEAD_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|| {
     rules! {
@@ -362,6 +362,7 @@ pub static LEAD_RULES: LazyLock<BTreeMap<String, SettingRule>> = LazyLock::new(|
         "manifest.load"=>("choice",None,["on","off"],None,"on: the daemon reads each project's own Hive files, .hive/automations/<name>.yaml and .hive/hive.yaml on the default branch, and the SKILL.md folders beside them (.hive/skills, .claude/skills, .github/skills, .agents/skills) whenever a commit changes them: the schedules the files name are added, updated, paused and ended in the store (hive schedule list shows them with their origin), the skills join the project's hive skill registry, and what a file gets wrong is a problem on the project board, never a stopped schedule; off: the files are left to the native harness, which still offers the skill folders to the model"),
         "lead.suggest_days"=>("count",Some(0),[],None,"days before the daemon asks the owner again to seat a role lead (`hive lead add`) for a concern of a project nobody owns - a self-improvement loop with no rsi lead, code landing without docs and no docs lead, a dependency manifest with no security lead, no check or watcher and no monitor lead; one question per project per pass, on the board thread lead/<role>; 0 turns the suggestions off"),
         "toolkit.suggest_days"=>("count",Some(0),[],None,"days before the daemon asks the owner again to connect a tool (an MCP server) or add a skill that a project's shape asks for and it does not have - a GitHub remote with no github tool, a UI with no browser, Postgres in the dependencies with no schema reader, migrations with no recipe for them (`hive toolkit` lists them); one question per project at a time, on the board thread toolkit/tool-<name> or toolkit/skill-<name>; 0 turns the suggestions off"),
+        "goal.recheck_days"=>("count",Some(0),[],None,"days between the daemon's re-drafts of the project goal: a model side-call reads the README, the docs, recent commits, accepted ADRs, the board's goal readings, the tasks and the owner's words and drafts a goal; a draft that differs materially from the goal in force and from every dismissed draft is posted as a proposal on goal/amend that the owner takes with one yes in the console (the Sessions strip, Project > Overview) or `hive decide`, never set silently. A goal review verdict of drift, stale or reached, a newly accepted ADR or new owner direction re-drafts sooner; 0 turns the daemon's re-drafts off"),
         "goal.review_days"=>("count",Some(1),[],None,"days between the lead's readings of the project goal: `hive goal review` and the hub's goal panel score the last work against the goal from the store (what landed, what passed its checks, how much of it speaks to the goal's words, how the pace compares with the window before) and blend in the lead's latest reading (a finding on the board thread goal/review with a `Score: NN` line) when it is this recent; when none is, the lead's brief asks for one, and the lead may propose a new goal (an opinion on goal/amend whose first line is `goal: amend`) that the owner takes with one yes"),
     }
 });
@@ -2116,11 +2117,11 @@ mod go_settings_tests {
         assert_eq!(
             &names[lead_start..lead_start + 5],
             [
+                "goal.recheck_days",
                 "goal.review_days",
                 "lead.ballot_cap",
                 "lead.ballot_hours",
-                "lead.idle_factor",
-                "lead.idle_hours"
+                "lead.idle_factor"
             ]
         );
         assert_eq!(s.setting("baseline.retry_hours", ""), "6");

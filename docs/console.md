@@ -128,7 +128,7 @@ under **Asked you**, and a pull request handed to you on **Sessions** under
 **Needs your review**. [Notifications](#notifications) can tell you, with a
 sound, the moment a new ask arrives.
 
-![Sessions with the broken strip, the hard-stop asks and the session list](how-to/images/console-home.webp)
+![Sessions with the broken strip, the hard-stop asks and the session list](how-to/images/console-sessions.webp)
 
 ## Insights
 
@@ -162,7 +162,16 @@ words for them), or one per `Option:` line - with the one the asker
 recommends first and marked **Recommended**; nothing needs typing, and a
 note is optional (`hive decide <post> yes|no --words '...'`, or
 `hive decide <post> --option '<answer>'`, from the terminal). An `Option:`
-pick is recorded as that pick, never as a yes. The hard stops among them are also on the Sessions strip,
+pick is recorded as that pick, never as a yes. A question whose asker
+wrote no answers still gets a pair, filled in by the console and by `hive
+decide`: a question the daemon asked gets the daemon's (**Seat the lead** or
+**Not now** for a `lead-role:` marker, **Add it** or **Not now** for a
+`toolkit:` marker, otherwise **Hand it to an agent** or **I handle it**), a
+major dependency upgrade the watcher found gets **Upgrade it** or **Leave it
+to me**, and the self-improvement loop's flat-fixture pause gets **Run more
+cycles** or **Keep it paused** (recommended) - a No keeps the loop paused
+until a fixture whose score moves is enabled, and the loop's stop keeps its
+own resume words. The hard stops among them are also on the Sessions strip,
 with the same buttons. A hard stop with no answers, or none recommended,
 never reaches you: it goes to the project's lead, which asks again with the
 answers written out. Among the questions the stops come first; a decision
@@ -394,12 +403,14 @@ as a card in the transcript where it changed and, for the current plan, as the
 tool, on by default) show one level in, with the helper's report.
 
 The agent keeps going turn after turn; when it needs you it stops and one card
-appears - a question with its choices stacked full width, or a tool it wants to
-run - and the session says **Asked you** in the list and the tab title
-counts what waits (the transcript does not echo the question above the card;
-the steps fold while it waits). Answer in a word or a sentence, **Allow once**,
-**Always allow** or **Deny** with a reason the agent reads; nothing else
-blocks.
+appears - a question with its two to six choices stacked full width, the one
+the agent recommends first, filled and starred, or a tool it wants to run - and
+the session says **Asked you** in the list and the tab title counts what waits
+(the transcript does not echo the question above the card; the steps fold while
+it waits). Answer with one pick (the `question` tool refuses a call without
+choices and a recommended one, so there is no box to type in; a message you
+send from the composer still reaches the agent), **Allow once**, **Always
+allow** or **Deny** with a reason the agent reads; nothing else blocks.
 
 **Auto** (on by default) lets tools run
 without asking, as the daemon's own jobs do; switch it off for a
@@ -802,7 +813,8 @@ the `hive-hand join` line to copy to the machine. The step says when the
 machine has joined. A machine that dials in shows its last call and a
 **Revoke** button that drops its key ([Enrolling a
 hand](machines.md#enrolling-a-hand)). The other ways pair a machine over
-ssh, add one prepared by hand, or rent one. Approve or deny; approved requests are provisioned
+ssh, add one prepared by hand, or rent one - for one project, or for **Any
+project** when every project's work may run on it. Approve or deny; approved requests are provisioned
 by the configured provider (`compute.provider`: `azure`, `aws`, `gcp`, or
 `multipass` for a VM on the hub machine itself; `hive compute providers` lists
 them) inside the caps you set. Every provider works through its own CLI logged

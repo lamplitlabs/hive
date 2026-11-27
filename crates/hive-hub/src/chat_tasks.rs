@@ -199,6 +199,34 @@ fn group_json(conn: &Connection, t: &TaskRow, pr: Value) -> Result<Value> {
         }
         sessions.push(item);
     }
+    // A pull request that could not be opened: the task's newest pull
+    // request event is a hold while a finished step still waits on it.
+    // `held` the runner tries again; `held_for_owner` only the owner moves
+    // (`hive_tasks::hold_state`).
+    let waiting = sessions
+        .iter()
+        .any(|s| s["job_status"] == "done" && !s["branch"].as_str().unwrap_or("").is_empty());
+    let hold = if waiting {
+        hive_tasks::task_pr_event(conn, &t.project, &t.id)?
+            .filter(|e| e.action == "land.pr-held")
+            .map(|e| {
+                json!({
+                    "state": hive_tasks::hold_state(&e.detail),
+                    "note": hive_tasks::detail_field(&e.detail, "note"),
+                    "at": e.at,
+                })
+            })
+    } else {
+        None
+    };
+    // The state the owner rule reads: the hold when there is one, else the
+    // open pull request's review state.
+    let pr_state = hold
+        .as_ref()
+        .and_then(|h| h["state"].as_str())
+        .or_else(|| pr["state"].as_str())
+        .unwrap_or("")
+        .to_string();
     Ok(json!({
         "id": t.id,
         "project": t.project,
@@ -214,7 +242,11 @@ fn group_json(conn: &Connection, t: &TaskRow, pr: Value) -> Result<Value> {
         "last_message_at": last_message_at,
         "last_author": last_author,
         "needs_you": t.status == "review",
+        // The one rule for "waits on you" (`hive_tasks::owner_turn`), the
+        // lifecycle view's too.
+        "owner_turn": hive_tasks::owner_turn(&t.status, &pr_state),
         "pr": pr,
+        "hold": hold,
         "sessions": sessions,
     }))
 }

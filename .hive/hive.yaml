@@ -1,0 +1,12 @@
+# What the brain's own work needs from a machine (`hive manifest check`).
+#
+# The code jobs of this project run on macOS (TASK-156 item 2): on a rented
+# Linux machine the project's check was red on the base tree (git there has
+# no `merge-tree --quiet`, GNU `stat -f` reads a file system, and slow tests
+# ran past their alarm), and none of the last 20 runs with commits on rented
+# machines landed. With this key no code job of the brain is offered to a
+# Linux machine and nobody marks jobs `needs macos` by hand. Drop it once
+# the check is green on Linux and a rented machine has landed work.
+#
+# The automations live one per file in .hive/automations/.
+needs: macos

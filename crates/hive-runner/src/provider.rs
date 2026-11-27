@@ -414,7 +414,8 @@ pub(crate) fn provision_finish(
         crate::pair::PairOpts {
             workdir: HANDS_WORKDIR.into(),
             workers: 1,
-            projects: req.project.clone(),
+            // The project the request names, or every project when it names none.
+            projects: hive_tasks::machine_projects(&req.project).to_string(),
             actor: crate::util::HUMAN_AGENT.into(),
             hub_home: hub_home.clone(),
             login_follows: true,
@@ -1015,11 +1016,61 @@ hive-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOCK
     ];
 
     fn approved_request(s: &hive_store::Store) -> hive_tasks::ComputeRequest {
+        approved_request_for(s, "proj")
+    }
+
+    fn approved_request_for(s: &hive_store::Store, project: &str) -> hive_tasks::ComputeRequest {
         let req =
-            hive_tasks::request_compute(s, "proj", "aurora", "", 2, "the fixtures take an hour")
+            hive_tasks::request_compute(s, project, "aurora", "", 2, "the fixtures take an hour")
                 .unwrap_or_else(|err| panic!("{err}"));
         hive_tasks::approve(s, &req.id, "go ahead", crate::util::HUMAN_AGENT)
             .unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    /// The console's **Any project**: a request that names the shared board is for a machine
+    /// every project can use, so its machine is paired for `*`, not for "commons" alone -
+    /// a board, not a project whose jobs a machine runs.
+    #[test]
+    fn a_request_for_any_project_pairs_a_machine_every_project_can_use() {
+        let _serial = crate::test_helpers::serial();
+        let _lock = provider_test_lock();
+        let s = new_store();
+        let h = compute_harness(&s, AZURE_SETTINGS);
+        let az = new_fake_az();
+        let _fake = install_fake(crate::azure::set_run_az, {
+            let az = az.clone();
+            Box::new(move |ctx, args, timeout| az.run(ctx, args, timeout))
+        });
+        let req = approved_request_for(&s, hive_tasks::ANY_PROJECT);
+        let log = once(&s, &h);
+        let got = hive_tasks::get_compute(&s, &req.id).unwrap_or_default();
+        assert_eq!(
+            (got.status.as_str(), got.executor.as_str()),
+            ("ready", "hands-cr-001"),
+            "request: {got:?}\n{log}"
+        );
+        let paired = h.paired.lock().expect("paired").clone();
+        assert_eq!(paired.opts.projects, "*", "paired for: {log}");
+        let ex = crate::executor::executor_row(&s, "hands-cr-001");
+        assert_eq!(ex.str("projects"), "*", "executor: {ex:?}");
+        for slug in ["proj", "another"] {
+            assert!(
+                crate::executor::executor_allows(&ex, slug),
+                "{slug} may run on it: {ex:?}"
+            );
+        }
+        // The finding that says it is up names whose work it takes, on the shared board.
+        let said = must_one(
+            &s,
+            "SELECT project, body FROM posts WHERE kind = 'finding' AND summary LIKE 'compute CR-001 ready:%'",
+            &[],
+        );
+        assert_eq!(said.str("project"), hive_store::COMMONS_SLUG, "{said:?}");
+        assert!(
+            said.str("body")
+                .contains("registered as executor `hands-cr-001` for every project (approved by"),
+            "{said:?}"
+        );
     }
 
     fn once(s: &hive_store::Store, h: &ComputeHarness) -> String {
@@ -1205,7 +1256,7 @@ hive-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOCK
         // The run ends: the machine goes on the next tick.
         exec1(
             &s,
-            "UPDATE runs SET status = 'done', finished_at = ? WHERE id = 'run-1'",
+            "UPDATE runs SET status = 'done', commits = 1, finished_at = ? WHERE id = 'run-1'",
             &[&after(125.0)],
         );
         let lines = tick(&after(125.25));
@@ -1216,8 +1267,25 @@ hive-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOCK
             "{lines:?}"
         );
         assert_eq!(az.deleted(), vec!["hive-cr-001"], "{lines:?}");
-        // Nothing waits after the release: the queue still waits, so the daemon asks for a
-        // fresh machine on its usual terms.
+        // Its work has not landed yet: no other machine for proj until it has
+        // (TASK-156 item 4).
+        let Err(crate::daemon::NoAutoCompute::Why(why)) = rent(&after(125.5)) else {
+            panic!("a second machine before the first one's work landed");
+        };
+        assert!(
+            why.starts_with("no rented machine has landed work for proj yet"),
+            "{why}"
+        );
+        exec1(
+            &s,
+            "INSERT INTO events (at, actor, action, subject, detail) VALUES (?, 'daemon', 'land.landed', 'hive/aurora/job-1', ?)",
+            &[
+                &after(125.4),
+                &serde_json::json!({"job": "job-1", "project": "proj"}).to_string(),
+            ],
+        );
+        // Nothing waits after the release and its work landed: the queue still
+        // waits, so the daemon asks for a fresh machine on its usual terms.
         let next = rent(&after(125.5)).expect("a fresh machine is asked for");
         assert_eq!(
             (next.id.as_str(), next.status.as_str(), next.hours),

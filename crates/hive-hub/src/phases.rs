@@ -246,99 +246,169 @@ mod tests {
         .unwrap();
     }
 
-    /// The events that leave a task's pull request in `state`, as the
-    /// runner and the reviewer write them.
-    fn delivery_events(state: &str, number: i64) -> Vec<hive_tasks::LandEvent> {
+    /// The pull-request events that leave a task in a fixture case's
+    /// `delivery` state, as the runner and the reviewer write them: the
+    /// action and its detail beyond `project`. `held` is a forge fault the
+    /// runner tries again (`tries`), `held_for_owner` a hold only the owner
+    /// moves (a conflict).
+    fn delivery_events(
+        task: &str,
+        d: &serde_json::Value,
+    ) -> Vec<(&'static str, serde_json::Value)> {
+        let number = d["number"].as_i64().unwrap_or(0);
+        let note = d["note"].as_str().unwrap_or_default();
         let opened =
-            format!(r#"{{"task": "TASK-007", "number": {number}, "url": "u", "kind": "task"}}"#);
-        let of_pr = format!(r#"{{"number": {number}}}"#);
-        let ev = |seq: i64, action: &str, detail: &str| hive_tasks::LandEvent {
-            seq,
-            at: format!("2026-11-26T11:{seq:02}:00Z"),
-            actor: "daemon".into(),
-            action: action.into(),
-            detail: detail.into(),
-        };
-        let review = |action: &str| vec![ev(1, "land.pr", &opened), ev(2, action, &of_pr)];
-        match state {
-            "held" => vec![ev(
-                1,
+            serde_json::json!({"task": task, "number": number, "url": d["url"], "kind": "task"});
+        let of_pr = serde_json::json!({"number": number});
+        let review =
+            |action: &'static str| vec![("land.pr", opened.clone()), (action, of_pr.clone())];
+        match d["state"].as_str().unwrap_or_default() {
+            "held" => vec![(
                 "land.pr-held",
-                r#"{"task": "TASK-007", "note": "n"}"#,
+                serde_json::json!({"task": task, "note": note, "tries": 2}),
             )],
-            "pr_open" => vec![ev(1, "land.pr", &opened)],
+            "held_for_owner" => vec![(
+                "land.pr-held",
+                serde_json::json!({"task": task, "note": note}),
+            )],
+            "pr_open" => vec![("land.pr", opened)],
             "in_review" => review("review.queued"),
             "needs_owner" => review("review.owner"),
             "review_failed" => review("review.failed"),
             "changes_requested" => review("review.changes"),
             "merge_waiting" => review("review.merge-wait"),
             "merge_asked" => review("review.ask"),
-            "merged" => vec![ev(1, "land.pr", &opened), ev(2, "land.merged", &opened)],
-            "closed" => vec![ev(1, "land.pr", &opened), ev(2, "land.pr-closed", &opened)],
+            "merged" => vec![("land.pr", opened.clone()), ("land.merged", opened)],
+            "closed" => vec![("land.pr", opened.clone()), ("land.pr-closed", opened)],
             other => panic!("no events for delivery state {other:?}"),
         }
     }
 
-    /// The cases the mock's test runs too (web/hub/mock/lifecycle-cases.json):
-    /// the hub's derivation places every one where the fixture says, so the
-    /// mock cannot drift from the hub without one of the two failing.
+    /// The shared cases (web/hub/mock/lifecycle-cases.json), each written
+    /// into a store of its own the way the daemon writes it, read back
+    /// through the two routes. What the routes serialize, in full, is the
+    /// answer the mock's test holds its own derivation to
+    /// (web/hub/mock/lifecycle-answers.json), so the console's mock cannot
+    /// drift from the hub in any field without one of the two failing.
+    /// `HIVE_LIFECYCLE_ANSWERS=write` writes the answers anew from the hub.
     #[test]
-    fn the_shared_cases_place_each_task_where_the_mock_does() {
-        let path = hive_testutil::manifest_dir(env!("CARGO_MANIFEST_DIR"))
-            .join("../../web/hub/mock/lifecycle-cases.json");
-        let raw = std::fs::read_to_string(&path).unwrap();
-        let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
-        let cases = v["cases"].as_array().unwrap();
-        assert!(cases.len() >= 20);
+    fn the_shared_cases_read_through_the_routes_as_the_answers_say() {
+        let _serial = crate::test_helpers::serial();
+        let dir =
+            hive_testutil::manifest_dir(env!("CARGO_MANIFEST_DIR")).join("../../web/hub/mock");
+        let read = |name: &str| -> serde_json::Value {
+            serde_json::from_str(&std::fs::read_to_string(dir.join(name)).unwrap()).unwrap()
+        };
+        let fixture = read("lifecycle-cases.json");
+        let defaults = &fixture["defaults"];
+        let cases = fixture["cases"].as_array().unwrap();
+        assert!(cases.len() >= 25);
         let text = |v: &serde_json::Value, k: &str| v[k].as_str().unwrap_or_default().to_string();
+        let mut answers = serde_json::Map::new();
+        let mut phases = serde_json::Value::Null;
         for c in cases {
-            let task = hive_tasks::Task {
-                id: "TASK-007".into(),
-                project: "proj".into(),
-                status: text(&c["task"], "status"),
-                lead: text(&c["task"], "lead"),
-                created_at: "2026-11-26T09:00:00Z".into(),
-                ..hive_tasks::Task::default()
-            };
-            let jobs: Vec<hive_tasks::LifecycleJob> = c["jobs"]
+            let name = text(c, "name");
+            let s = http::additions_store(false);
+            assert_eq!(s.now(), text(defaults, "at"), "the events' time");
+            http::additions_project(&s, "proj");
+            let task = hive_tasks::new(&s, "proj", &name, "brief", 0, "human").unwrap();
+            assert_eq!(task.id, text(defaults, "task_id"));
+            let conn = s.conn().unwrap();
+            conn.execute(
+                "UPDATE tasks SET status = ?, lead = ?, created_at = ? WHERE id = ?",
+                rusqlite::params![
+                    text(&c["task"], "status"),
+                    text(&c["task"], "lead"),
+                    text(defaults, "task_created_at"),
+                    task.id
+                ],
+            )
+            .unwrap();
+            for j in c["jobs"].as_array().unwrap() {
+                let lead = text(j, "kind") == "lead";
+                conn.execute(
+                    "INSERT INTO jobs (id, project, kind, title, source, status, branch, created_at, finished_at) \
+                     VALUES (?, 'proj', ?, 'Step', ?, ?, ?, ?, '')",
+                    rusqlite::params![
+                        text(j, "id"),
+                        text(j, "kind"),
+                        if lead { String::new() } else { format!("task:{}", task.id) },
+                        text(j, "status"),
+                        text(j, "branch"),
+                        text(&defaults["job"], "created_at"),
+                    ],
+                )
+                .unwrap();
+                if lead {
+                    conn.execute(
+                        "UPDATE tasks SET job_id = ? WHERE id = ?",
+                        rusqlite::params![text(j, "id"), task.id],
+                    )
+                    .unwrap();
+                }
+            }
+            drop(conn);
+            if c["delivery"].is_object() {
+                let mut d = defaults["delivery"].clone();
+                for (k, v) in c["delivery"].as_object().unwrap() {
+                    d[k] = v.clone();
+                }
+                for (action, mut detail) in delivery_events(&task.id, &d) {
+                    detail["project"] = serde_json::json!("proj");
+                    hive_bus::emit(&s, "daemon", action, "proj", detail).unwrap();
+                }
+            }
+            let call = |path: &str| http::additions_request(http::handler(&s), "GET", path, "");
+            let (status, mut got) = call(&format!("/api/v1/tasks/{}/lifecycle", task.id));
+            assert_eq!(status, 200, "{name}: {got:?}");
+            assert_eq!(
+                (&got["phase"], &got["waits_on"]),
+                (&c["phase"], &c["waits_on"]),
+                "{name}: {}",
+                got["note"]
+            );
+            let (status, project) = call("/api/v1/tasks/lifecycle?project=proj");
+            assert_eq!(status, 200, "{name}: {project:?}");
+            // The project's row of the task is the task's own reading.
+            let row: serde_json::Map<String, serde_json::Value> =
+                ["task", "phase", "waits_on", "note", "rework"]
+                    .iter()
+                    .map(|k| (k.to_string(), got[*k].clone()))
+                    .collect();
+            assert_eq!(project["tasks"], serde_json::json!([row]), "{name}");
+            let placed = project["phases"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .map(|j| hive_tasks::LifecycleJob {
-                    id: text(j, "id"),
-                    kind: text(j, "kind"),
-                    status: text(j, "status"),
-                    branch: text(j, "branch"),
-                    created_at: "2026-11-26T10:00:00Z".into(),
-                    ..hive_tasks::LifecycleJob::default()
-                })
-                .collect();
-            let mut events = Vec::new();
-            if !task.lead.is_empty() {
-                events.push(hive_tasks::LandEvent {
-                    seq: 0,
-                    at: "2026-11-26T09:30:00Z".into(),
-                    actor: "daemon".into(),
-                    action: "task.lead".into(),
-                    detail: r#"{"job_id": "J-lead"}"#.into(),
-                });
+                .find(|p| p["phase"] == got["phase"])
+                .unwrap();
+            assert_eq!(placed["tasks"], serde_json::json!([task.id]), "{name}");
+            let route_phases = got.remove("phases").unwrap();
+            if phases.is_null() {
+                phases = route_phases;
+            } else {
+                assert_eq!(phases, route_phases, "{name}");
             }
-            if c["delivery"].is_object() {
-                events.extend(delivery_events(
-                    &text(&c["delivery"], "state"),
-                    c["delivery"]["number"].as_i64().unwrap_or(0),
-                ));
-            }
-            let l = hive_tasks::derive_lifecycle(&task, &jobs, &events);
-            let got = serde_json::to_value((l.phase, l.waits_on)).unwrap();
+            answers.insert(name, serde_json::Value::Object(got));
+        }
+        let fresh = serde_json::json!({
+            "about": "What GET /api/v1/tasks/{id}/lifecycle serializes, in full, for each case of lifecycle-cases.json (by its name; the route's `phases` once, under `phases`). Written by the hub (crates/hive-hub/src/phases.rs, HIVE_LIFECYCLE_ANSWERS=write cargo test -p hive-hub the_shared_cases); the mock's test (lifecycle.test.mjs) holds web/hub/mock/lifecycle.mjs to it.",
+            "phases": phases,
+            "answers": answers,
+        });
+        let path = dir.join("lifecycle-answers.json");
+        if std::env::var("HIVE_LIFECYCLE_ANSWERS").as_deref() == Ok("write") {
+            std::fs::write(&path, serde_json::to_string_pretty(&fresh).unwrap() + "\n").unwrap();
+        }
+        let held = read("lifecycle-answers.json");
+        assert_eq!(held["phases"], fresh["phases"], "the phases differ");
+        for (name, want) in fresh["answers"].as_object().unwrap() {
             assert_eq!(
-                got,
-                serde_json::json!([c["phase"], c["waits_on"]]),
-                "{}: {}",
-                text(c, "name"),
-                l.note
+                &held["answers"][name], want,
+                "{name}: the answers differ from the hub"
             );
         }
+        assert_eq!(held, fresh);
     }
 
     #[test]

@@ -40,6 +40,37 @@ function splitLabel(text: string): { label: string; effect: string } {
   return { label, effect: cut >= 0 ? t.slice(cut + len).trim() : "" };
 }
 
+const ANSWER_LINE = /^[ \t]*[-*]?[ \t]*\**(option|yes|no|recommended)\**[ \t]*:[ \t]*(.+?)[ \t]*$/i;
+
+// The answer lines of a body, from its last block of such lines: lines in
+// fenced code blocks are never answers (a diff's `-no: cache`), and only
+// blank lines may sit between the lines of one block (TASK-149 item 12; the
+// hub's hive-board answer_lines reads it the same way).
+function answerLines(body: string): Array<[string, string]> {
+  const blocks: Array<Array<[string, string]>> = [];
+  let current: Array<[string, string]> = [];
+  let fence = false;
+  for (const line of body.split(/\r?\n/)) {
+    if (/^ {0,3}(```|~~~)/.test(line)) {
+      fence = !fence;
+      if (current.length) {
+        blocks.push(current);
+        current = [];
+      }
+      continue;
+    }
+    if (fence || !line.trim()) continue;
+    const m = ANSWER_LINE.exec(line);
+    if (m) current.push([m[1].toLowerCase(), m[2]]);
+    else if (current.length) {
+      blocks.push(current);
+      current = [];
+    }
+  }
+  if (current.length) blocks.push(current);
+  return blocks.pop() ?? [];
+}
+
 // The answers a post names in its body - `Option: <label> - <what it does>`
 // lines, or `Yes:` and `No:` - and the one a `Recommended: <label> - <why>`
 // line marks, recommended first. The same reading as the hub's (TASK-129),
@@ -47,10 +78,8 @@ function splitLabel(text: string): { label: string; effect: string } {
 export function askOptions(body: string | undefined): { options: AskOption[]; why: string } {
   const options: AskOption[] = [];
   let recommended: { label: string; effect: string } | null = null;
-  const re = /^[ \t]*[-*]?[ \t]*\**(option|yes|no|recommended)\**[ \t]*:[ \t]*(.+?)[ \t]*$/gim;
-  for (const m of (body || "").matchAll(re)) {
-    const word = m[1].toLowerCase();
-    const { label, effect } = splitLabel(m[2]);
+  for (const [word, text] of answerLines(body || "")) {
+    const { label, effect } = splitLabel(text);
     if (!label) continue;
     if (word === "recommended") {
       recommended ??= { label, effect };
