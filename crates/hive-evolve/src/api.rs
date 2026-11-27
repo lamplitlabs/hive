@@ -496,6 +496,45 @@ mod tests {
         assert!(scope(&[]).is_empty());
     }
 
+    /// The keep rule compares totals, not single fixtures: a variant whose
+    /// total rose by at least the tolerance lands even when one fixture fell.
+    /// The description of `evolve.require_check` and docs/concepts.md say
+    /// the same; a guard on single fixtures would be a change to this rule.
+    #[test]
+    fn one_fixture_falls_while_the_total_rises_and_the_variant_lands() {
+        let fx = |name: &str, score: f64| FixtureScore {
+            name: name.into(),
+            kind: "public".into(),
+            score,
+            weight: 1.0,
+            ..Default::default()
+        };
+        let scores = |a: f64, b: f64| {
+            let fixtures = vec![fx("a", a), fx("b", b)];
+            Scores {
+                total: crate::dispute::weighted_total(&fixtures),
+                fixtures,
+                ..Default::default()
+            }
+        };
+        let base = scores(0.8, 0.5);
+        // `a` falls by 0.05, `b` rises by 0.1: the total rises by 0.025.
+        let variant = scores(0.75, 0.6);
+        assert!(variant.fixtures[0].score < base.fixtures[0].score);
+        let delta = variant.total - base.total;
+        assert!((delta - 0.025).abs() < 1e-9, "{delta}");
+        let (lands, verdict) = keep(Some(&base), Some(&variant), 0.02);
+        assert!(lands, "{verdict}");
+        assert!(verdict.starts_with("improved:"), "{verdict}");
+        let pair = MeasuredPair {
+            base,
+            variant,
+            scope: DiffScope::default(),
+            skipped: None,
+        };
+        assert_eq!(keep_pair(&pair, 0.02), (true, verdict));
+    }
+
     #[test]
     fn overlay_replaces_the_measured_fixtures_and_recomputes_the_total() {
         let fixture = |name: &str, kind: &str, score: f64, weight: f64| FixtureScore {
