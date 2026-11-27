@@ -1351,6 +1351,14 @@ pub(crate) fn agent_flag_travels(spec: &hive_harness::agents::AgentDef, remote: 
     !remote || spec.layer.in_clone()
 }
 
+/// Tests: the program a store's (by home) native worker runs instead of
+/// `hive harness run`, so a test drives `run::run_job` down the native
+/// harness's path (its `--model`, its session) with a script that answers.
+#[cfg(test)]
+pub(crate) static TEST_HARNESS_BIN: std::sync::LazyLock<
+    parking_lot::Mutex<BTreeMap<String, String>>,
+> = std::sync::LazyLock::new(|| parking_lot::Mutex::new(BTreeMap::new()));
+
 /// `worker_command` for a run whose role asks for a model class of its own
 /// (`model_class`, empty for the kind's own model) and whose card an agent
 /// file selects (`spec`, see [`crate::agent_specs::spec_for_job`]): the
@@ -1379,6 +1387,8 @@ pub(crate) fn worker_command_as(
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "hive".into())
     };
+    #[cfg(test)]
+    let bin = TEST_HARNESS_BIN.lock().get(&s.home).cloned().unwrap_or(bin);
     let mut cmd = vec![
         bin,
         "harness".into(),
