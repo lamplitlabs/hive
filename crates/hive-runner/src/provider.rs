@@ -414,7 +414,8 @@ pub(crate) fn provision_finish(
         crate::pair::PairOpts {
             workdir: HANDS_WORKDIR.into(),
             workers: 1,
-            projects: req.project.clone(),
+            // The project the request names, or every project when it names none.
+            projects: hive_tasks::machine_projects(&req.project).to_string(),
             actor: crate::util::HUMAN_AGENT.into(),
             hub_home: hub_home.clone(),
             login_follows: true,
@@ -1015,11 +1016,61 @@ hive-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOCK
     ];
 
     fn approved_request(s: &hive_store::Store) -> hive_tasks::ComputeRequest {
+        approved_request_for(s, "proj")
+    }
+
+    fn approved_request_for(s: &hive_store::Store, project: &str) -> hive_tasks::ComputeRequest {
         let req =
-            hive_tasks::request_compute(s, "proj", "aurora", "", 2, "the fixtures take an hour")
+            hive_tasks::request_compute(s, project, "aurora", "", 2, "the fixtures take an hour")
                 .unwrap_or_else(|err| panic!("{err}"));
         hive_tasks::approve(s, &req.id, "go ahead", crate::util::HUMAN_AGENT)
             .unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    /// The console's **Any project**: a request that names the shared board is for a machine
+    /// every project can use, so its machine is paired for `*`, not for "commons" alone -
+    /// a board, not a project whose jobs a machine runs.
+    #[test]
+    fn a_request_for_any_project_pairs_a_machine_every_project_can_use() {
+        let _serial = crate::test_helpers::serial();
+        let _lock = provider_test_lock();
+        let s = new_store();
+        let h = compute_harness(&s, AZURE_SETTINGS);
+        let az = new_fake_az();
+        let _fake = install_fake(crate::azure::set_run_az, {
+            let az = az.clone();
+            Box::new(move |ctx, args, timeout| az.run(ctx, args, timeout))
+        });
+        let req = approved_request_for(&s, hive_tasks::ANY_PROJECT);
+        let log = once(&s, &h);
+        let got = hive_tasks::get_compute(&s, &req.id).unwrap_or_default();
+        assert_eq!(
+            (got.status.as_str(), got.executor.as_str()),
+            ("ready", "hands-cr-001"),
+            "request: {got:?}\n{log}"
+        );
+        let paired = h.paired.lock().expect("paired").clone();
+        assert_eq!(paired.opts.projects, "*", "paired for: {log}");
+        let ex = crate::executor::executor_row(&s, "hands-cr-001");
+        assert_eq!(ex.str("projects"), "*", "executor: {ex:?}");
+        for slug in ["proj", "another"] {
+            assert!(
+                crate::executor::executor_allows(&ex, slug),
+                "{slug} may run on it: {ex:?}"
+            );
+        }
+        // The finding that says it is up names whose work it takes, on the shared board.
+        let said = must_one(
+            &s,
+            "SELECT project, body FROM posts WHERE kind = 'finding' AND summary LIKE 'compute CR-001 ready:%'",
+            &[],
+        );
+        assert_eq!(said.str("project"), hive_store::COMMONS_SLUG, "{said:?}");
+        assert!(
+            said.str("body")
+                .contains("registered as executor `hands-cr-001` for every project (approved by"),
+            "{said:?}"
+        );
     }
 
     fn once(s: &hive_store::Store, h: &ComputeHarness) -> String {

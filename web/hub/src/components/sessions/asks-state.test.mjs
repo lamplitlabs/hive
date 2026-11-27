@@ -36,6 +36,9 @@ test("every inbox item becomes one row with its project, and the brain takes the
   assert.equal(byKey["question:Q-1"].title, "Keep the old API?");
   assert.ok(!byKey["question:Q-1"].urgent);
   assert.equal(byKey["compute:C-7"].title, "Standard_D4s_v5 for 2 hours");
+  assert.equal(byKey["compute:C-7"].projectWord, undefined, "one project's request keeps the project's own name");
+  const any = forYouRows({ ...empty, compute: [{ id: "C-9", project: "commons", size: "Standard_B2s", hours: 4, requested_by: "human", at: "2026-11-06T09:00:00Z" }] });
+  assert.deepEqual([any[0].project, any[0].projectWord], ["commons", "Any project"], "a machine for every project is filed on the shared board and reads Any project");
   assert.equal(byKey["step:heldout:demo-app,web"].project, "", "a shared step belongs to no one project");
   assert.equal(byKey["machine"].section, "problems");
   assert.equal(byKey["machine"].meta, "Paused in Settings");

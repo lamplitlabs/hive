@@ -16,6 +16,28 @@ pub const COMPUTE_STATUSES: &[&str] = &[
     "failed",
 ];
 
+/// The project a request names when its machine is for every project: the shared board, which
+/// belongs to no one project. A request is a row and a board post, and both live in a project;
+/// this is the one that means "any" (the console's **Any project**).
+pub const ANY_PROJECT: &str = hive_store::COMMONS_SLUG;
+
+/// The projects a request's machine serves, as an executor's `projects` spells them: the one
+/// project the request names, or `*` when it names the shared board ([`ANY_PROJECT`]). Without
+/// this a machine asked for the shared board would be registered for "commons" alone, which is
+/// a board and not a project whose jobs a machine runs.
+pub fn machine_projects(project: &str) -> &str {
+    if project == ANY_PROJECT { "*" } else { project }
+}
+
+/// Whose work a request's machine takes, in a sentence: "project `demo`" or "every project".
+pub fn machine_projects_words(project: &str) -> String {
+    if project == ANY_PROJECT {
+        "every project".into()
+    } else {
+        format!("project `{project}`")
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct ComputeRequest {
     pub id: String,
@@ -336,8 +358,15 @@ pub fn request_compute(
         tx.event("hive", "compute.approved", &id, hive_store::Detail::json(json!({"project": project, "auto": true, "vms_now": caps.vms_now + 1, "max_vms": caps.max_vms}))?)?;
     } else {
         let summary = format!("compute request {id}: {size} for {hours}h - {reason}");
+        // A request on the shared board is for no one project: the post says whose work the
+        // machine would take, since its board no longer does.
+        let serves = if project == ANY_PROJECT {
+            " Every project's work can run on it."
+        } else {
+            ""
+        };
         let mut body = format!(
-            "{agent} asks for one {size} machine for {hours} hours.\n\nReason: {reason}\n\nCaps: {} of {} machines in use, auto_approve={}.\n\nApprove with `hive compute approve {id} --words '...'` or deny with `hive compute deny {id} --words '...'` (or from the hub's Compute page).\n",
+            "{agent} asks for one {size} machine for {hours} hours.{serves}\n\nReason: {reason}\n\nCaps: {} of {} machines in use, auto_approve={}.\n\nApprove with `hive compute approve {id} --words '...'` or deny with `hive compute deny {id} --words '...'` (or from the hub's Compute page).\n",
             caps.vms_now, caps.max_vms, caps.auto_approve
         );
         if !landing.is_empty() {

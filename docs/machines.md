@@ -387,7 +387,12 @@ commands behind one route, `POST /api/v1/compute/executors`, told apart by
   at once unless `approve` is false, provisioned by `compute.provider` inside
   the caps like any agent's request (the dialog says so when no provider is
   set and points at the setting). `size` falls back to the provider's
-  configured size.
+  configured size. `project` says whose work the machine takes: a project's
+  slug keeps it for that project, and `commons` - **Any project** at the top
+  of the dialog's project list, `--project commons` on the command line -
+  asks for a machine every project can use. That request is filed on the
+  shared board and its machine is paired for `*`, like a machine you add
+  for **Every project**.
 
 Each way records what its command would: `executor.add`, `executor.probe`,
 `pair.applied`, `compute.requested`. The request rows `GET /api/v1/compute`
@@ -396,7 +401,8 @@ in progress, why it failed, that its hours are up while a last run
 finishes, why its machine was released; empty while a ready machine is
 inside its hours), which is what the card on the Machines page shows under
 the reason. The hub serving one project
-(`hive hub --project`) takes requests for that project only.
+(`hive hub --project`) takes requests for that project only, so it refuses
+one for any project.
 
 ### Choosing a cloud
 

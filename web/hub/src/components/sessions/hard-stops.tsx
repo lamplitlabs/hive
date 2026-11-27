@@ -75,7 +75,7 @@ export function HardStops() {
       </SectionHeading>
       <ListRows ariaLabel="Decisions only you can make">
         {rows.map((r) => (
-          <Row key={r.key} r={r} stop={HARD_STOP_LABEL[r.stopKind]} inbox={inbox} brain={brain} canDecide={canDecide} caps={compute.data?.caps} startOpen={r.key === answerKey} selected={openId === r.key} onOpen={r.section === "decisions" ? () => setOpenId(openId === r.key ? null : r.key) : undefined} projectName={nameOf(o, r.project)} router={router} />
+          <Row key={r.key} r={r} stop={HARD_STOP_LABEL[r.stopKind]} inbox={inbox} brain={brain} canDecide={canDecide} caps={compute.data?.caps} startOpen={r.key === answerKey} selected={openId === r.key} onOpen={r.section === "decisions" ? () => setOpenId(openId === r.key ? null : r.key) : undefined} projectName={r.projectWord || nameOf(o, r.project)} router={router} />
         ))}
       </ListRows>
       <SidePanel open={!!openDecision} onClose={close} width="reading" title={openDecision ? sentence(openDecision.title) : "Decision"} subtitle={openDecision ? openDecision.id + " · " + nameOf(o, openDecision.project) : undefined} lead={<KindTile kind="decision" size={28} waiting />} actions={openDecision ? <Link href={hrefs.record(openDecision.id, openDecision.project)} className="text-xs font-medium text-link hover:underline">Open page</Link> : undefined} footer={openDecision ? <RecordDecide record={openDecision} onDone={close} /> : undefined}>

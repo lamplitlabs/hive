@@ -68,6 +68,8 @@ export interface ForYouRow {
   yesNo?: boolean;
   /** The button word on a row whose fix is a page away (the row links there). */
   fix?: string;
+  /** What to show in place of the project's name: "Any project" on a request for a machine every project can use, which is filed on the shared board. */
+  projectWord?: string;
   /** The ask's own words (a question's body, a proposal's text, a suggestion's brief). */
   text?: string;
   /** Why only the owner may decide it, as the hub marks a question or a proposal (`hard_stop`, TASK-129); empty or absent when the lead decides it. */
@@ -108,7 +110,8 @@ export function forYouRows(i: ForYouInput): ForYouRow[] {
   for (const r of i.decisions) rows.push({ key: "decision:" + r.id, section: "decisions", kind: "decision", project: r.project, title: r.title, meta: r.id, at: first(r.updated_at, r.date), yesNo: true });
   // A proposed project goal (TASK-117) reads as what it is and opens as its card.
   for (const p of i.proposals) rows.push({ key: "proposal:" + p.id, section: "proposals", kind: "proposal", project: p.slug || brain, title: p.summary, text: p.proposal_text, hardStop: p.hard_stop || undefined, ...(p.kind === "goal" ? { meta: "New project goal", card: true } : {}), at: p.date, yesNo: true });
-  for (const c of i.compute) rows.push({ key: "compute:" + c.id, section: "compute", kind: "machine", project: c.project, title: c.size + " for " + c.hours + (c.hours === 1 ? " hour" : " hours"), meta: "Asked by " + c.requested_by, at: c.at, yesNo: true });
+  // A request filed on the shared board asks for a machine every project can use (compute-state ANY_PROJECT; spelled out because this module imports nothing at run time).
+  for (const c of i.compute) rows.push({ key: "compute:" + c.id, section: "compute", kind: "machine", project: c.project, ...(c.project === "commons" ? { projectWord: "Any project" } : {}), title: c.size + " for " + c.hours + (c.hours === 1 ? " hour" : " hours"), meta: "Asked by " + c.requested_by, at: c.at, yesNo: true });
   for (const w of i.work) rows.push({ key: "work:" + w.id, section: "work", kind: "suggestion", project: w.project, title: w.title, text: w.brief, meta: w.id, at: first(w.reviewed_at, w.updated_at, w.created_at), yesNo: true });
   for (const d of i.drafts) rows.push({ key: "draft:" + d.slug + ":" + d.r.id, section: "drafts", kind: "record", project: d.slug, title: d.r.id === "EVO-evaluators" ? "New evaluators drafted" : "A new constitution drafted", meta: d.r.draft?.author ? "By " + d.r.draft.author : undefined, at: d.r.draft?.at || "" });
   for (const s of i.steps) rows.push({ key: "step:" + s.kind + ":" + (s.slugs?.join(",") || s.slug), section: "steps", kind: "rule", project: s.slugs && s.slugs.length > 1 ? "" : s.slug, title: s.title, meta: s.label, at: "", fix: "Open" });

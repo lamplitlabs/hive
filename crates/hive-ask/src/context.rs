@@ -704,7 +704,15 @@ fn decisions_section(s: &Store, project: Option<&str>, cx: &mut Context) -> Resu
 
 fn compute_section(s: &Store, project: Option<&str>, cx: &mut Context) -> Result<()> {
     let conn = s.conn()?;
-    let (filter, args) = scope(project);
+    // A request on the shared board is for a machine every project can use, so a question
+    // about one project sees it beside that project's own.
+    let (filter, args) = match project {
+        Some(p) => (
+            " AND project IN (?, ?)".to_string(),
+            vec![p.to_string(), hive_store::COMMONS_SLUG.to_string()],
+        ),
+        None => (String::new(), vec![]),
+    };
     let mut stmt = conn.prepare(&format!(
         "SELECT id, project, requested_by, size, hours, status, reason, at FROM compute_requests WHERE status IN ('pending','approved','provisioning','ready'){filter} ORDER BY at DESC LIMIT 6"
     ))?;
@@ -727,6 +735,11 @@ fn compute_section(s: &Store, project: Option<&str>, cx: &mut Context) -> Result
     }
     let _ = writeln!(cx.text, "\n## Machines (compute requests not yet released)");
     for (id, proj, by, size, hours, status, reason, at) in rows {
+        let proj = if proj == hive_store::COMMONS_SLUG {
+            "any project".to_string()
+        } else {
+            proj
+        };
         let _ = writeln!(
             cx.text,
             "- {id} {status}: {size} for {hours}h, asked by {by} on {} for {proj}: {}",

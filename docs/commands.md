@@ -104,7 +104,7 @@ More machines for agents: request (agents), list, approve|deny (the owner).
 ```text
 hive compute  more machines for agents: request (agents), list, approve|deny (the owner)
 
-Usage: hive compute request --project P [--size S] --hours N --reason WHY
+Usage: hive compute request --project P [--size S] --hours N --reason WHY   (--project commons: a machine every project can use)
 hive compute list [--project P] [--status S] [--json]
 hive compute approve CR-NNN [--words WHY]   (owner)
 hive compute deny CR-NNN [--words WHY]      (owner)

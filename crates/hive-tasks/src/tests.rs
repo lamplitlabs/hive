@@ -1321,6 +1321,69 @@ fn compute_request_says_how_many_machine_runs_landed() {
     );
 }
 
+/// A request for the shared board is a request for a machine every project can use: it is
+/// filed like any other, its proposal says whose work the machine takes, and the projects its
+/// machine is paired for are `*`. Read as a project's slug, "commons" would keep the machine
+/// for a board, which is not a project whose jobs a machine runs.
+#[test]
+fn compute_request_for_any_project_serves_every_project() {
+    let _serial = crate::test_helpers::serial();
+    let s = new_store();
+    assert_eq!(ANY_PROJECT, hive_store::COMMONS_SLUG);
+    assert_eq!(machine_projects(ANY_PROJECT), "*");
+    assert_eq!(machine_projects("demo"), "demo");
+    assert_eq!(machine_projects_words(ANY_PROJECT), "every project");
+    assert_eq!(machine_projects_words("demo"), "project `demo`");
+    let any = request_compute(
+        &s,
+        ANY_PROJECT,
+        "demo-lead",
+        "Standard_B2ms",
+        4,
+        "a full queue",
+    )
+    .unwrap();
+    assert_eq!(
+        (any.project.as_str(), any.status.as_str()),
+        (ANY_PROJECT, "pending")
+    );
+    let body_of = |post: &str| -> (String, String) {
+        s.conn()
+            .unwrap()
+            .query_row(
+                "SELECT project, body FROM posts WHERE id = ?",
+                [post],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+    };
+    let (project, body) = body_of(&any.proposal_post);
+    assert_eq!(project, ANY_PROJECT);
+    assert!(
+        body.starts_with(
+            "demo-lead asks for one Standard_B2ms machine for 4 hours. Every project's work can run on it.\n"
+        ),
+        "{body}"
+    );
+    // One project's request says nothing of the kind.
+    let one = request_compute(&s, "demo", "demo-lead", "Standard_B2ms", 4, "one build").unwrap();
+    let (_, body) = body_of(&one.proposal_post);
+    assert!(
+        body.starts_with("demo-lead asks for one Standard_B2ms machine for 4 hours.\n\nReason:"),
+        "{body}"
+    );
+    // The owner's yes is recorded where the request was filed, and the list finds it there.
+    let yes = approve(&s, &any.id, "go ahead", "human").unwrap();
+    assert_eq!(yes.status, "approved");
+    let listed = list_compute(&s, ANY_PROJECT, "approved").unwrap();
+    assert_eq!(
+        listed.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+        vec![any.id.as_str()]
+    );
+    // A slug that names no project is still refused.
+    assert!(request_compute(&s, "nobody", "demo-lead", "Standard_B2ms", 4, "x").is_err());
+}
+
 #[test]
 fn compute_auto_approve_under_caps_else_proposal() {
     let _serial = crate::test_helpers::serial();

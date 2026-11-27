@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { diskMeter, keepAwakeOn, machineLabels, machineLogoKey, machineOs, machineProjects, meterPercent, meterTone, requestReason, requestTitle, runnerState, slotsMeter, thisMachineOs, waitingNote } from "./compute-state.ts";
+import { ANY_PROJECT, ANY_PROJECT_WORD, diskMeter, keepAwakeOn, machineLabels, machineLogoKey, machineOs, machineProjects, meterPercent, meterTone, requestProject, requestProjectHint, requestReason, requestTitle, runnerState, slotsMeter, thisMachineOs, waitingNote } from "./compute-state.ts";
 
 test("meterTone: ok below 70, warning below 90, failed from 90", () => {
   assert.equal(meterTone(0), "ok");
@@ -26,6 +26,26 @@ test("requestTitle reads like the spec", () => {
   assert.equal(requestTitle({ hours: 8, project: "demo-lib" }), "Extra machine for 8 h · demo-lib");
   assert.equal(requestTitle({ hours: 1.5, project: "demo-app" }), "Extra machine for 1.5 h · demo-app");
   assert.equal(requestTitle({ hours: 4, project: "" }), "Extra machine for 4 h");
+  assert.equal(requestTitle({ hours: 4, project: "commons" }), "Extra machine for 4 h · Any project", "a machine for every project never shows the shared board's slug");
+});
+
+test("requestProject names the project, or Any project for a machine every project can use", () => {
+  assert.equal(ANY_PROJECT, "commons", "the brain reads the shared board as every project (hive_tasks::ANY_PROJECT)");
+  assert.equal(requestProject(ANY_PROJECT), ANY_PROJECT_WORD);
+  assert.equal(requestProject("commons", () => "Shared board"), "Any project", "the shared board's own name is not used for a request");
+  assert.equal(requestProject("demo-app"), "demo-app");
+  assert.equal(requestProject("demo-app", (s) => (s === "demo-app" ? "Demo App" : "")), "Demo App");
+  assert.equal(requestProject("demo-app", () => "  "), "demo-app", "an empty name falls back to the slug");
+  assert.equal(requestProject(" demo-lib "), "demo-lib");
+  assert.equal(requestProject(""), "");
+  assert.equal(requestProject(null), "");
+});
+
+test("requestProjectHint says what the choice means for the machine", () => {
+  assert.equal(requestProjectHint(""), "Whose work it runs. Any project lets every project use it.");
+  assert.equal(requestProjectHint(ANY_PROJECT), "Every project's work can run on it.");
+  assert.equal(requestProjectHint("demo-app", "Demo App"), "Only Demo App's work runs on it.");
+  assert.equal(requestProjectHint("demo-app"), "Only demo-app's work runs on it.");
 });
 
 test("runnerState: paused beats running, unknown is stopped", () => {
