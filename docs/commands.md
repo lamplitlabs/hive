@@ -1135,15 +1135,16 @@ Usage: hive harness run (-p TEXT | --task-file F|-) [-C DIR] [--model M] [--step
 
 ### job
 
-Add, finish, or retry a job by hand.
+Add, finish, retry, or stop a job by hand.
 
 ```text
-hive job  add, finish, or retry a job by hand
+hive job  add, finish, retry, or stop a job by hand
 
 Usage: hive job add --title T [--kind K] [--brief B] [--tier 0|1] [--priority N] [--source S] [--run-as AGENT] [--needs WORDS] [--project SLUG]
        hive job finish JOB_ID done|failed|cancelled|blocked|queued [--result TEXT] [--branch B]
        hive job retry JOB_ID [--as-new] [--brief TEXT] [--result TEXT]
        hive job needs JOB_ID WORDS|-
+       hive job stop JOB_ID [--requeue]        (stops its run wherever it runs; --requeue puts the job back in the queue)
 
 Flags:
   -as-new
@@ -1158,6 +1159,8 @@ Flags:
         the machine the job must run on, as words every machine either offers or not: macos, linux, arm64, xcode, docker (add; default: the project's needs)
   -priority int
         higher runs first (add)
+  -requeue
+        put the stopped job back in the queue instead of cancelling it (stop)
   -result string
         the outcome text (finish); retry note (retry)
   -run-as string

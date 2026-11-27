@@ -94,6 +94,31 @@ machine whose queue holds jobs it cannot take says so in its idle line
 (`queued: 2 need macos,xcode, which linux-1 does not offer (it offers linux
 amd64; hive executor list)`).
 
+**A project's lanes are a machine's.** The work lanes a project gets (its
+checks taking turns under the verify lock) and its share of the slots are
+counted on each machine apart: a run on a paired or rented machine holds that
+machine's lane, never one here, and the owner's work is not made to wait
+"lanes full" here, nor a run elsewhere asked to hold, while a lane here is
+open.
+
+**A check red on a class of machine.** When the end check of a run on a
+paired or rented machine finds the project's check red on the base tree
+there, the run writes it down for that class of machine (OS and
+architecture, such as `linux/amd64`; event `class.base-red`), and the
+project's code jobs (task, improve, experiment) keep off every machine of the
+class: nothing they did there could land. The jobs that only read still go,
+and so does a job whose needs name the class's system (`hive job needs JOB
+linux`), such as the one that fixes the check there. A check that passes on
+a machine of the class lifts it (`class.base-green`); with no run to say so
+it lapses after 24 hours. A compute request is not made for such a project
+either, and its reason counts only the jobs the rented machine could take
+(`4 job(s) waited 31 min …; 1 of them a rented linux/amd64 machine can run`).
+
+**Stopping a run anywhere.** `hive job stop JOB` stops the job's run on
+whatever machine it runs - this one, a paired or a rented one - within a few
+seconds, and the job ends cancelled by the owner; `--requeue` puts it back in
+the queue instead, the attempt not counted.
+
 **When no machine fits.** A job whose needs no active machine offers waits
 in the queue. After ten minutes, when the needs are what a rented Linux
 machine offers (`linux` and the size's architecture) and
@@ -410,7 +435,24 @@ commands behind one route, `POST /api/v1/compute/executors`, told apart by
   of the dialog's project list, `--project commons` on the command line -
   asks for a machine every project can use. That request is filed on the
   shared board and its machine is paired for `*`, like a machine you add
-  for **Every project**.
+  for **Every project**. The daemon's notices about it (ready, released,
+  failed) are findings on the shared board's `runner/compute` thread; the
+  brain's triage of that board leaves them alone, as they are the
+  daemon's log, not wishes. The hub refuses **Any project** (409, *Any
+  project needs the daemon of this build*) while the daemon's heartbeat
+  names another build than the hub's: the two are separate processes and
+  differ while one of them waits to restart, and a daemon from before this
+  choice would pair the machine for the shared board, which runs no job.
+  Restart Hive, or ask for one project.
+
+  A machine for every project runs every project's jobs as one user, so
+  one project's job can read what another's left there. That includes a
+  job's clone the daemon keeps on the machine when its commits could not
+  be fetched back (`the clone on hands-cr-012 is kept: its commits were
+  not fetched`): it stays under the machine's workdir until the work is
+  recovered, readable by a later job of any project. The same holds for
+  any machine you add for **Every project**; keep a machine to the
+  projects that may read each other's work when that matters.
 
 Each way records what its command would: `executor.add`, `executor.probe`,
 `pair.applied`, `compute.requested`. The request rows `GET /api/v1/compute`

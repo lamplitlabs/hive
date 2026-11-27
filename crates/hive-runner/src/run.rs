@@ -2397,6 +2397,19 @@ pub(crate) fn run_job(
                         }
                     }
                     verify_rc = rc;
+                    // A check that passed on a paired or rented machine
+                    // lifts a red mark on its class (class_red.rs).
+                    if rc == Some(0) && ex.remote() {
+                        crate::class_red::mark_green(
+                            &c,
+                            &s.now(),
+                            &project.str("slug"),
+                            &crate::executor::executor_row(s, &ex.name()),
+                            &job.str("id"),
+                            &run_id,
+                            &base,
+                        );
+                    }
                     if rc == Some(0) && ex.dirty().is_empty() {
                         // The tree the check judged is the committed one, so
                         // a landing or a later base check on it can skip.
@@ -2516,6 +2529,26 @@ pub(crate) fn run_job(
                         )
                     };
                     if let BaseVerdict::Red { rc: base_rc, .. } = verdict {
+                        // Red on the base on a paired or rented machine: the
+                        // project's code jobs keep off its class until a
+                        // check there passes (class_red.rs, TASK-144).
+                        if ex.remote() {
+                            crate::class_red::mark_red(
+                                &c,
+                                &s.now(),
+                                &project.str("slug"),
+                                &crate::executor::executor_row(s, &ex.name()),
+                                &job.str("id"),
+                                &run_id,
+                                &base,
+                            );
+                            log.add(format!(
+                                "the base is red on {} ({}): {}'s code jobs keep off that class of machine until a check there passes",
+                                ex.name(),
+                                crate::class_red::class_of(&crate::executor::executor_row(s, &ex.name())),
+                                project.str("slug")
+                            ));
+                        }
                         summary = format!(
                             "{commits} commit(s) but {verify_note}; the base {} was already red before this job (verify exit {base_rc} on the base tree), so this is not a regression the job introduced; nothing landed",
                             crate::recipe::short(&base, 12)
@@ -3035,6 +3068,18 @@ pub(crate) fn run_job(
         // run that carries it on, and the hold costs it no attempt.
         "held" => {
             job_status = "queued".into();
+            crate::util::exec1(
+                &c,
+                "UPDATE jobs SET attempts = MAX(attempts - 1, 0) WHERE id = ?",
+                &[&job.str("id")],
+            );
+        }
+        // Stopped by the owner to run again (`hive job stop --requeue`):
+        // back to the queue whatever the run ended as, and the stop costs
+        // the job no attempt.
+        _ if status != "done" && owner_stop(&*c, &run_id) == Some(true) => {
+            job_status = "queued".into();
+            summary = OWNER_REQUEUE_SUMMARY.to_string();
             crate::util::exec1(
                 &c,
                 "UPDATE jobs SET attempts = MAX(attempts - 1, 0) WHERE id = ?",
@@ -3573,6 +3618,31 @@ pub(crate) fn run_task_cancelled(s: &hive_store::Store, run_id: &str) -> bool {
     .is_ok()
 }
 
+/// Whether `hive job stop` asked `run_id` to stop
+/// ([`hive_board::RUN_STOP_ACTION`]), and if so whether its job goes back to
+/// the queue (`Some(true)`) or ends cancelled (`Some(false)`).
+pub(crate) fn owner_stop(q: &(impl crate::util::Querier + ?Sized), run_id: &str) -> Option<bool> {
+    let r = crate::util::must_one(
+        q,
+        "SELECT detail FROM events WHERE action = ? AND subject = ? ORDER BY seq DESC LIMIT 1",
+        &[&hive_board::RUN_STOP_ACTION, &run_id],
+    );
+    if r.0.is_empty() {
+        return None;
+    }
+    let detail: Value = serde_json::from_str(&r.str("detail")).unwrap_or(Value::Null);
+    Some(
+        detail
+            .get("requeue")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    )
+}
+
+/// The summary of a run the owner stopped with `hive job stop --requeue`.
+pub(crate) const OWNER_REQUEUE_SUMMARY: &str =
+    "stopped by the owner (hive job stop --requeue); the job is back in the queue";
+
 pub(crate) fn watch_run_harness_cancel(
     cancel: &hive_bus::CancellationToken,
     s: &hive_store::Store,
@@ -3604,6 +3674,16 @@ pub(crate) fn watch_run_harness_cancel_every(
             );
             if asked || run_task_cancelled(&s, &run_id) {
                 owner_cancelled.store(true, Ordering::SeqCst);
+                child_cancel.cancel();
+                return true;
+            }
+            // `hive job stop` (owner_stop): a run on any machine, with or
+            // without a harness session here. Requeued, it ends as a run
+            // the runner stopped; else as the owner's cancel.
+            if let Some(requeue) = s.conn().ok().and_then(|c| owner_stop(&*c, &run_id)) {
+                if !requeue {
+                    owner_cancelled.store(true, Ordering::SeqCst);
+                }
                 child_cancel.cancel();
                 return true;
             }
