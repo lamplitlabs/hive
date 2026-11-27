@@ -25,6 +25,7 @@ const ADDED = [
   "review.merged",
   "review.failed",
   "review.owner",
+  "review.check",
   "daemon.slow-stage",
   "daemon.slept",
   "job.recover",

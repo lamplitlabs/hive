@@ -398,6 +398,7 @@ Each section below is one family: the settings that share the part of their name
 | `review.merge` | `auto` | auto: the review agent merges a Hive pull request itself when it stays off guarded paths, the check is green and the whole diff is what the title and body say; anything else goes to the owner with the review's findings (size alone hands nothing to the owner). ask: the agent still reviews every pull request and leaves its findings, but every merge waits for the owner |
 | `review.merge_wait_hours` | `6` | hours a reviewer's approved merge may wait for its checks or for the forge before it stops waiting: the pull request goes to the owner and the project's lead is told once, with the forge's last answer |
 | `review.merge_wait_tries` | `5` | times the forge may fail a reviewer's approved merge (a 5xx, a rate limit, a dropped connection) before the merge stops waiting: the pull request goes to the owner and the project's lead is told once, with the forge's last answer |
+| `review.rerun_cmd` | `cargo test --workspace -- --exact {test}` | the command that re-runs one failing test alone, \{test\} standing for its name (the check's leading env NAME=value words are put in front): a review's red check whose failing tests all pass this way is flaky, and the reviewer queues the fix on the pull request's head instead of merging; empty never re-runs, and a red check is then plainly red |
 
 ## schedule
 
