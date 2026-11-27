@@ -58,6 +58,9 @@ const state = {
   events: null,
   projects: null,
   goals: new Map(),
+  // Goals Hive drafted and waits on (TASK-117), by project: the org rows carry
+  // them as goal_proposal; a decide on the post settles them like the hub.
+  goalProposals: new Map(),
   jobRepairs: null,
   codeDeliveries: null,
   reports: null,
@@ -224,6 +227,8 @@ async function init() {
   state.skills = (await loadJson("skills.json")).skills;
   state.memory = await loadJson("memory.json");
   const org = await loadJson("org.json");
+  for (const [slug, g] of Object.entries(await loadJson("goal-proposals.json")))
+    state.goalProposals.set(slug, g);
   // An owner-set goal the fixture seeds (ADR-040) lives in state.goals like one set from the console, so GET goal, the org rows and the registry rows agree.
   for (const p of org.projects)
     if (p.kind !== "commons" && p.goal_source === "owner")
@@ -2150,6 +2155,16 @@ async function handle(req, res) {
     }
     // decide
     if (segs[0] === "decide") {
+      // A goal Hive proposed (TASK-117): a yes sets the project's goal to its text, either answer settles it.
+      const goalOf = [...state.goalProposals].find(([, g]) => g.post === body.id);
+      if (goalOf) {
+        const [slug, g] = goalOf;
+        state.goalProposals.delete(slug);
+        if (body.answer === "yes")
+          state.goals.set(slug, { text: g.text, source: "owner", updated_at: now(), updated_by: "human" });
+        emit("human", "decide", g.post, { project: slug, answer: body.answer, words: body.words || "" });
+        return send(res, 200, { ok: true, decided: { post_id: g.post, project: slug, answer: body.answer, words: body.words || "", decided_at: now(), decided_by: "human" } });
+      }
       const p = state.proposals.find((x) => x.id === body.id);
       if (!p) {
         const i = state.questions.findIndex((x) => x.id === body.id);
@@ -4446,6 +4461,7 @@ async function handle(req, res) {
                 .length,
               needs: state.projects.find((x) => x.slug === p.slug)?.needs || "",
               ...goalFields(state.projects.find((x) => x.slug === p.slug)),
+              goal_proposal: state.goalProposals.get(p.slug) ?? null,
             },
       );
     return send(res, 200, {
