@@ -19,7 +19,7 @@ static HARD_STOP_WORDS: LazyLock<Vec<(&'static str, regex::Regex)>> = LazyLock::
     [
         (
             "money",
-            r"\b(spend money|spends money|(raise|increase|lift|the|a|monthly|spending|cloud|azure) budget|billing|billed|invoice\w*|payment\w*|pay for|purchas\w*|subscription\w*|credit card|costs? money|compute requests?|paid (plan|tier|account|seat|version|service)s?|buy|buys|buying|bought|rent|rents|rented|renting|rental|usd|eur|gbp|dollars?|euros?|per month|a month|monthly (fee|cost|price|bill)s?)\b|[$€£]\s?\d",
+            r"\b(spend money|spends money|(raise|increase|lift|the|a|monthly|spending|cloud|azure) budget|billing|billed|invoice\w*|payment\w*|pay for|purchas\w*|subscription\w*|credit card|costs? money|compute requests?|paid (plan|tier|account|seat|version|service)s?|buy|buys|buying|bought|rent|rents|rented|renting|rental|usd|eur|gbp|dollars?|euros?|\d+ (a|per) month|(costs?|charges?|charged|fees?|pays?|paid|bills?|billed) ([\w.,]+ ){0,3}(a|per) month|monthly (fee|cost|price|bill)s?)\b|[$€£]\s?\d",
         ),
         (
             "a destructive or irreversible act",
@@ -31,7 +31,7 @@ static HARD_STOP_WORDS: LazyLock<Vec<(&'static str, regex::Regex)>> = LazyLock::
         ),
         (
             "publication",
-            r"\b(publish\w*|publication|deploy\w*|go live|goes live|go public|(to|in|into|on) (production|prod)|ship (it |this |that )?to (users|customers)|public repo\w*|make ((it|\w+ [\w-]+|\w+ [\w-]+ [\w-]+) )?public|app store|play store|(cut|ship|tag|publish) (the |a |our )?(v?\d+(\.\d+)*|new|next|first) release|release (v?\d|to )|tag v?\d|(send|sends|sending|sent) (an? |the |our |this |that )?(\w+ )?(e-?mails?|newsletters?|announcements?)|e-?mail (the|all|every|our) (users|customers|subscribers|list)|mailing list|press release|announce\w*)\b",
+            r"\b(publish\w*|publication|deploy\w*|go live|goes live|go public|(to|into) (production|prod)|(ship|ships|shipping|push|pushes|pushing|roll|rolls|rolling|launch|launches|launching|release|releases|releasing|enable|enables|enabling) ((it|this|that|them|the [\w-]+|an? [\w-]+) )?(out )?(in|on) (production|prod)|ship (it |this |that )?to (users|customers)|public repo\w*|make ((it|\w+ [\w-]+|\w+ [\w-]+ [\w-]+) )?public|app store|play store|(cut|ship|tag|publish) (the |a |our )?(v?\d+(\.\d+)*|new|next|first) release|release (v?\d|to )|tag v?\d|(send|sends|sending|sent) (an? |the |our |this |that )?(\w+ )?(e-?mails?|newsletters?|announcements?)|e-?mail(s|ed|ing)? (it |this |that |them )?(to )?(the|a|an|all|every|our|each|your|that|this) (users?|customers?|subscribers?|clients?|partners?|list)|(send|sends|sending|sent|forward|forwards|forwarding|forwarded|share|shares|sharing|shared) (it|this|that|them|(the|a|an|our|this|that|these|those) [\w-]+)( [\w-]+)? (to|with) (the |a |an |all |every |our |each |your |that |this )?(customers?|subscribers?|partners?|press|public)|mailing list|press release|announce\w*)\b",
         ),
         (
             "a Tier 2 decision",
@@ -52,6 +52,60 @@ static EXPLICIT: LazyLock<regex::Regex> = LazyLock::new(|| {
 
 /// What an agent writes on a `Hard stop:` line to say there is none.
 const NO_HARD_STOP: &[&str] = &["none", "no", "n/a", "na", "nothing", "not one"];
+
+/// The none word that opens what follows the label on a none line.
+static NONE_WORD: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"(?i)^[ \t]*(not one|nothing|none|n/a|na|no)\b").expect("none word regex")
+});
+
+/// Routine phrases that hold a hard-stop word, taken out before the words
+/// are read (second review of pull request 278): a ruled-out Tier 2 ("not
+/// Tier 2"), a part of the console named after the goal ("update the goal
+/// panel"), agreement ("buy-in") and code that handles secrets ("the
+/// secrets handling").
+static ROUTINE_PHRASES: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(
+        r"\b((not|no|never|nothing|isn't|is not|neither|nor|without) (a |an |any )?(tier[- ]?2|owner[- ]only)( (decision|change|path|work|item))?s?|goal (panel|card|page|view|section|tab|field|box|banner|editor|form|button|chip|strip|row|header|column|widget|component|ui|text box)s?|buy-ins?|secrets? (handling|scanning|scanners?|scans?|redaction|masking|detection|detectors?|filters?|checks?|lint\w*))\b",
+    )
+    .expect("routine phrases regex")
+});
+
+/// The prose of an ask: its fenced code blocks (```` ``` ```` or `~~~`)
+/// and its indented blocks (four spaces or a tab after a blank line, as
+/// Markdown reads them: a log tail, an output tail) dropped.
+fn prose(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut fence: Option<&str> = None;
+    let mut indented = false;
+    let mut after_blank = true;
+    for line in text.lines() {
+        let t = line.trim_start();
+        if let Some(f) = fence {
+            if t.starts_with(f) {
+                fence = None;
+            }
+            continue;
+        }
+        if t.starts_with("```") || t.starts_with("~~~") {
+            fence = Some(&t[..3]);
+            indented = false;
+            continue;
+        }
+        let blank = t.is_empty();
+        let code = !blank && (line.starts_with("    ") || line.starts_with('\t'));
+        if code && (after_blank || indented) {
+            indented = true;
+            continue;
+        }
+        if !blank {
+            indented = false;
+        }
+        after_blank = blank;
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
 
 /// Money written as an amount: `$26/month`, `40 USD`, `€5`. Tested on the
 /// text before the path-like tokens go, since `$26/month` is one of them.
@@ -109,22 +163,36 @@ pub fn hard_stop_ask(kind: &str, summary: &str, body: &str) -> String {
             format!("names a hard stop: {class}")
         };
     }
+    // Every explicit line left is a none line (the first naming a class
+    // returned above): its label and its none word go, and the rest of the
+    // line is read like any other words - also when no space follows the
+    // none word, `Hard stop: n/a,deletes the release tags` (the path rule
+    // below would take `n/a,deletes` as one token otherwise).
     let (summary, body) = if said_none {
-        (
-            EXPLICIT.replace_all(summary, "$1").into_owned(),
-            EXPLICIT.replace_all(body, "$1").into_owned(),
-        )
+        let rest = |text: &str| {
+            EXPLICIT
+                .replace_all(text, |c: &regex::Captures| {
+                    NONE_WORD.replace(&c[1], "").into_owned()
+                })
+                .into_owned()
+        };
+        (rest(summary), rest(body))
     } else {
         (summary.to_string(), body.to_string())
     };
-    let (summary, body) = (summary.as_str(), body.as_str());
-    let what = crate::jobs::owner_only_proposal(summary, body);
+    let what = crate::jobs::owner_only_proposal(&summary, &body);
     if !what.is_empty() {
         return what;
     }
-    if crate::jobs::authorizes_command(body) {
+    if crate::jobs::authorizes_command(&body) {
         return "authorizes a command (ADR-021)".into();
     }
+    // What an ask quotes is not what it asks: a fenced code block or an
+    // indented block (a pipeline finding's log tail, a watcher's output
+    // tail) is not read for the words or the amounts. The owner's paths
+    // and a command's marker are read in the whole text above.
+    let (summary, body) = (prose(&summary), prose(&body));
+    let (summary, body) = (summary.as_str(), body.as_str());
     // A path names a file, not an act: `deploy/azure/main.bicep` or
     // `scripts/publish.sh` in a routine handoff is not a publication.
     let body = body.replace(WORKER_QUESTION_PREAMBLE, "");
@@ -134,6 +202,7 @@ pub fn hard_stop_ask(kind: &str, summary: &str, body: &str) -> String {
     let text = PATH_TOKEN
         .replace_all(&format!("{summary}\n{body}").to_lowercase(), " ")
         .into_owned();
+    let text = ROUTINE_PHRASES.replace_all(&text, " ").into_owned();
     if text.contains("hard stop") {
         return "names a hard stop".into();
     }
@@ -168,6 +237,20 @@ pub fn owner_only_ask(
         .is_some();
     if compute {
         return "is about money: a compute request".into();
+    }
+    // The commons has no lead (`decide` takes only the post project's
+    // lead, and no `commons-lead` is ever seated): an ask there is the
+    // owner's, or nobody's (TASK-149 item 9).
+    let commons = conn
+        .query_row("SELECT project FROM posts WHERE id = ?", [post_id], |r| {
+            r.get::<_, String>(0)
+        })
+        .optional()
+        .ok()
+        .flatten()
+        .is_some_and(|p| p == hive_store::COMMONS_SLUG);
+    if commons {
+        return "is on the commons, which has no lead".into();
     }
     hard_stop_ask(kind, summary, body)
 }
@@ -305,6 +388,136 @@ pub fn with_default_owner_answers(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_ask_on_the_commons_is_the_owners() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE posts (id TEXT PRIMARY KEY, project TEXT);
+             CREATE TABLE compute_requests (proposal_post TEXT);
+             INSERT INTO posts VALUES ('p-commons', 'commons'), ('p-proj', 'proj');",
+        )
+        .unwrap();
+        let ask = |id| owner_only_ask(&conn, id, "proposal", "Rename the helper?", "");
+        assert_eq!(ask("p-commons"), "is on the commons, which has no lead");
+        assert_eq!(ask("p-proj"), "");
+    }
+
+    /// TASK-149 items 2, 3 and 7: each routine phrase the net caught
+    /// beside the real ask it still catches.
+    #[test]
+    fn the_net_lets_routine_phrases_through_and_keeps_the_real_ones() {
+        for (summary, body, want) in [
+            // "a month" is a frequency, not a price.
+            (
+                "Fix the flaky upload test?",
+                "It failed twice a month since August.",
+                "",
+            ),
+            ("Keep the plan?", "It costs 40 a month.", "is about money"),
+            (
+                "Keep the runner?",
+                "Hosting runs 12 per month.",
+                "is about money",
+            ),
+            // Agreement is no purchase.
+            (
+                "Rename the parser?",
+                "We have the team's buy-in on the new name.",
+                "",
+            ),
+            ("Buy a domain for the docs?", "", "is about money"),
+            // Something that works in production is not shipped by the ask.
+            (
+                "Keep the retry?",
+                "The old retry works in prod; keep it.",
+                "",
+            ),
+            (
+                "Go ahead?",
+                "Roll it out in production tonight.",
+                "is about publication",
+            ),
+            (
+                "Go ahead?",
+                "Ship it to prod tonight.",
+                "is about publication",
+            ),
+            // A Tier 2 ruled out is not one.
+            ("Split the module?", "This is Tier 1 work, not Tier 2.", ""),
+            (
+                "Tier 2: move the store to Postgres?",
+                "",
+                "is about a Tier 2 decision",
+            ),
+            // The goal panel is a part of the console, not the goal.
+            (
+                "Fix the layout?",
+                "Update the goal panel so the text wraps.",
+                "",
+            ),
+            (
+                "Update the goal to name the console?",
+                "",
+                "is about a Tier 2 decision",
+            ),
+            // Code that handles secrets is not a secret.
+            (
+                "Tidy the redactor?",
+                "It simplifies the secrets handling in hive-bus.",
+                "",
+            ),
+            (
+                "Rotate the secrets of the deploy?",
+                "",
+                "is about credentials",
+            ),
+            // A pipeline finding's log tail quotes the workflow's env.
+            (
+                "CI is red on main",
+                "Failed: ci.\n\nci, last lines of the failed steps:\n\n    env:\n      GITHUB_TOKEN: ***\n    error: test failed\n\nFix the test.",
+                "",
+            ),
+            (
+                "Fix the test?",
+                "Logs:\n\n```\nrm -rf target && cargo publish --dry-run\n```\n\nThe test reads a stale fixture.",
+                "",
+            ),
+            (
+                "CI is red on main",
+                "Put GITHUB_TOKEN in the recipe?\n\n    error: no token\n",
+                "is about credentials",
+            ),
+            // Item 3: sending something outside the machine is publication.
+            ("Email the customer the report?", "", "is about publication"),
+            (
+                "Go on?",
+                "Send the report to the customers tonight.",
+                "is about publication",
+            ),
+            ("Fix the e-mail template's footer?", "", ""),
+            ("Go on?", "Send the report to the lead.", ""),
+            // Item 7: the none word goes from a none line, a space after it
+            // or not, and the rest of the line is read.
+            (
+                "Go on?",
+                "Hard stop: n/a,deletes the release tags\n",
+                "is about a destructive or irreversible act",
+            ),
+            (
+                "Go on?",
+                "Hard stop: none,deletes the release tags\n",
+                "is about a destructive or irreversible act",
+            ),
+            ("Go on?", "Hard stop: n/a,renames the helper\n", ""),
+        ] {
+            assert_eq!(
+                hard_stop_ask("question", summary, body),
+                want,
+                "{summary} / {body}"
+            );
+        }
+    }
 
     #[test]
     fn a_major_upgrade_is_named_by_the_watchers_event_and_gets_its_answers() {
