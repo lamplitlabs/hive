@@ -266,6 +266,26 @@ pub(crate) struct RunOpts {
     pub(crate) worker_cmd: String,
     pub(crate) executor: String,
     pub(crate) cancel: hive_bus::CancellationToken,
+    /// Why the daemon stopped this run, written before it cancels `cancel`
+    /// (the restart's wait for runs on other machines, `daemon.rs`): a run
+    /// on another machine stopped so has its commits fetched as kept work
+    /// and its job queued again at no cost of an attempt.
+    pub(crate) stop_why: StopWhy,
+}
+
+/// The daemon's reason for stopping one run, shared with the run.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct StopWhy(Arc<std::sync::Mutex<String>>);
+
+impl StopWhy {
+    pub(crate) fn set(&self, why: &str) {
+        if let Ok(mut w) = self.0.lock() {
+            *w = why.to_string();
+        }
+    }
+    pub(crate) fn get(&self) -> String {
+        self.0.lock().map(|w| w.clone()).unwrap_or_default()
+    }
 }
 
 pub(crate) type WallClockFn = fn() -> SystemTime;
@@ -3049,6 +3069,94 @@ pub(crate) fn run_job(
         }
         log.put(&summary);
     }
+    // A run on another machine the daemon stopped while its worker went on
+    // (the restart's wait for other machines, daemon.restart_remote_minutes):
+    // what it committed is fetched into the project's checkout as kept work
+    // before its clone goes, and the job's next run starts from it - the
+    // restart did not wait for it, and nothing it finished is lost.
+    let mut daemon_stopped_remote = false;
+    let stop_why = o.stop_why.get();
+    if status == "lost"
+        && ex.remote()
+        && check_stopped.is_none()
+        && !owner_stopped
+        && !stop_why.is_empty()
+        && !root.is_empty()
+        && ex.started()
+    {
+        let run_base = crate::util::query_one(&c, "SELECT base FROM runs WHERE id = ?", &[&run_id])
+            .ok()
+            .flatten()
+            .map(|r| r.str("base"))
+            .unwrap_or_default();
+        let made = if run_base.is_empty() {
+            0
+        } else {
+            ex.commit_count(&run_base)
+        };
+        summary = format!("stopped on {}: {stop_why}", ex.name());
+        // The daemon stopped it, not the job: its job goes back to the
+        // queue at no cost of an attempt whatever it had committed.
+        daemon_stopped_remote = true;
+        if made > 0 {
+            commits = made;
+            let kept_branch = crate::land::failed_work_branch(agent, &job.str("id"));
+            let mut fetch_failed = false;
+            // The run's own token is cancelled: the fetch gets one of its own.
+            let kept = crate::land::keep_failed_work(
+                &root,
+                |dst| {
+                    let ok = matches!(
+                        fetch_run_work(
+                            s,
+                            &hive_bus::CancellationToken::new(),
+                            ex.as_ref(),
+                            &job.str("id"),
+                            &root,
+                            dst,
+                            &log,
+                        ),
+                        Ok(o) if o.exit_code == 0
+                    );
+                    fetch_failed = !ok;
+                    ok
+                },
+                &run_base,
+                &kept_branch,
+                &home,
+                &project.str("slug"),
+            );
+            if !kept.is_empty() {
+                summary.push_str(&format!(
+                    "; {made} commit(s) fetched, {kept}; the job's next run starts from them"
+                ));
+                let patch = kept
+                    .split(" and in ")
+                    .nth(1)
+                    .unwrap_or_default()
+                    .to_string();
+                crate::util::event_at(
+                    &c,
+                    &s.now(),
+                    "runner",
+                    "job.requeue",
+                    &job.str("id"),
+                    json!({"why": format!("the runner stopped its run on {}: {stop_why}", ex.name()), "patch": patch, "run": run_id, "branch": kept_branch}),
+                );
+            } else if fetch_failed {
+                // The commits stay on the machine with its clone; the
+                // maintenance pass fetches them from there (kept_work.rs).
+                work_not_fetched = true;
+                summary.push_str(&format!(
+                    "; its {made} commit(s) could not be fetched, so the clone on {} is kept and fetched from there",
+                    ex.name()
+                ));
+            }
+        } else {
+            summary.push_str("; it had committed nothing, so the job starts over");
+        }
+        log.put(&summary);
+    }
     // The agent was told to remove what it added (brief rule 9); whatever is
     // still registered on the clone goes now and is written down against it.
     // A held run keeps its clone for the run that carries on.
@@ -3224,7 +3332,7 @@ pub(crate) fn run_job(
         // after a runner that died under it, until the attempts run out.
         // Finished work kept for the next run's check: back to the queue
         // at no cost of an attempt, like a hold - the work is not redone.
-        "lost" if unchecked_kept || stopped_clone_kept => {
+        "lost" if unchecked_kept || stopped_clone_kept || daemon_stopped_remote => {
             job_status = "queued".into();
             crate::util::exec1(
                 &c,

@@ -74,6 +74,19 @@ export interface DaemonUpdate {
   // new starts, the owner's work included; null without a bound or from an
   // older daemon.
   until: string | null;
+  // Once the daemon waits for its runs (past its loop): the machines they
+  // run on, this machine first; empty before that and from older daemons.
+  machines: DaemonUpdateMachine[];
+}
+
+export interface DaemonUpdateMachine {
+  machine: string;
+  local: boolean;
+  runs: number;
+  since: string;
+  // When the runs on another machine are stopped, their commits kept; null
+  // when they are waited out and for this machine's runs.
+  until: string | null;
 }
 
 // The update a live heartbeat announces, from the structured `restart` record
@@ -85,11 +98,42 @@ export function pendingUpdate(daemon: Pick<Runner["daemon"], "note" | "restart">
       .filter((w): w is DaemonRestart["waits_for"][number] => !!w && typeof w === "object")
       .map((w) => ({ agent: String(w.agent || ""), kind: String(w.kind || "run"), project: String(w.project || ""), job: String(w.job || ""), started_at: String(w.started_at || "") }))
       .sort((a, b) => (startedAt(a) ?? now) - (startedAt(b) ?? now));
-    return { since: r.since || null, inflight: Number.isFinite(Number(r.inflight)) ? Number(r.inflight) : waits.length, dispatching: r.dispatching !== false, waits, until: r.until || null };
+    const machines = (Array.isArray(r.machines) ? r.machines : [])
+      .filter((m): m is NonNullable<DaemonRestart["machines"]>[number] => !!m && typeof m === "object" && Number(m.runs) > 0)
+      .map((m) => ({ machine: String(m.machine || ""), local: m.local === true, runs: Number(m.runs), since: String(m.since || ""), until: m.until ? String(m.until) : null }))
+      .sort((a, b) => (a.local === b.local ? a.machine.localeCompare(b.machine) : a.local ? -1 : 1));
+    return { since: r.since || null, inflight: Number.isFinite(Number(r.inflight)) ? Number(r.inflight) : waits.length, dispatching: r.dispatching !== false, waits, until: r.until || null, machines };
   }
   const m = /^restarting:\s*(\d+)\s+in flight/.exec(daemon.note || "");
-  if (!m) return daemon.note?.startsWith("restarting") ? { since: null, inflight: 0, dispatching: true, waits: [], until: null } : null;
-  return { since: null, inflight: Number(m[1]), dispatching: true, waits: [], until: null };
+  if (!m) return daemon.note?.startsWith("restarting") ? { since: null, inflight: 0, dispatching: true, waits: [], until: null, machines: [] } : null;
+  return { since: null, inflight: Number(m[1]), dispatching: true, waits: [], until: null, machines: [] };
+}
+
+// "06:21Z": the clock of an ISO time, as `hive status` writes it; "" when it
+// does not parse.
+function clockText(at: string | null): string {
+  const t = at ? Date.parse(at) : NaN;
+  if (!Number.isFinite(t)) return "";
+  return new Date(t).toISOString().slice(11, 16) + "Z";
+}
+
+// What a daemon past its loop waits for and since when, machine by machine -
+// "Waits for 7 runs on hands-cr-11116 since 06:21Z" - with when the runs on
+// another machine are stopped and their commits kept
+// (daemon.restart_remote_minutes). Restart now sits beside it. Empty while
+// the daemon still dispatches and from an older daemon.
+export function updateWaitingText(update: DaemonUpdate | null | undefined, now: number = Date.now()): string {
+  if (!update || !update.machines.length) return "";
+  const parts = update.machines.map((m) => {
+    const since = clockText(m.since);
+    let part = count(m.runs, "run") + " on " + (m.local ? "this machine" : m.machine) + (since ? " since " + since : "");
+    const until = m.until ? Date.parse(m.until) : NaN;
+    if (!m.local && Number.isFinite(until)) {
+      part += until > now ? " (stopped at " + clockText(m.until) + ", their commits kept)" : " (being stopped, their commits kept)";
+    }
+    return part;
+  });
+  return "Waits for " + parts.join(", ");
 }
 
 // This module is run by node straight from the `.ts` source in tests, so it
