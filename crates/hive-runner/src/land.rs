@@ -325,7 +325,11 @@ pub(crate) fn failed_work_branch(agent: &str, job_id: &str) -> String {
 /// so this is the last moment the commits exist. Never fails the run; returns
 /// the clause for its summary ("" when nothing could be kept). `fetch`
 /// brings the clone's `HEAD` to the ref it is given and says whether it did
-/// ([`crate::run::fetch_run_work`]).
+/// ([`crate::run::fetch_run_work`]). A branch of that name left by an
+/// earlier kept run of the same job is moved to this run's commits: the
+/// next brief starts from the newest work, never from the older run's
+/// (review of PR 299). When the fetch fails the branch is left as it was
+/// and nothing is said kept, so the caller keeps the clone instead.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn keep_failed_work(
     root: &str,
@@ -338,17 +342,7 @@ pub(crate) fn keep_failed_work(
     if root.is_empty() || base.is_empty() || branch.is_empty() {
         return String::new();
     }
-    let exists = crate::util::git(
-        root,
-        &[
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            &format!("refs/heads/{branch}"),
-        ],
-    )
-    .ok();
-    if !exists && !fetch(&format!("refs/heads/{branch}")) {
+    if !fetch(&format!("refs/heads/{branch}")) {
         return String::new();
     }
     let patch = save_branch_patch(
@@ -3986,6 +3980,63 @@ mod tests {
         completion_worker_command, new_completion_job, run_completion,
     };
     use crate::test_helpers_daemon::{exec1, job_row, must_rows, ref_of, set_setting};
+
+    /// Review of PR 299 item 3: a second kept run of the same job moves the
+    /// job's `-failed` branch to its own commits, and its patch with it.
+    /// Before, an existing branch skipped the fetch, so the next brief
+    /// started from the older run's work. A fetch that fails leaves the
+    /// branch as it was and says nothing is kept.
+    #[test]
+    fn a_second_kept_run_updates_the_jobs_failed_branch() {
+        let home = tempfile::tempdir().unwrap();
+        let root = home.path().join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        run(&root, &["git", "init", "-q", "-b", "main"]);
+        run(
+            &root,
+            &["git", "commit", "-q", "--allow-empty", "-m", "base"],
+        );
+        let base = run(&root, &["git", "rev-parse", "HEAD"]).trim().to_string();
+        let root_s = root.display().to_string();
+        let home_s = home.path().display().to_string();
+        let commit = |msg: &str| {
+            run(&root, &["git", "commit", "-q", "--allow-empty", "-m", msg]);
+            let sha = run(&root, &["git", "rev-parse", "HEAD"]).trim().to_string();
+            run(&root, &["git", "reset", "-q", "--hard", &base]);
+            sha
+        };
+        let first = commit("first run");
+        let second = commit("second run");
+        let branch = super::failed_work_branch("aurora", "job-1");
+        let keep = |sha: &str, ok: bool| {
+            super::keep_failed_work(
+                &root_s,
+                |dst| ok && crate::util::git(&root_s, &["update-ref", dst, sha]).ok(),
+                &base,
+                &branch,
+                &home_s,
+                "proj",
+            )
+        };
+        let tip = || {
+            run(&root, &["git", "rev-parse", &branch])
+                .trim()
+                .to_string()
+        };
+        assert!(keep(&first, true).contains(&branch));
+        assert_eq!(tip(), first);
+        let said = keep(&second, true);
+        assert!(said.contains(&branch), "{said}");
+        assert_eq!(tip(), second, "the second kept run left the older work");
+        let (_, patch) = said.split_once(" and in ").expect("a patch");
+        let text = std::fs::read_to_string(patch.trim()).unwrap();
+        assert!(
+            text.contains("second run") && !text.contains("first run"),
+            "{text}"
+        );
+        assert_eq!(keep(&first, false), "", "a failed fetch keeps nothing");
+        assert_eq!(tip(), second, "a failed fetch moved the branch");
+    }
 
     #[test]
     fn landing_cleanup_removes_the_worktrees_tmpdir() {
