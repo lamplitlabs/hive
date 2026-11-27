@@ -1435,9 +1435,156 @@ hive-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOCK
         assert_eq!(
             worker.release_due(got, &after(71.0)),
             format!(
-                "the executor sat idle for {} minutes",
+                "Released after {} idle minutes: no job was waiting",
                 crate::compute::COMPUTE_IDLE_MINUTES
             )
+        );
+        cancel.cancel();
+    }
+
+    /// TASK-165 item 1: a request the owner approved is rented past compute.max_hours_per_day
+    /// and compute.max_vms (0 here: Hive rents nothing by itself); an agent's request approved
+    /// by the daemon under the same limits is not rented, says why on its row, and is no
+    /// failure. Before, both were failed with "cap: ...".
+    #[test]
+    fn the_owners_rental_passes_a_limit_the_daemons_does_not() {
+        let _serial = crate::test_helpers::serial();
+        let _lock = provider_test_lock();
+        let s = new_store();
+        let h = compute_harness(&s, AZURE_SETTINGS);
+        let az = new_fake_az();
+        let _fake = install_fake(crate::azure::set_run_az, {
+            let az = az.clone();
+            Box::new(move |ctx, args, timeout| az.run(ctx, args, timeout))
+        });
+        let owners = approved_request(&s);
+        let daemons = hive_tasks::request_compute(&s, "proj", "aurora", "", 2, "agent's own")
+            .unwrap_or_else(|err| panic!("{err}"));
+        exec1(
+            &s,
+            "UPDATE compute_requests SET status = 'approved', decided_by = 'hive' WHERE id = ?",
+            &[&daemons.id],
+        );
+        set_setting(&s, "compute.max_vms", "0");
+        set_setting(&s, "compute.max_hours_per_day", "0");
+        let log = once(&s, &h);
+        let got = hive_tasks::get_compute(&s, &owners.id).unwrap_or_default();
+        assert_eq!(got.status, "ready", "the owner's: {got:?}\n{log}");
+        let got = hive_tasks::get_compute(&s, &daemons.id).unwrap_or_default();
+        assert_eq!(
+            got.note,
+            "Not rented: the limit of extra machines at once is 0 - Hive rents nothing by itself",
+            "{got:?}\n{log}"
+        );
+        assert!(
+            hive_tasks::open_limit_hit(&s, &daemons.id)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    /// TASK-165 item 3: before the owner rents, the preview says how many waiting jobs the
+    /// machine could run, or names what keeps them off ("No waiting job can run on this
+    /// machine: proj needs macos") with the risk of letting the project's jobs run on Linux;
+    /// that answer drops macos from the project's needs and its queued jobs.
+    #[test]
+    fn the_rental_preview_names_what_keeps_waiting_jobs_off_the_machine() {
+        let _serial = crate::test_helpers::serial();
+        let _lock = provider_test_lock();
+        let s = new_store();
+        let _h = compute_harness(&s, AZURE_SETTINGS);
+        exec1(
+            &s,
+            "UPDATE projects SET status = 'active' WHERE slug = 'proj'",
+            &[],
+        );
+        let p = crate::compute::rental_preview(&s, "proj", 4);
+        assert_eq!(p.fit_words, "No job is waiting now");
+        hive_board::set_project_needs(&s, "proj", "macos", crate::util::HUMAN_AGENT).unwrap();
+        crate::test_helpers_daemon::queued_job(&s, "job-mac", "proj", "task", "owner");
+        exec1(
+            &s,
+            "UPDATE jobs SET needs = 'macos' WHERE id = 'job-mac'",
+            &[],
+        );
+        let p = crate::compute::rental_preview(&s, "proj", 4);
+        assert_eq!(
+            p.fit_words,
+            "No waiting job can run on this machine: proj needs macos"
+        );
+        assert_eq!(p.os_needs, vec!["macos".to_string()]);
+        assert!(p.linux_risk.contains("fails there"), "{}", p.linux_risk);
+        assert!(
+            p.limit.is_none(),
+            "2 machines and 24 hours leave room for 4 hours"
+        );
+        let left =
+            crate::compute::let_project_run_on_linux(&s, "proj", crate::util::HUMAN_AGENT).unwrap();
+        assert_eq!(left, "");
+        let p = crate::compute::rental_preview(&s, "proj", 4);
+        assert_eq!(p.fit_words, "1 waiting job(s) can run on it");
+        // An agent's request for 30 hours would pass today's limit: said, not refused.
+        let p = crate::compute::rental_preview(&s, "proj", 30);
+        assert_eq!(
+            p.limit_words,
+            "Not rented: today's limit of 24 hours is used (0 used, this asks 30)"
+        );
+    }
+
+    /// TASK-165 item 4: a rented machine released unused says why it sat idle - the waiting
+    /// jobs it could not run and what they need - on its card (the row and the Machines page
+    /// read the note), not a bare "sat idle". Before, every idle release read "the executor
+    /// sat idle for 30 minutes" while a macOS job waited behind it.
+    #[test]
+    fn an_idle_release_says_which_waiting_job_could_not_run_there() {
+        let _serial = crate::test_helpers::serial();
+        let _lock = provider_test_lock();
+        let s = new_store();
+        let h = compute_harness(&s, AZURE_SETTINGS);
+        let az = new_fake_az();
+        let _fake = install_fake(crate::azure::set_run_az, {
+            let az = az.clone();
+            Box::new(move |ctx, args, timeout| az.run(ctx, args, timeout))
+        });
+        let req = approved_request(&s);
+        let log = once(&s, &h);
+        let got = hive_tasks::get_compute(&s, &req.id).unwrap_or_default();
+        assert_eq!(got.status, "ready", "request: {got:?}\n{log}");
+        // proj waits with a job that needs a Mac: the Linux machine cannot take it.
+        crate::test_helpers_daemon::queued_job(&s, "job-mac", "proj", "task", "owner");
+        exec1(
+            &s,
+            "UPDATE jobs SET needs = 'macos' WHERE id = 'job-mac'",
+            &[],
+        );
+        exec1(
+            &s,
+            "UPDATE projects SET status = 'active' WHERE slug = 'proj'",
+            &[],
+        );
+        let cancel = hive_bus::CancellationToken::new();
+        let worker = crate::compute::new_compute_worker(
+            &cancel,
+            &s,
+            crate::compute::ComputeOpts {
+                actor: TEST_DAEMON.into(),
+                hub_home: h.hub_home.clone(),
+            },
+        );
+        let now = crate::util::plus_minutes(TEST_NOW, 45.0);
+        let why = worker.release_due(got, &now);
+        assert_eq!(
+            why,
+            "Released after 30 idle minutes: no waiting job could run there (proj needs macos)"
+        );
+        let mut lines = worker.tick(&cancel, &now);
+        worker.wait(Duration::from_secs(60));
+        lines.extend(worker.drain());
+        let got = hive_tasks::get_compute(&s, &req.id).unwrap_or_default();
+        assert_eq!(
+            (got.status.as_str(), got.note.as_str()),
+            ("released", why.as_str()),
+            "{lines:?}"
         );
         cancel.cancel();
     }
