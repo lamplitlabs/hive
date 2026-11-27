@@ -139,7 +139,39 @@ impl LocalEnv {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .clone();
-                kill_tree_under_sparing(dir, self.kill_grace, |p| spared.contains(&p.pgid))
+                if spared.is_empty() {
+                    return kill_tree_under_sparing(dir, self.kill_grace, |_| false);
+                }
+                // A managed background process's children may lead groups
+                // of their own (`next build` starts its type-check worker
+                // detached): they are still its work, not a command's
+                // stragglers, so anything descending from a spared group is
+                // spared too. Killing that worker failed the console's build
+                // under a check run in the background, and with it the check.
+                let parents: std::collections::HashMap<i32, (i32, i32)> =
+                    hive_cli::procs::list_processes()
+                        .into_iter()
+                        .map(|p| (p.pid, (p.ppid, p.pgid)))
+                        .collect();
+                let descends = |p: &hive_cli::procs::ProcInfo| {
+                    let mut pid = p.ppid;
+                    for _ in 0..64 {
+                        let Some(&(ppid, pgid)) = parents.get(&pid) else {
+                            return false;
+                        };
+                        if spared.contains(&pgid) {
+                            return true;
+                        }
+                        if ppid <= 1 || ppid == pid {
+                            return false;
+                        }
+                        pid = ppid;
+                    }
+                    false
+                };
+                kill_tree_under_sparing(dir, self.kill_grace, |p| {
+                    spared.contains(&p.pgid) || descends(p)
+                })
             }
             None => Vec::new(),
         }
@@ -786,6 +818,55 @@ mod tests {
         assert!(env.spared.lock().unwrap().is_empty());
         // The run's close sweeps what is left under the directory.
         assert!(env.close().is_empty());
+    }
+
+    #[test]
+    fn the_sweep_spares_a_managed_process_child_in_a_group_of_its_own() {
+        // `next build` under a check run in the background starts its
+        // type-check worker in a process group of its own; the sweep after
+        // the next command took it for a straggler and failed the build.
+        let dir = tempfile::tempdir().unwrap();
+        let mut env = env_in(dir.path()).with_sweep_dir(Some(dir.path().to_path_buf()));
+        let mut p = env
+            .spawn("perl -e 'setpgrp(0, 0); exec @ARGV' sleep 300 & echo $! > worker.pid; wait")
+            .unwrap();
+        let pid_file = dir.path().join("worker.pid");
+        wait_until(
+            || {
+                std::fs::read_to_string(&pid_file)
+                    .ok()
+                    .and_then(|t| t.trim().parse::<i32>().ok())
+                    .is_some_and(|w| {
+                        hive_cli::procs::list_processes()
+                            .iter()
+                            .any(|i| i.pid == w && i.pgid == w && i.name == "sleep")
+                    })
+            },
+            "the worker to lead its own group",
+        );
+        let worker: i32 = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let obs = env.execute(
+            &CancelToken::new(),
+            "sleep 300 & echo $! > stray.pid; echo ran",
+            Duration::from_secs(10),
+        );
+        assert_eq!(obs.exit_code, 0, "{}", obs.output);
+        assert!(
+            obs.output.contains("killed 1 background process"),
+            "the stray goes: {}",
+            obs.output
+        );
+        assert!(alive(worker), "the managed process's worker was swept");
+        assert!(alive(p.pid()));
+        assert!(p.stop());
+        // The run's close takes what the managed process left behind.
+        let left = env.close();
+        assert!(left.iter().any(|k| k.pid == worker), "{left:?}");
+        wait_until(|| !alive(worker), "the worker to go at close");
     }
 
     #[test]

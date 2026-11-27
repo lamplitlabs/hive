@@ -6106,7 +6106,15 @@ mod tests {
         // waited beside them and no fleet run was asked to hold.
         let _serial = crate::test_helpers::serial();
         let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
-        let calm = crate::daemon_load::pin_pressure(crate::daemon_load::CALM);
+        // The kernel's memory warning is on before the daemon's first tick:
+        // it halves the cap of four to two from the start, so the two runs
+        // below fill it. Raising it only after they started raced the pass
+        // that leased them - a pass still under way read the calm pressure
+        // and leased the owner's next step as well (TASK-157).
+        let _warned = crate::daemon_load::pin_pressure(crate::daemon_load::Pressure {
+            mem_warning: true,
+            ..crate::daemon_load::CALM
+        });
         let live = LiveGovernor::start_with(|s| {
             s.set_setting(hive_store::HUMAN_AGENT, "capacity", "4")
                 .unwrap();
@@ -6136,14 +6144,8 @@ mod tests {
                     ..Default::default()
                 })
                 .unwrap();
-            // The kernel's memory warning halves the cap of four to two, and
-            // two runs fill it - one the owner's, so no express slot - while
-            // the fleet's nominal total is still four.
-            drop(calm);
-            let _warned = crate::daemon_load::pin_pressure(crate::daemon_load::Pressure {
-                mem_warning: true,
-                ..crate::daemon_load::CALM
-            });
+            // The halved cap of two is full - one run the owner's, so no
+            // express slot - while the fleet's nominal total is still four.
             assert_eq!(crate::capacity::fleet(&live.s).total, 4);
             let next = live.add("Owner's next step", "task:TASK-001:next");
             let text = live.wait_for(
