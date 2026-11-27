@@ -1,0 +1,1764 @@
+{
+  "about": "What GET /api/v1/tasks/{id}/lifecycle serializes, in full, for each case of lifecycle-cases.json (by its name; the route's `phases` once, under `phases`). Written by the hub (crates/hive-hub/src/phases.rs, HIVE_LIFECYCLE_ANSWERS=write cargo test -p hive-hub the_shared_cases); the mock's test (lifecycle.test.mjs) holds web/hub/mock/lifecycle.mjs to it.",
+  "answers": {
+    "a blocked step": {
+      "note": "J1 is blocked",
+      "phase": "build",
+      "rework": false,
+      "steps": [
+        {
+          "at": "2026-09-06T10:00:00Z",
+          "gate": "a lead takes the task up: the owner's task passes no other gate, and suggested work came with a different agent's verdict",
+          "left": [
+            {
+              "at": "2026-09-06T10:00:00Z",
+              "id": "TASK-001",
+              "kind": "task"
+            }
+          ],
+          "phase": "intake",
+          "state": "passed"
+        },
+        {
+          "gate": "a job exists for the task, Tier 0 or Tier 1",
+          "left": [],
+          "phase": "shape",
+          "state": "passed"
+        },
+        {
+          "at": "2026-09-06T11:00:00Z",
+          "gate": "every step's run has ended",
+          "left": [
+            {
+              "at": "2026-09-06T11:00:00Z",
+              "id": "J1",
+              "kind": "job",
+              "note": "blocked"
+            }
+          ],
+          "phase": "build",
+          "state": "current"
+        },
+        {
+          "gate": "each step's own commits passed the project's check, and none of the task's jobs is queued, running or blocked",
+          "left": [],
+          "phase": "verify",
+          "state": "ahead"
+        },
+        {
+          "gate": "the task's pull request is open and the reviewer (or the owner) says merge, with GitHub's own gate passed",
+          "left": [],
+          "phase": "review",
+          "state": "ahead"
+        },
+        {
+          "gate": "the pull request is merged on the upstream",
+          "left": [],
+          "phase": "deliver",
+          "state": "ahead"
+        }
+      ],
+      "task": "TASK-001",
+      "waits_on": "runner"
+    },
+    "a cancelled task": {
+      "note": "cancelled",
+      "phase": "cancelled",
+      "rework": false,
+      "steps": [
+        {
+          "at": "2026-09-06T10:00:00Z",
+          "gate": "a lead takes the task up: the owner's task passes no other gate, and suggested work came with a different agent's verdict",
+          "left": [
+            {
+              "at": "2026-09-06T10:00:00Z",
+              "id": "TASK-001",
+              "kind": "task"
+            }
+          ],
+          "phase": "intake",
+          "state": "passed"
+        },
+        {
+          "gate": "a job exists for the task, Tier 0 or Tier 1",
+          "left": [],
+          "phase": "shape",
+          "state": "skipped"
+        },
+        {
+          "gate": "every step's run has ended",
+          "left": [],
+          "phase": "build",
+          "state": "skipped"
+        },
+        {
+          "gate": "each step's own commits passed the project's check, and none of the task's jobs is queued, running or blocked",
+          "left": [],
+          "phase": "verify",
+          "state": "skipped"
+        },
+        {
+          "gate": "the task's pull request is open and the reviewer (or the owner) says merge, with GitHub's own gate passed",
+          "left": [],
+          "phase": "review",
+          "state": "skipped"
+        },
+        {
+          "gate": "the pull request is merged on the upstream",
+          "left": [],
+          "phase": "deliver",
+          "state": "skipped"
+        }
+      ],
+      "task": "TASK-001",
+      "waits_on": "nobody"
+    },
+    "a cancelled task with a merged pull request": {
+      "note": "cancelled",
+      "phase": "cancelled",
+      "rework": false,
+      "steps": [
+        {
+          "at": "2026-09-06T10:00:00Z",
+          "gate": "a lead takes the task up: the owner's task passes no other gate, and suggested work came with a different agent's verdict",
+          "left": [
+            {
+              "at": "2026-09-06T10:00:00Z",
+              "id": "TASK-001",
+              "kind": "task"
+            }
+          ],
+          "phase": "intake",
+          "state": "passed"
+        },
+        {
+          "gate": "a job exists for the task, Tier 0 or Tier 1",
+          "left": [],
+          "phase": "shape",
+          "state": "passed"
+        },
+        {
+          "at": "2026-09-06T11:00:00Z",
+          "gate": "every step's run has ended",
+          "left": [
+            {
+              "at": "2026-09-06T11:00:00Z",
+              "id": "J1",
+              "kind": "job",
+              "note": "done"
+            }
+          ],
+          "phase": "build",
+          "state": "passed"
+        },
+        {
+          "gate": "each step's own commits passed the project's check, and none of the task's jobs is queued, running or blocked",
+          "left": [],
+          "phase": "verify",
+          "state": "passed"
+        },
+        {
+          "at": "2026-09-06T12:00:00Z",
+          "gate": "the task's pull request is open and the reviewer (or the owner) says merge, with GitHub's own gate passed",
+          "left": [
+            {
+              "at": "2026-09-06T12:00:00Z",
+              "id": "12",
+              "kind": "pr",
+              "url": "https://github.com/o/r/pull/12"
+            },
+            {
+              "at": "2026-09-06T12:00:00Z",
+              "id": "merged",
+              "kind": "verdict"
+            }
+          ],
+          "phase": "review",
+          "state": "passed"
+        },
+        {
+          "at": "2026-09-06T12:00:00Z",
+          "gate": "the pull request is merged on the upstream",
+          "left": [
+            {
+              "at": "2026-09-06T12:00:00Z",
+              "id": "12",
+              "kind": "merge",
+              "url": "https://github.com/o/r/pull/12"
+            }
+          ],
+          "phase": "deliver",
+          "state": "passed"
+        }
+      ],
+      "task": "TASK-001",
+      "waits_on": "nobody"
+    },
+    "a done task": {
+      "note": "closed",
+      "phase": "done",
+      "rework": false,
+      "steps": [
+        {
+          "at": "2026-09-06T10:00:00Z",
+          "gate": "a lead takes the task up: the owner's task passes no other gate, and suggested work came with a different agent's verdict",
+          "left": [
+            {
+              "at": "2026-09-06T10:00:00Z",
+              "id": "TASK-001",
+              "kind": "task"
+            }
+          ],
+          "phase": "intake",
+          "state": "passed"
+        },
+        {
+          "gate": "a job exists for the task, Tier 0 or Tier 1",
+          "left": [],
+          "phase": "shape",
+          "state": "passed"
+        },
+        {
+          "gate": "every step's run has ended",
+          "left": [],
+          "phase": "build",
+          "state": "skipped"
+        },
+        {
+          "gate": "each step's own commits passed the project's check, and none of the task's jobs is queued, running or blocked",
+          "left": [],
+          "phase": "verify",
+          "state": "skipped"
+        },
+        {
+          "gate": "the task's pull request is open and the reviewer (or the owner) says merge, with GitHub's own gate passed",
+          "left": [],
+          "phase": "review",
+          "state": "skipped"
+        },
+        {
+          "gate": "the pull request is merged on the upstream",
+          "left": [],
+          "phase": "deliver",
+          "state": "skipped"
+        }
+      ],
+      "task": "TASK-001",
+      "waits_on": "nobody"
+    },
+    "a failed step": {
+      "note": "J1 failed; the lead plans the next step",
+      "phase": "shape",
+      "rework": false,
+      "steps": [
+        {
+          "at": "2026-09-06T10:00:00Z",
+          "gate": "a lead takes the task up: the owner's task passes no other gate, and suggested work came with a different agent's verdict",
+          "left": [
+            {
+              "at": "2026-09-06T10:00:00Z",
+              "id": "TASK-001",
+              "kind": "task"
+            }
+          ],
+          "phase": "intake",
+          "state": "passed"
+        },
+        {
+          "gate": "a job exists for the task, Tier 0 or Tier 1",
+          "left": [],
+          "phase": "shape",
+          "state": "current"
+        },
+        {
+          "at": "2026-09-06T11:00:00Z",
+          "gate": "every step's run has ended",
+          "left": [
+            {
+              "at": "2026-09-06T11:00:00Z",
+              "id": "J1",
+              "kind": "job",
+              "note": "failed"
+            }
+          ],
+          "phase": "build",
+          "state": "ahead"
+        },
+        {
+          "gate": "each step's own commits passed the project's check, and none of the task's jobs is queued, running or blocked",
+          "left": [],
+          "phase": "verify",
+          "state": "ahead"
+        },
+        {
+          "gate": "the task's pull request is open and the reviewer (or the owner) says merge, with GitHub's own gate passed",
+          "left": [],
+          "phase": "review",
+          "state": "ahead"
+        },
+        {
+          "gate": "the pull request is merged on the upstream",
+          "left": [],
+          "phase": "deliver",
+          "state": "ahead"
+        }
+      ],
+      "task": "TASK-001",
+      "waits_on": "lead"
+    },
+    "a finished step with a branch and no pull request yet": {
+      "note": "the runner opens the task's pull request",
+      "phase": "review",
+      "rework": false,
+      "steps": [
+        {
+          "at": "2026-09-06T10:00:00Z",
+          "gate": "a lead takes the task up: the owner's task passes no other gate, and suggested work came with a different agent's verdict",
+          "left": [
+            {
+              "at": "2026-09-06T10:00:00Z",
+              "id": "TASK-001",
+              "kind": "task"
+            }
+          ],
+          "phase": "intake",
+          "state": "passed"
+        },
+        {
+          "gate": "a job exists for the task, Tier 0 or Tier 1",
+          "left": [],
+          "phase": "shape",
+          "state": "passed"
+        },
+        {
+          "at": "2026-09-06T11:00:00Z",
+          "gate": "every step's run has ended",
+          "left": [
+            {
+              "at": "2026-09-06T11:00:00Z",
+              "id": "J1",
+              "kind": "job",
+              "note": "done"
+            }
+          ],
+          "phase": "build",
+          "state": "passed"
+        },
+        {
+          "gate": "each step's own commits passed the project's check, and none of the task's jobs is queued, running or blocked",
+          "left": [
+            {
+              "id": "hive/w/J1",
+              "kind": "branch",
+              "note": "J1"
+            }
+          ],
+          "phase": "verify",
+          "state": "passed"
+        },
+        {
+          "gate": "the task's pull request is open and the reviewer (or the owner) says merge, with GitHub's own gate passed",
+          "left": [],
+          "phase": "review",
+          "state": "current"
+        },
+        {
+          "gate": "the pull request is merged on the upstream",
+          "left": [],
+          "phase": "deliver",
+          "state": "ahead"
+        }
+      ],
+      "task": "TASK-001",
+      "waits_on": "runner"
+    },
+    "a finished step without a branch": {
+      "note": "the lead plans its jobs",
+      "phase": "shape",
+      "rework": false,
+      "steps": [
+        {
+          "at": "2026-09-06T10:00:00Z",
+          "gate": "a lead takes the task up: the owner's task passes no other gate, and suggested work came with a different agent's verdict",
+          "left": [
+            {
+              "at": "2026-09-06T10:00:00Z",
+              "id": "TASK-001",
+              "kind": "task"
+            }
+          ],
+          "phase": "intake",
+          "state": "passed"
+        },
+        {
+          "gate": "a job exists for the task, Tier 0 or Tier 1",
+          "left": [],
+          "phase": "shape",
+          "state": "current"
+        },
+        {
+          "at": "2026-09-06T11:00:00Z",
+          "gate": "every step's run has ended",
+          "left": [
+            {
+              "at": "2026-09-06T11:00:00Z",
+              "id": "J1",
+              "kind": "job",
+              "note": "done"
+            }
+          ],
+          "phase": "build",
+          "state": "ahead"
+        },
+        {
+          "gate": "each step's own commits passed the project's check, and none of the task's jobs is queued, running or blocked",
+          "left": [],
+          "phase": "verify",
+          "state": "ahead"
+        },
+        {
+          "gate": "the task's pull request is open and the reviewer (or the owner) says merge, with GitHub's own gate passed",
+          "left": [],
+          "phase": "review",
+          "state": "ahead"
+        },
+        {
+          "gate": "the pull request is merged on the upstream",
+          "left": [],
+          "phase": "deliver",
+          "state": "ahead"
+        }
+      ],
+      "task": "TASK-001",
+      "waits_on": "lead"
+    },
+    "a merged pull request": {
+      "note": "pull request #12 merged",
+      "phase": "done",
+      "rework": false,
+      "steps": [
+        {
+          "at": "2026-09-06T10:00:00Z",
+          "gate": "a lead takes the task up: the owner's task passes no other gate, and suggested work came with a different agent's verdict",
+          "left": [
+            {
+              "at": "2026-09-06T10:00:00Z",
+              "id": "TASK-001",
+              "kind": "task"
+            }
+          ],
+          "phase": "intake",
+          "state": "passed"
+        },
+        {
+          "gate": "a job exists for the task, Tier 0 or Tier 1",
+          "left": [],
+          "phase": "shape",
+          "state": "passed"
+        },
+        {
+          "at": "2026-09-06T11:00:00Z",
+          "gate": "every step's run has ended",
+          "left": [
+            {
+              "at": "2026-09-06T11:00:00Z",
+              "id": "J1",
+              "kind": "job",
+              "note": "done"
+            }
+          ],
+          "phase": "build",
+          "state": "passed"
+        },
+        {
+          "gate": "each step's own commits passed the project's check, and none of the task's jobs is queued, running or blocked",
+          "left": [],
+          "phase": "verify",
+          "state": "skipped"
+        },
+        {
+          "at": "2026-09-06T12:00:00Z",
+          "gate": "the task's pull request is open and the reviewer (or the owner) says merge, with GitHub's own gate passed",
+          "left": [
+            {
+              "at": "2026-09-06T12:00:00Z",
+              "id": "12",
+              "kind": "pr",
+              "url": "https://github.com/o/r/pull/12"
+            },
+            {
+              "at": "2026-09-06T12:00:00Z",
+              "id": "merged",
+              "kind": "verdict"
+            }
+          ],
+          "phase": "review",
+          "state": "passed"
+        },
+        {
+          "at": "2026-09-06T12:00:00Z",
+          "gate": "the pull request is merged on the upstream",
+          "left": [
+            {
+              "at": "2026-09-06T12:00:00Z",
+              "id": "12",
+              "kind": "merge",
+              "url": "https://github.com/o/r/pull/12"
+            }
+          ],
+          "phase": "deliver",
+          "state": "passed"
+        }
+      ],
+      "task": "TASK-001",
+      "waits_on": "nobody"
+    },
+    "a new task waits for the lead": {
+      "note": "waits for the lead to take it up",
+      "phase": "intake",
+      "rework": false,
+      "steps": [
+        {
+          "at": "2026-09-06T10:00:00Z",
+          "gate": "a lead takes the task up: the owner's task passes no other gate, and suggested work came with a different agent's verdict",
+          "left": [
+            {
+              "at": "2026-09-06T10:00:00Z",
+              "id": "TASK-001",
+              "kind": "task"
+            }
+          ],
+          "phase": "intake",
+          "state": "current"
+        },
+        {
+          "gate": "a job exists for the task, Tier 0 or Tier 1",
+          "left": [],
+          "phase": "shape",
+          "state": "ahead"
+        },
+        {
+          "gate": "every step's run has ended",
+          "left": [],
+          "phase": "build",
+          "state": "ahead"
+        },
+        {
+          "gate": "each step's own commits passed the project's check, and none of the task's jobs is queued, running or blocked",
+          "left": [],
+          "phase": "verify",
+          "state": "ahead"
+        },
+        {
+          "gate": "the task's pull request is open and the reviewer (or the owner) says merge, with GitHub's own gate passed",
+          "left": [],
+          "phase": "review",
+          "state": "ahead"
+        },
+        {
+          "gate": "the pull request is merged on the upstream",
+          "left": [],
+          "phase": "deliver",
+          "state": "ahead"
+        }
+      ],
+      "task": "TASK-001",
+      "waits_on": "lead"
+    },
+    "a pull request closed unmerged": {
+      "note": "pull request #12 was closed unmerged; the lead plans the next step",
+      "phase": "shape",
+      "rework": false,
+      "steps": [
+        {
+          "at": "2026-09-06T10:00:00Z",
+          "gate": "a lead takes the task up: the owner's task passes no other gate, and suggested work came with a different agent's verdict",
+          "left": [
+            {
+              "at": "2026-09-06T10:00:00Z",
+              "id": "TASK-001",
+              "kind": "task"
+            }
+          ],
+          "phase": "intake",
+          "state": "passed"
+        },
+        {
+          "gate": "a job exists for the task, Tier 0 or Tier 1",
+          "left": [],
+          "phase": "shape",
+          "state": "current"
+        },
+        {
+          "at": "2026-09-06T11:00:00Z",
+          "gate": "every step's run has ended",
+          "left": [
+            {
+              "at": "2026-09-06T11:00:00Z",
+              "id": "J1",
+              "kind": "job",
+              "note": "done"
+            }
+          ],
+          "phase": "build",
+          "state": "ahead"
+        },
+        {
+          "gate": "each step's own commits passed the project's check, and none of the task's jobs is queued, running or blocked",
+          "left": [],
+          "phase": "verify",
+          "state": "ahead"
+        },
+        {
+          "at": "2026-09-06T12:00:00Z",
+          "gate": "the task's pull request is open and the reviewer (or the owner) says merge, with GitHub's own gate passed",
+          "left": [
+            {
+              "at": "2026-09-06T12:00:00Z",
+              "id": "12",
+              "kind": "pr",
+              "url": "https://github.com/o/r/pull/12"
+            },
+            {
+              "at": "2026-09-06T12:00:00Z",
+              "id": "closed",
+              "kind": "verdict"
+            }
+          ],
+          "phase": "review",
+          "state": "ahead"
+        },
+        {
+          "gate": "the pull request is merged on the upstream",
+          "left": [],
+          "phase": "deliver",
+          "state": "ahead"
+        }
+      ],
+      "task": "TASK-001",
+      "waits_on": "lead"
+    },
+    "a pull request handed to the owner": {
+      "note": "pull request #12 waits for the owner",
+      "phase": "review",
+      "rework": false,
+      "steps": [
+        {
+          "at": "2026-09-06T10:00:00Z",
+          "gate": "a lead takes the task up: the owner's task passes no other gate, and suggested work came with a different agent's verdict",
+          "left": [
+            {
+              "at": "2026-09-06T10:00:00Z",
+              "id": "TASK-001",
+              "kind": "task"
+            }
+          ],
+          "phase": "intake",
+          "state": "passed"
+        },
+        {
+          "gate": "a job exists for the task, Tier 0 or Tier 1",
+          "left": [],
+          "phase": "shape",
+          "state": "passed"
+        },
+        {
+          "at": "2026-09-06T11:00:00Z",
+          "gate": "every step's run has ended",
+          "left": [
+            {
+              "at": "2026-09-06T11:00:00Z",
+              "id": "J1",
+              "kind": "job",
+              "note": "done"
+            }
+          ],
+          "phase": "build",
+          "state": "passed"
+        },
+        {
+          "gate": "each step's own commits passed the project's check, and none of the task's jobs is queued, running or blocked",
+          "left": [],
+          "phase": "verify",
+          "state": "skipped"
+        },
+        {
+          "at": "2026-09-06T12:00:00Z",
+          "gate": "the task's pull request is open and the reviewer (or the owner) says merge, with GitHub's own gate passed",
+          "left": [
+            {
+              "at": "2026-09-06T12:00:00Z",
+              "id": "12",
+              "kind": "pr",
+              "url": "https://github.com/o/r/pull/12"
+            },
+            {
+              "at": "2026-09-06T12:00:00Z",
+              "id": "needs_owner",
+              "kind": "verdict"
+            }
+          ],
+          "phase": "review",
+          "state": "current"
+        },
+        {
+          "gate": "the pull request is merged on the upstream",
+          "left": [],
+          "phase": "deliver",
+          "state": "ahead"
+        }
+      ],
+      "task": "TASK-001",
+      "waits_on": "owner"
+    },
+    "a pull request held for a conflict": {
+      "note": "the pull request could not be opened; the owner decides: does not merge cleanly; this one is for you",
+      "phase": "review",
+      "rework": false,
+      "steps": [
+        {
+          "at": "2026-09-06T10:00:00Z",
+          "gate": "a lead takes the task up: the owner's task passes no other gate, and suggested work came with a different agent's verdict",
+          "left": [
+            {
+              "at": "2026-09-06T10:00:00Z",
+              "id": "TASK-001",
+              "kind": "task"
+            }
+          ],
+          "phase": "intake",
+          "state": "passed"
+        },
+        {
+          "gate": "a job exists for the task, Tier 0 or Tier 1",
+          "left": [],
+          "phase": "shape",
+          "state": "passed"
+        },
+        {
+          "at": "2026-09-06T11:00:00Z",
+          "gate": "every step's run has ended",
+          "left": [
+            {
+              "at": "2026-09-06T11:00:00Z",
+              "id": "J1",
+              "kind": "job",
+              "note": "done"
+            }
+          ],
+          "phase": "build",
+          "state": "passed"
+        },
+        {
+          "gate": "each step's own commits passed the project's check, and none of the task's jobs is queued, running or blocked",
+          "left": [
+            {
+              "id": "hive/w/J1",
+              "kind": "branch",
+              "note": "J1"
+            }
+          ],
+          "phase": "verify",
+          "state": "passed"
+        },
+        {
+          "gate": "the task's pull request is open and the reviewer (or the owner) says merge, with GitHub's own gate passed",
+          "left": [
+            {
+              "at": "2026-09-06T12:00:00Z",
+              "id": "held_for_owner",
+              "kind": "verdict",
+              "note": "does not merge cleanly; this one is for you"
+            }
+          ],
+          "phase": "review",
+          "state": "current"
+        },
+        {
+          "gate": "the pull request is merged on the upstream",
+          "left": [],
+          "phase": "deliver",
+          "state": "ahead"
+        }
+      ],
+      "task": "TASK-001",
+      "waits_on": "owner"
+    },
+    "a pull request held for a forge fault": {
+      "note": "the pull request could not be opened: gh: could not resolve host",
+      "phase": "review",
+      "rework": false,
+      "steps": [
+        {
+          "at": "2026-09-06T10:00:00Z",
+          "gate": "a lead takes the task up: the owner's task passes no other gate, and suggested work came with a different agent's verdict",
+          "left": [
+            {
+              "at": "2026-09-06T10:00:00Z",
+              "id": "TASK-001",
+              "kind": "task"
+            }
+          ],
+          "phase": "intake",
+          "state": "passed"
+        },
+        {
+          "gate": "a job exists for the task, Tier 0 or Tier 1",
+          "left": [],
+          "phase": "shape",
+          "state": "passed"
+        },
+        {
+          "at": "2026-09-06T11:00:00Z",
+          "gate": "every step's run has ended",
+          "left": [
+            {
+              "at": "2026-09-06T11:00:00Z",
+              "id": "J1",
+              "kind": "job",
+              "note": "done"
+            }
+          ],
+          "phase": "build",
+          "state": "passed"
+        },
+        {
+          "gate": "each step's own commits passed the project's check, and none of the task's jobs is queued, running or blocked",
+          "left": [
+            {
+              "id": "hive/w/J1",
+              "kind": "branch",
+              "note": "J1"
+            }
+          ],
+          "phase": "verify",
+          "state": "passed"
+        },
+        {
+          "gate": "the task's pull request is open and the reviewer (or the owner) says merge, with GitHub's own gate passed",
+          "left": [
+            {
+              "at": "2026-09-06T12:00:00Z",
+              "id": "held",
+              "kind": "verdict",
+              "note": "gh: could not resolve host"
+            }
+          ],
+          "phase": "review",
+          "state": "current"
+        },
+        {
+          "gate": "the pull request is merged on the upstream",
+          "left": [],
+          "phase": "deliver",
+          "state": "ahead"
+        }
+      ],
+      "task": "TASK-001",
+      "waits_on": "runner"
+    },
+    "a pull request open for review": {
+      "note": "pull request #12 is open for review",
+      "phase": "review",
+      "rework": false,
+      "steps": [
+        {
+          "at": "2026-09-06T10:00:00Z",
+          "gate": "a lead takes the task up: the owner's task passes no other gate, and suggested work came with a different agent's verdict",
+          "left": [
+            {
+              "at": "2026-09-06T10:00:00Z",
+              "id": "TASK-001",
+              "kind": "task"
+            }
+          ],
+          "phase": "intake",
+          "state": "passed"
+        },
+        {
+          "gate": "a job exists for the task, Tier 0 or Tier 1",
+          "left": [],
+          "phase": "shape",
+          "state": "passed"
+        },
+        {
+          "at": "2026-09-06T11:00:00Z",
+          "gate": "every step's run has ended",
+          "left": [
+            {
+              "at": "2026-09-06T11:00:00Z",
+              "id": "J1",
+              "kind": "job",
+              "note": "done"
+            }
+          ],
+          "phase": "build",
+          "state": "passed"
+        },
+        {
+          "gate": "each step's own commits passed the project's check, and none of the task's jobs is queued, running or blocked",
+          "left": [],
+          "phase": "verify",
+          "state": "skipped"
+        },
+        {
+          "at": "2026-09-06T12:00:00Z",
+          "gate": "the task's pull request is open and the reviewer (or the owner) says merge, with GitHub's own gate passed",
+          "left": [
+            {
+              "at": "2026-09-06T12:00:00Z",
+              "id": "12",
+              "kind": "pr",
+              "url": "https://github.com/o/r/pull/12"
+            }
+          ],
+          "phase": "review",
+          "state": "current"
+        },
+        {
+          "gate": "the pull request is merged on the upstream",
+          "left": [],
+          "phase": "deliver",
+          "state": "ahead"
+        }
+      ],
+      "task": "TASK-001",
+      "waits_on": "reviewer"
+    },
+    "a pull request under review": {
+      "note": "pull request #12 is under review",
+      "phase": "review",
+      "rework": false,
+      "steps": [
+        {
+          "at": "2026-09-06T10:00:00Z",
+          "gate": "a lead takes the task up: the owner's task passes no other gate, and suggested work came with a different agent's verdict",
+          "left": [
+            {
+              "at": "2026-09-06T10:00:00Z",
+              "id": "TASK-001",
+              "kind": "task"
+            }
+          ],
+          "phase": "intake",
+          "state": "passed"
+        },
+        {
+          "gate": "a job exists for the task, Tier 0 or Tier 1",
+          "left": [],
+          "phase": "shape",
+          "state": "passed"
+        },
+        {
+          "at": "2026-09-06T11:00:00Z",
+          "gate": "every step's run has ended",
+          "left": [
+            {
+              "at": "2026-09-06T11:00:00Z",
+              "id": "J1",
+              "kind": "job",
+              "note": "done"
+            }
+          ],
+          "phase": "build",
+          "state": "passed"
+        },
+        {
+          "gate": "each step's own commits passed the project's check, and none of the task's jobs is queued, running or blocked",
+          "left": [],
+          "phase": "verify",
+          "state": "skipped"
+        },
+        {
+          "at": "2026-09-06T12:00:00Z",
+          "gate": "the task's pull request is open and the reviewer (or the owner) says merge, with GitHub's own gate passed",
+          "left": [
+            {
+              "at": "2026-09-06T12:00:00Z",
+              "id": "12",
+              "kind": "pr",
+              "url": "https://github.com/o/r/pull/12"
+            },
+            {
+              "at": "2026-09-06T12:00:00Z",
+              "id": "in_review",
+              "kind": "verdict"
+            }
+          ],
+          "phase": "review",
+          "state": "current"
+        },
+        {
+          "gate": "the pull request is merged on the upstream",
+          "left": [],
+          "phase": "deliver",
+          "state": "ahead"
+        }
+      ],
+      "task": "TASK-001",
+      "waits_on": "reviewer"
+    },
+    "a review that failed": {
+      "note": "pull request #12 waits for the owner",
+      "phase": "review",
+      "rework": false,
+      "steps": [
+        {
+          "at": "2026-09-06T10:00:00Z",
+          "gate": "a lead takes the task up: the owner's task passes no other gate, and suggested work came with a different agent's verdict",
+          "left": [
+            {
+              "at": "2026-09-06T10:00:00Z",
+              "id": "TASK-001",
+              "kind": "task"
+            }
+          ],
+          "phase": "intake",
+          "state": "passed"
+        },
+        {
+          "gate": "a job exists for the task, Tier 0 or Tier 1",
+          "left": [],
+          "phase": "shape",
+          "state": "passed"
+        },
+        {
+          "at": "2026-09-06T11:00:00Z",
+          "gate": "every step's run has ended",
+          "left": [
+            {
+              "at": "2026-09-06T11:00:00Z",
+              "id": "J1",
+              "kind": "job",
+              "note": "done"
+            }
+          ],
+          "phase": "build",
+          "state": "passed"
+        },
+        {
+          "gate": "each step's own commits passed the project's check, and none of the task's jobs is queued, running or blocked",
+          "left": [],
+          "phase": "verify",
+          "state": "skipped"
+        },
+        {
+          "at": "2026-09-06T12:00:00Z",
+          "gate": "the task's pull request is open and the reviewer (or the owner) says merge, with GitHub's own gate passed",
+          "left": [
+            {
+              "at": "2026-09-06T12:00:00Z",
+              "id": "12",
+              "kind": "pr",
+              "url": "https://github.com/o/r/pull/12"
+            },
+            {
+              "at": "2026-09-06T12:00:00Z",
+              "id": "review_failed",
+              "kind": "verdict"
+            }
+          ],
+          "phase": "review",
+          "state": "current"
+        },
+        {
+          "gate": "the pull request is merged on the upstream",
+          "left": [],
+          "phase": "deliver",
+          "state": "ahead"
+        }
+      ],
+      "task": "TASK-001",
+      "waits_on": "owner"
+    },
+    "a step at work": {
+      "note": "J1 is at work",
+      "phase": "build",
+      "rework": false,
+      "steps": [
+        {
+          "at": "2026-09-06T10:00:00Z",
+          "gate": "a lead takes the task up: the owner's task passes no other gate, and suggested work came with a different agent's verdict",
+          "left": [
+            {
+              "at": "2026-09-06T10:00:00Z",
+              "id": "TASK-001",
+              "kind": "task"
+            }
+          ],
+          "phase": "intake",
+          "state": "passed"
+        },
+        {
+          "gate": "a job exists for the task, Tier 0 or Tier 1",
+          "left": [],
+          "phase": "shape",
+          "state": "passed"
+        },
+        {
+          "at": "2026-09-06T11:00:00Z",
+          "gate": "every step's run has ended",
+          "left": [
+            {
+              "at": "2026-09-06T11:00:00Z",
+              "id": "J1",
+              "kind": "job",
+              "note": "leased"
+            }
+          ],
+          "phase": "build",
+          "state": "current"
+        },
+        {
+          "gate": "each step's own commits passed the project's check, and none of the task's jobs is queued, running or blocked",
+          "left": [],
+          "phase": "verify",
+          "state": "ahead"
+        },
+        {
+          "gate": "the task's pull request is open and the reviewer (or the owner) says merge, with GitHub's own gate passed",
+          "left": [],
+          "phase": "review",
+          "state": "ahead"
+        },
+        {
+          "gate": "the pull request is merged on the upstream",
+          "left": [],
+          "phase": "deliver",
+          "state": "ahead"
+        }
+      ],
+      "task": "TASK-001",
+      "waits_on": "agent"
+    },
+    "a step waits for a slot": {
+      "note": "J1 waits for a free slot",
+      "phase": "build",
+      "rework": false,
+      "steps": [
+        {
+          "at": "2026-09-06T10:00:00Z",
+          "gate": "a lead takes the task up: the owner's task passes no other gate, and suggested work came with a different agent's verdict",
+          "left": [
+            {
+              "at": "2026-09-06T10:00:00Z",
+              "id": "TASK-001",
+              "kind": "task"
+            }
+          ],
+          "phase": "intake",
+          "state": "passed"
+        },
+        {
+          "gate": "a job exists for the task, Tier 0 or Tier 1",
+          "left": [],
+          "phase": "shape",
+          "state": "passed"
+        },
+        {
+          "at": "2026-09-06T11:00:00Z",
+          "gate": "every step's run has ended",
+          "left": [
+            {
+              "at": "2026-09-06T11:00:00Z",
+              "id": "J1",
+              "kind": "job",
+              "note": "queued"
+            }
+          ],
+          "phase": "build",
+          "state": "current"
+        },
+        {
+          "gate": "each step's own commits passed the project's check, and none of the task's jobs is queued, running or blocked",
+          "left": [],
+          "phase": "verify",
+          "state": "ahead"
+        },
+        {
+          "gate": "the task's pull request is open and the reviewer (or the owner) says merge, with GitHub's own gate passed",
+          "left": [],
+          "phase": "review",
+          "state": "ahead"
+        },
+        {
+          "gate": "the pull request is merged on the upstream",
+          "left": [],
+          "phase": "deliver",
+          "state": "ahead"
+        }
+      ],
+      "task": "TASK-001",
+      "waits_on": "runner"
+    },
+    "taken up, no job yet": {
+      "note": "the lead plans its jobs",
+      "phase": "shape",
+      "rework": false,
+      "steps": [
+        {
+          "at": "2026-09-06T10:00:00Z",
+          "gate": "a lead takes the task up: the owner's task passes no other gate, and suggested work came with a different agent's verdict",
+          "left": [
+            {
+              "at": "2026-09-06T10:00:00Z",
+              "id": "TASK-001",
+              "kind": "task"
+            }
+          ],
+          "phase": "intake",
+          "state": "passed"
+        },
+        {
+          "gate": "a job exists for the task, Tier 0 or Tier 1",
+          "left": [],
+          "phase": "shape",
+          "state": "current"
+        },
+        {
+          "gate": "every step's run has ended",
+          "left": [],
+          "phase": "build",
+          "state": "ahead"
+        },
+        {
+          "gate": "each step's own commits passed the project's check, and none of the task's jobs is queued, running or blocked",
+          "left": [],
+          "phase": "verify",
+          "state": "ahead"
+        },
+        {
+          "gate": "the task's pull request is open and the reviewer (or the owner) says merge, with GitHub's own gate passed",
+          "left": [],
+          "phase": "review",
+          "state": "ahead"
+        },
+        {
+          "gate": "the pull request is merged on the upstream",
+          "left": [],
+          "phase": "deliver",
+          "state": "ahead"
+        }
+      ],
+      "task": "TASK-001",
+      "waits_on": "lead"
+    },
+    "the lead asked the owner": {
+      "note": "the lead asked the owner",
+      "phase": "shape",
+      "rework": false,
+      "steps": [
+        {
+          "at": "2026-09-06T10:00:00Z",
+          "gate": "a lead takes the task up: the owner's task passes no other gate, and suggested work came with a different agent's verdict",
+          "left": [
+            {
+              "at": "2026-09-06T10:00:00Z",
+              "id": "TASK-001",
+              "kind": "task"
+            }
+          ],
+          "phase": "intake",
+          "state": "passed"
+        },
+        {
+          "gate": "a job exists for the task, Tier 0 or Tier 1",
+          "left": [],
+          "phase": "shape",
+          "state": "current"
+        },
+        {
+          "at": "2026-09-06T11:00:00Z",
+          "gate": "every step's run has ended",
+          "left": [
+            {
+              "at": "2026-09-06T11:00:00Z",
+              "id": "J1",
+              "kind": "job",
+              "note": "failed"
+            }
+          ],
+          "phase": "build",
+          "state": "ahead"
+        },
+        {
+          "gate": "each step's own commits passed the project's check, and none of the task's jobs is queued, running or blocked",
+          "left": [],
+          "phase": "verify",
+          "state": "ahead"
+        },
+        {
+          "gate": "the task's pull request is open and the reviewer (or the owner) says merge, with GitHub's own gate passed",
+          "left": [],
+          "phase": "review",
+          "state": "ahead"
+        },
+        {
+          "gate": "the pull request is merged on the upstream",
+          "left": [],
+          "phase": "deliver",
+          "state": "ahead"
+        }
+      ],
+      "task": "TASK-001",
+      "waits_on": "owner"
+    },
+    "the lead's own job plans it": {
+      "note": "the lead plans it in J0",
+      "phase": "shape",
+      "rework": false,
+      "steps": [
+        {
+          "at": "2026-09-06T10:00:00Z",
+          "gate": "a lead takes the task up: the owner's task passes no other gate, and suggested work came with a different agent's verdict",
+          "left": [
+            {
+              "at": "2026-09-06T10:00:00Z",
+              "id": "TASK-001",
+              "kind": "task"
+            }
+          ],
+          "phase": "intake",
+          "state": "passed"
+        },
+        {
+          "gate": "a job exists for the task, Tier 0 or Tier 1",
+          "left": [
+            {
+              "at": "2026-09-06T11:00:00Z",
+              "id": "J0",
+              "kind": "lead",
+              "note": "leased"
+            }
+          ],
+          "phase": "shape",
+          "state": "current"
+        },
+        {
+          "gate": "every step's run has ended",
+          "left": [],
+          "phase": "build",
+          "state": "ahead"
+        },
+        {
+          "gate": "each step's own commits passed the project's check, and none of the task's jobs is queued, running or blocked",
+          "left": [],
+          "phase": "verify",
+          "state": "ahead"
+        },
+        {
+          "gate": "the task's pull request is open and the reviewer (or the owner) says merge, with GitHub's own gate passed",
+          "left": [],
+          "phase": "review",
+          "state": "ahead"
+        },
+        {
+          "gate": "the pull request is merged on the upstream",
+          "left": [],
+          "phase": "deliver",
+          "state": "ahead"
+        }
+      ],
+      "task": "TASK-001",
+      "waits_on": "lead"
+    },
+    "the lead's question outranks a step at work": {
+      "note": "the lead asked the owner",
+      "phase": "build",
+      "rework": false,
+      "steps": [
+        {
+          "at": "2026-09-06T10:00:00Z",
+          "gate": "a lead takes the task up: the owner's task passes no other gate, and suggested work came with a different agent's verdict",
+          "left": [
+            {
+              "at": "2026-09-06T10:00:00Z",
+              "id": "TASK-001",
+              "kind": "task"
+            }
+          ],
+          "phase": "intake",
+          "state": "passed"
+        },
+        {
+          "gate": "a job exists for the task, Tier 0 or Tier 1",
+          "left": [],
+          "phase": "shape",
+          "state": "passed"
+        },
+        {
+          "at": "2026-09-06T11:00:00Z",
+          "gate": "every step's run has ended",
+          "left": [
+            {
+              "at": "2026-09-06T11:00:00Z",
+              "id": "J1",
+              "kind": "job",
+              "note": "leased"
+            }
+          ],
+          "phase": "build",
+          "state": "current"
+        },
+        {
+          "gate": "each step's own commits passed the project's check, and none of the task's jobs is queued, running or blocked",
+          "left": [],
+          "phase": "verify",
+          "state": "ahead"
+        },
+        {
+          "gate": "the task's pull request is open and the reviewer (or the owner) says merge, with GitHub's own gate passed",
+          "left": [],
+          "phase": "review",
+          "state": "ahead"
+        },
+        {
+          "gate": "the pull request is merged on the upstream",
+          "left": [],
+          "phase": "deliver",
+          "state": "ahead"
+        }
+      ],
+      "task": "TASK-001",
+      "waits_on": "owner"
+    },
+    "the merge waits for GitHub": {
+      "note": "pull request #12: the merge waits for its checks or GitHub",
+      "phase": "deliver",
+      "rework": false,
+      "steps": [
+        {
+          "at": "2026-09-06T10:00:00Z",
+          "gate": "a lead takes the task up: the owner's task passes no other gate, and suggested work came with a different agent's verdict",
+          "left": [
+            {
+              "at": "2026-09-06T10:00:00Z",
+              "id": "TASK-001",
+              "kind": "task"
+            }
+          ],
+          "phase": "intake",
+          "state": "passed"
+        },
+        {
+          "gate": "a job exists for the task, Tier 0 or Tier 1",
+          "left": [],
+          "phase": "shape",
+          "state": "passed"
+        },
+        {
+          "at": "2026-09-06T11:00:00Z",
+          "gate": "every step's run has ended",
+          "left": [
+            {
+              "at": "2026-09-06T11:00:00Z",
+              "id": "J1",
+              "kind": "job",
+              "note": "done"
+            }
+          ],
+          "phase": "build",
+          "state": "passed"
+        },
+        {
+          "gate": "each step's own commits passed the project's check, and none of the task's jobs is queued, running or blocked",
+          "left": [],
+          "phase": "verify",
+          "state": "skipped"
+        },
+        {
+          "at": "2026-09-06T12:00:00Z",
+          "gate": "the task's pull request is open and the reviewer (or the owner) says merge, with GitHub's own gate passed",
+          "left": [
+            {
+              "at": "2026-09-06T12:00:00Z",
+              "id": "12",
+              "kind": "pr",
+              "url": "https://github.com/o/r/pull/12"
+            },
+            {
+              "at": "2026-09-06T12:00:00Z",
+              "id": "merge_waiting",
+              "kind": "verdict"
+            }
+          ],
+          "phase": "review",
+          "state": "passed"
+        },
+        {
+          "at": "2026-09-06T12:00:00Z",
+          "gate": "the pull request is merged on the upstream",
+          "left": [],
+          "phase": "deliver",
+          "state": "current"
+        }
+      ],
+      "task": "TASK-001",
+      "waits_on": "github"
+    },
+    "the owner asked for the merge": {
+      "note": "pull request #12: the owner asked for the merge; the runner merges it",
+      "phase": "deliver",
+      "rework": false,
+      "steps": [
+        {
+          "at": "2026-09-06T10:00:00Z",
+          "gate": "a lead takes the task up: the owner's task passes no other gate, and suggested work came with a different agent's verdict",
+          "left": [
+            {
+              "at": "2026-09-06T10:00:00Z",
+              "id": "TASK-001",
+              "kind": "task"
+            }
+          ],
+          "phase": "intake",
+          "state": "passed"
+        },
+        {
+          "gate": "a job exists for the task, Tier 0 or Tier 1",
+          "left": [],
+          "phase": "shape",
+          "state": "passed"
+        },
+        {
+          "at": "2026-09-06T11:00:00Z",
+          "gate": "every step's run has ended",
+          "left": [
+            {
+              "at": "2026-09-06T11:00:00Z",
+              "id": "J1",
+              "kind": "job",
+              "note": "done"
+            }
+          ],
+          "phase": "build",
+          "state": "passed"
+        },
+        {
+          "gate": "each step's own commits passed the project's check, and none of the task's jobs is queued, running or blocked",
+          "left": [],
+          "phase": "verify",
+          "state": "skipped"
+        },
+        {
+          "at": "2026-09-06T12:00:00Z",
+          "gate": "the task's pull request is open and the reviewer (or the owner) says merge, with GitHub's own gate passed",
+          "left": [
+            {
+              "at": "2026-09-06T12:00:00Z",
+              "id": "12",
+              "kind": "pr",
+              "url": "https://github.com/o/r/pull/12"
+            },
+            {
+              "at": "2026-09-06T12:00:00Z",
+              "id": "merge_asked",
+              "kind": "verdict"
+            }
+          ],
+          "phase": "review",
+          "state": "passed"
+        },
+        {
+          "at": "2026-09-06T12:00:00Z",
+          "gate": "the pull request is merged on the upstream",
+          "left": [],
+          "phase": "deliver",
+          "state": "current"
+        }
+      ],
+      "task": "TASK-001",
+      "waits_on": "runner"
+    },
+    "the owner's turn outranks a step at work": {
+      "note": "pull request #12 waits for the owner",
+      "phase": "build",
+      "rework": false,
+      "steps": [
+        {
+          "at": "2026-09-06T10:00:00Z",
+          "gate": "a lead takes the task up: the owner's task passes no other gate, and suggested work came with a different agent's verdict",
+          "left": [
+            {
+              "at": "2026-09-06T10:00:00Z",
+              "id": "TASK-001",
+              "kind": "task"
+            }
+          ],
+          "phase": "intake",
+          "state": "passed"
+        },
+        {
+          "gate": "a job exists for the task, Tier 0 or Tier 1",
+          "left": [],
+          "phase": "shape",
+          "state": "passed"
+        },
+        {
+          "at": "2026-09-06T11:00:00Z",
+          "gate": "every step's run has ended",
+          "left": [
+            {
+              "at": "2026-09-06T11:00:00Z",
+              "id": "J1",
+              "kind": "job",
+              "note": "done"
+            },
+            {
+              "at": "2026-09-06T11:00:00Z",
+              "id": "J2",
+              "kind": "job",
+              "note": "leased"
+            }
+          ],
+          "phase": "build",
+          "state": "current"
+        },
+        {
+          "gate": "each step's own commits passed the project's check, and none of the task's jobs is queued, running or blocked",
+          "left": [
+            {
+              "id": "hive/w/J1",
+              "kind": "branch",
+              "note": "J1"
+            }
+          ],
+          "phase": "verify",
+          "state": "ahead"
+        },
+        {
+          "at": "2026-09-06T12:00:00Z",
+          "gate": "the task's pull request is open and the reviewer (or the owner) says merge, with GitHub's own gate passed",
+          "left": [
+            {
+              "at": "2026-09-06T12:00:00Z",
+              "id": "12",
+              "kind": "pr",
+              "url": "https://github.com/o/r/pull/12"
+            },
+            {
+              "at": "2026-09-06T12:00:00Z",
+              "id": "needs_owner",
+              "kind": "verdict"
+            }
+          ],
+          "phase": "review",
+          "state": "ahead"
+        },
+        {
+          "gate": "the pull request is merged on the upstream",
+          "left": [],
+          "phase": "deliver",
+          "state": "ahead"
+        }
+      ],
+      "task": "TASK-001",
+      "waits_on": "owner"
+    },
+    "the reviewer asked for changes": {
+      "note": "pull request #12: the reviewer asked for changes",
+      "phase": "review",
+      "rework": true,
+      "steps": [
+        {
+          "at": "2026-09-06T10:00:00Z",
+          "gate": "a lead takes the task up: the owner's task passes no other gate, and suggested work came with a different agent's verdict",
+          "left": [
+            {
+              "at": "2026-09-06T10:00:00Z",
+              "id": "TASK-001",
+              "kind": "task"
+            }
+          ],
+          "phase": "intake",
+          "state": "passed"
+        },
+        {
+          "gate": "a job exists for the task, Tier 0 or Tier 1",
+          "left": [],
+          "phase": "shape",
+          "state": "passed"
+        },
+        {
+          "at": "2026-09-06T11:00:00Z",
+          "gate": "every step's run has ended",
+          "left": [
+            {
+              "at": "2026-09-06T11:00:00Z",
+              "id": "J1",
+              "kind": "job",
+              "note": "done"
+            }
+          ],
+          "phase": "build",
+          "state": "passed"
+        },
+        {
+          "gate": "each step's own commits passed the project's check, and none of the task's jobs is queued, running or blocked",
+          "left": [],
+          "phase": "verify",
+          "state": "skipped"
+        },
+        {
+          "at": "2026-09-06T12:00:00Z",
+          "gate": "the task's pull request is open and the reviewer (or the owner) says merge, with GitHub's own gate passed",
+          "left": [
+            {
+              "at": "2026-09-06T12:00:00Z",
+              "id": "12",
+              "kind": "pr",
+              "url": "https://github.com/o/r/pull/12"
+            },
+            {
+              "at": "2026-09-06T12:00:00Z",
+              "id": "changes_requested",
+              "kind": "verdict"
+            }
+          ],
+          "phase": "review",
+          "state": "current"
+        },
+        {
+          "gate": "the pull request is merged on the upstream",
+          "left": [],
+          "phase": "deliver",
+          "state": "ahead"
+        }
+      ],
+      "task": "TASK-001",
+      "waits_on": "lead"
+    }
+  },
+  "phases": [
+    {
+      "gate": "a lead takes the task up: the owner's task passes no other gate, and suggested work came with a different agent's verdict",
+      "label": "Intake",
+      "phase": "intake"
+    },
+    {
+      "gate": "a job exists for the task, Tier 0 or Tier 1",
+      "label": "Shape and plan",
+      "phase": "shape"
+    },
+    {
+      "gate": "every step's run has ended",
+      "label": "Build",
+      "phase": "build"
+    },
+    {
+      "gate": "each step's own commits passed the project's check, and none of the task's jobs is queued, running or blocked",
+      "label": "Verify",
+      "phase": "verify"
+    },
+    {
+      "gate": "the task's pull request is open and the reviewer (or the owner) says merge, with GitHub's own gate passed",
+      "label": "Review",
+      "phase": "review"
+    },
+    {
+      "gate": "the pull request is merged on the upstream",
+      "label": "Deliver",
+      "phase": "deliver"
+    }
+  ]
+}

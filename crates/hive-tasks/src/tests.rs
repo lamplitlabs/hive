@@ -6727,6 +6727,171 @@ fn project_lifecycles_read_a_fixed_number_of_statements() {
     assert_eq!(all.iter().filter(|l| l.phase == Phase::Done).count(), 1);
 }
 
+thread_local! {
+    static ROWS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn count_row(e: rusqlite::trace::TraceEvent<'_>) {
+    if let rusqlite::trace::TraceEvent::Row(..) = e {
+        ROWS.with(|c| c.set(c.get() + 1));
+    }
+}
+
+/// The rows one read of a project's lifecycles brings back on `conn`.
+fn lifecycle_rows(s: &hive_store::Store, project: &str) -> (usize, Vec<TaskLifecycle>) {
+    let conn = s.conn().unwrap();
+    ROWS.with(|c| c.set(0));
+    conn.trace_v2(
+        rusqlite::trace::TraceEventCodes::SQLITE_TRACE_ROW,
+        Some(count_row),
+    );
+    let all = crate::lifecycle::project_lifecycles(&conn, project).unwrap();
+    conn.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+    (ROWS.with(std::cell::Cell::get), all)
+}
+
+/// Adds `n` closed tasks to `demo`, each with a lead, a step with a run and
+/// a merged pull request with its review: a project's long history.
+fn closed_tasks(s: &hive_store::Store, n: usize) {
+    for i in 0..n {
+        let t = new(s, "demo", &format!("Old {i}"), "", 0, "human").unwrap();
+        set_lead(s, &t.id, "demo-lead", "", "daemon").ok();
+        let conn = s.conn().unwrap();
+        let id = format!("J-{}", t.id);
+        conn.execute(
+            "INSERT INTO jobs (id, project, kind, title, source, status, branch, created_at, finished_at) \
+             VALUES (?, 'demo', 'task', 'T', ?, 'done', '', '2026-09-06T21:01:00Z', '2026-09-06T21:30:00Z')",
+            params![id, format!("task:{}", t.id)],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO runs (id, job_id, agent, project, started_at, status, branch) \
+             VALUES (?, ?, 'w', 'demo', '2026-09-06T21:02:00Z', 'done', 'hive/w/old')",
+            params![format!("run-{id}"), id],
+        )
+        .unwrap();
+        conn.execute("UPDATE tasks SET status = 'done' WHERE id = ?", [&t.id])
+            .unwrap();
+        drop(conn);
+        let number = 500 + i as i64;
+        for (actor, action) in [
+            ("daemon", "land.pr"),
+            ("reviewer", "review.queued"),
+            ("daemon", "land.merged"),
+        ] {
+            hive_bus::emit(
+                s,
+                actor,
+                action,
+                "demo",
+                serde_json::json!({"project": "demo", "task": t.id, "number": number, "kind": "task"}),
+            )
+            .unwrap();
+        }
+    }
+}
+
+/// The project view reads the rows of its open tasks only: a project's
+/// closed tasks - their jobs, their runs and every pull-request event
+/// older than the oldest open task - add nothing but their own task row
+/// (TASK-153: the read was every task's jobs and every land and review
+/// event of the project).
+#[test]
+fn project_lifecycles_read_no_rows_of_closed_tasks() {
+    let rows_with = |closed: usize| {
+        let s = new_store();
+        closed_tasks(&s, closed);
+        busy_tasks(&s, 2);
+        let (rows, all) = lifecycle_rows(&s, "demo");
+        assert_eq!(all.len(), closed + 3);
+        let open: Vec<_> = all.iter().filter(|l| l.phase != Phase::Done).collect();
+        assert_eq!(open.len(), 2);
+        assert!(
+            open.iter()
+                .all(|l| (l.phase, l.waits_on) == (Phase::Build, WaitsOn::Agent)),
+            "{open:?}"
+        );
+        rows
+    };
+    let few = rows_with(2);
+    let many = rows_with(40);
+    // One task row each, nothing else.
+    assert_eq!(
+        many - few,
+        38,
+        "{few} rows with 2 closed tasks, {many} with 40"
+    );
+}
+
+/// A task without its `task.created` event (written before the event, or
+/// by hand) still reads its whole pull-request history.
+#[test]
+fn a_task_without_its_created_event_reads_every_pull_request_event() {
+    let s = new_store();
+    closed_tasks(&s, 1);
+    s.conn()
+        .unwrap()
+        .execute(
+            "INSERT INTO tasks (id, project, title, status, created_by, created_at, updated_at, current_rev) \
+             VALUES ('TASK-900', 'demo', 'By hand', 'in_progress', 'human', ?1, ?1, 1)",
+            [s.now()],
+        )
+        .unwrap();
+    hive_bus::emit(
+        &s,
+        "daemon",
+        "land.pr",
+        "demo",
+        serde_json::json!({"project": "demo", "task": "TASK-900", "number": 9, "kind": "task"}),
+    )
+    .unwrap();
+    let l = lifecycle_for(&s, "TASK-900").unwrap();
+    assert_eq!(
+        (l.phase, l.waits_on),
+        (Phase::Review, WaitsOn::Reviewer),
+        "{l:?}"
+    );
+    let all = lifecycles_for(&s, "demo").unwrap();
+    let mine = all.iter().find(|l| l.task == "TASK-900").unwrap();
+    assert_eq!(mine.phase, Phase::Review, "{mine:?}");
+}
+
+/// The `EXPLAIN QUERY PLAN` lines of one of the lifecycle's reads.
+fn lifecycle_plan(s: &hive_store::Store, sql: &str) -> Vec<String> {
+    s.conn()
+        .unwrap()
+        .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+        .unwrap()
+        .query_map(params!["demo", r#"["TASK-001"]"#], |r| {
+            r.get::<_, String>(3)
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+}
+
+/// The runs of a task's jobs are found through `runs_job`, not a scan of
+/// every run the store holds, and the jobs through their source, not every
+/// job of the project (TASK-153).
+#[test]
+fn the_runs_and_jobs_reads_use_their_indexes() {
+    let s = new_store();
+    let plan = lifecycle_plan(&s, &crate::lifecycle::runs_sql());
+    assert!(plan.iter().any(|l| l.contains("runs_job")), "{plan:#?}");
+    assert!(!plan.iter().any(|l| l == "SCAN r"), "{plan:#?}");
+    for plan in [plan, lifecycle_plan(&s, &crate::lifecycle::jobs_sql())] {
+        // Only the task ids (`json_each`) are scanned; no jobs table read
+        // takes every job of the project.
+        assert!(
+            !plan
+                .iter()
+                .any(|l| l.starts_with("SCAN") && !l.contains("VIRTUAL TABLE")),
+            "{plan:#?}"
+        );
+        assert!(!plan.iter().any(|l| l.contains("(project=?)")), "{plan:#?}");
+    }
+}
+
 /// Measures the project view on a copy of a real store (never the live
 /// one): `HIVE_LIFECYCLE_HOME=<dir holding hive.sqlite> HIVE_LIFECYCLE_PROJECT=<slug>
 /// cargo test -p hive-tasks --lib -- --ignored project_lifecycles_on_a_store_copy --nocapture`.

@@ -30,7 +30,7 @@ export interface SessionLike {
 
 // Pull request states that are the owner's turn (task-groups.ts
 // PR_NEEDS_OWNER), spelled out here so this file imports nothing at runtime.
-const PR_ASKS = new Set(["needs_owner", "review_failed"]);
+const PR_ASKS = new Set(["needs_owner", "review_failed", "held_for_owner"]);
 
 export function sessionState(c: SessionLike): SessionState {
   const status = c.live?.status || c.status;

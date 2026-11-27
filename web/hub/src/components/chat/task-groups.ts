@@ -42,7 +42,20 @@ export function relShort(d: string, now: number): string {
 // the reviewer's or the daemon's (merge_waiting: approved, the merge waits
 // for its checks or for GitHub); merged and closed leave the entry to its
 // own status.
-export const PR_NEEDS_OWNER = new Set(["needs_owner", "review_failed"]);
+//
+// A pull request that could not be opened is held: `held` the runner tries
+// again on its own after a pause (a fault on the way to GitHub), and
+// `held_for_owner` only the owner moves (a conflict: "this one is for
+// you"), so it is the owner's turn too.
+export const PR_NEEDS_OWNER = new Set(["needs_owner", "review_failed", "held_for_owner"]);
+
+// The one rule for "waits on you", the hub's (hive_tasks::owner_turn, which
+// the lifecycle view and GET /chat's owner_turn read): the lead asked the
+// owner (status review), or the task's pull request is in a state only the
+// owner moves. web/hub/mock/lifecycle.test.mjs holds it to the shared cases.
+export function ownerTurn(status: string, pr: string | null | undefined): boolean {
+  return status === "review" || (!!pr && PR_NEEDS_OWNER.has(pr));
+}
 export const PR_IN_REVIEW = new Set(["pr_open", "in_review", "merge_asked", "merge_waiting", "changes_requested"]);
 
 export const NEEDS_REVIEW: Mood = { word: "Needs your review", tone: "wait", pip: "waiting", dot: "bg-warn" };
@@ -51,6 +64,11 @@ export const NEEDS_REVIEW: Mood = { word: "Needs your review", tone: "wait", pip
 // still on it, a conversation whose branch holds commits main lacks. The
 // daemon opens the pull request on its next pass, so nobody is asked.
 export const WAITING_FOR_PR: Mood = { word: "Waiting for its pull request", tone: "neutral", pip: "waiting", dot: "bg-muted-foreground/40" };
+
+// The pull request could not be opened and the runner will not try again
+// until the work changes: the owner decides (resolve the conflict, or say
+// what to do on the task's thread).
+export const PR_HELD_FOR_OWNER: Mood = { word: "Pull request held for you", tone: "wait", pip: "worried", dot: "bg-warn" };
 
 // The pull request's word, the same for a step, a task and a conversation,
 // so a section reads as one thing; null once it is merged or closed, and
@@ -71,6 +89,8 @@ export function prMood(state: string | undefined | null): Mood | null {
       return { word: "Approved, merge waits", tone: "neutral", pip: "waiting", dot: "bg-primary/50" };
     case "changes_requested":
       return { word: "Changes requested", tone: "neutral", pip: "curious", dot: "bg-primary/50" };
+    case "held_for_owner":
+      return PR_HELD_FOR_OWNER;
     default:
       return null;
   }
@@ -150,8 +170,20 @@ export function taskStateOf(t: ChatTask): TaskState {
     needs_you: t.needs_you,
     working: t.sessions.some((s) => s.status === "running" || s.job_status === "leased"),
     waiting_for_pr: t.sessions.some((s) => jobWaitingForPr(s.job_status, s.branch)),
-    pr: t.pr?.state,
+    pr: taskPrState(t),
   };
+}
+
+// Where a task's pull request stands for its mood and its steps: the hold
+// while one stands (the newest word on it), else the open one's review.
+export function taskPrState(t: Pick<ChatTask, "pr" | "hold">): string | undefined {
+  return t.hold?.state || t.pr?.state;
+}
+
+// Whether the task waits on the owner: the hub's word when it sends one,
+// else the same rule read here.
+export function taskOwnerTurn(t: ChatTask): boolean {
+  return t.owner_turn ?? ownerTurn(t.status, taskPrState(t));
 }
 
 export function taskMood(t: ChatTask): Mood {
