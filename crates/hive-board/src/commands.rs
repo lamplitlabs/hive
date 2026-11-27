@@ -91,7 +91,7 @@ pub fn post_flags(fs: &mut FlagSet) {
     fs.bool_var(
         "for-owner",
         false,
-        "reserve this post for the owner, not a worker job; the body names two or more answers (Yes:/No:/Option: lines) and one Recommended: line, or it goes to the lead",
+        "reserve this post for the owner, not a worker job; the body names two or more answers (Yes:/No:/Option: lines) and one Recommended: line, or the post is refused",
     );
     fs.string_var(
         "to",
@@ -609,6 +609,9 @@ fn run_post(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
     }
     let body = read_body(fs)?;
     refuse_shell_mangled_post(fs, &body)?;
+    if fs.get_bool("for-owner") {
+        refuse_bare_owner_ask(&args[0], &c.agent, &fs.get_string("summary"), &body)?;
+    }
     let s = store(c)?;
     let project = current_project(s, &c.project)?;
     let mut expires = fs.get_string("expires");
@@ -640,19 +643,35 @@ fn run_post(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
         },
     )?;
     print_post(c, &row)?;
-    // TASK-129: the owner answers with one pick, so an owner question that
-    // names no answers (or none recommended) goes to the lead instead. Say
-    // so where the asker reads it.
-    if row.for_owner && !c.json {
-        let missing = crate::ask_options::ask_options(&row.body).missing();
-        if !missing.is_empty() {
-            writeln!(
-                c.err,
-                "note: this question goes to the lead, not the owner: {missing}. Add `Yes: <label> - <what it does>` / `No: ...` or `Option: ...` lines and `Recommended: <label> - <why>` to the body."
-            )?;
-        }
-    }
     Ok(())
+}
+
+/// TASK-129, TASK-149 item 13: the owner answers with one pick, so `hive
+/// post --for-owner` refuses an ask whose body names no answers to pick or
+/// none recommended - before anything is written, and the same with
+/// `--json` - with the format in the error. A post that only the owner could
+/// read and nobody could answer used to go in with a warning on stderr and
+/// land on the lead's desk instead.
+pub(crate) fn refuse_bare_owner_ask(
+    kind: &str,
+    agent: &str,
+    summary: &str,
+    body: &str,
+) -> Result<()> {
+    if !["question", "finding", "handoff", "suggestion"].contains(&kind) {
+        return Ok(());
+    }
+    let body = crate::owner_asks::with_default_owner_answers(kind, agent, summary, body, false);
+    let missing = crate::ask_options::ask_options(&body).missing();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(refuse_fix(
+        2,
+        format!("a {kind} for the owner names the answers to pick: {missing}"),
+        "the owner answers with one pick, never by typing (TASK-129); the console shows only an ask that names two or more answers and one recommended",
+        "end the body with the answers, one per line:\nYes: <label> - <what it does>\nNo: <label> - <what it does>\nRecommended: Yes|No - <why>\nor, for more than two:\nOption: <label> - <what it does>  (two to six of them)\nRecommended: <label> - <why>",
+    ))
 }
 /// `hive claim sweep [--dry-run]`: close open threads whose newest post is an
 /// expired claim, so reflect's STALE section lists only live work.
@@ -2063,7 +2082,7 @@ mod tests {
                 "--summary",
                 "Owner question for @owner",
                 "--body",
-                "for_owner: true",
+                "for_owner: true\n\nYes: Do it - a job is queued\nNo: Leave it - nothing changes\nRecommended: Yes - it is cheap",
             ];
             argv.extend(args);
             let (out, err) = run_cmd(
@@ -2094,6 +2113,92 @@ mod tests {
                 before + 1
             );
         }
+    }
+
+    #[test]
+    fn post_for_owner_refuses_an_ask_without_answers() {
+        let _serial = crate::test_helpers::serial();
+        let (_home_dir, _home, s, _p, _repo) = fixture();
+        let before = count_rows(&s, "posts", "1 = 1", &[]);
+        for (kind, body, json) in [
+            ("question", "Which support window?", true),
+            ("question", "Which support window?", false),
+            (
+                "finding",
+                "Yes: Fix it - a job\nNo: Leave it - nothing",
+                false,
+            ),
+            (
+                "question",
+                "```\nYes: Go - a\nNo: Stop - b\nRecommended: Yes - c\n```",
+                true,
+            ),
+        ] {
+            let (_out, err) = run_cmd(
+                &s,
+                Some(Context {
+                    agent: "alice".into(),
+                    project: "demo".into(),
+                    json,
+                    ..test_context()
+                }),
+                &[
+                    "post",
+                    kind,
+                    "--area",
+                    "product",
+                    "--thread",
+                    "support-window",
+                    "--summary",
+                    "Choose the support window",
+                    "--body",
+                    body,
+                    "--for-owner",
+                ],
+            );
+            let err = err.expect_err("a bare owner ask is refused");
+            let text = format!("{err:#}");
+            let cli = err.downcast_ref::<hive_cli::Error>().expect("cli error");
+            assert_eq!(cli.code, 2, "{text}");
+            assert!(
+                cli.what.contains("names the answers to pick"),
+                "{}",
+                cli.what
+            );
+            assert!(
+                cli.fix.contains("Recommended: Yes|No - <why>"),
+                "{}",
+                cli.fix
+            );
+            assert!(cli.fix.contains("Option: <label>"), "{}", cli.fix);
+        }
+        assert_eq!(
+            count_rows(&s, "posts", "1 = 1", &[]),
+            before,
+            "nothing was written"
+        );
+        // The same bare body is fine when it is not for the owner.
+        let (_out, err) = run_cmd(
+            &s,
+            Some(Context {
+                agent: "alice".into(),
+                project: "demo".into(),
+                ..test_context()
+            }),
+            &[
+                "post",
+                "question",
+                "--area",
+                "product",
+                "--thread",
+                "support-window",
+                "--summary",
+                "Choose the support window",
+                "--body",
+                "Which support window?",
+            ],
+        );
+        assert!(err.is_ok(), "{err:?}");
     }
 
     #[test]

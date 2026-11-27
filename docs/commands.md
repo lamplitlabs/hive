@@ -382,7 +382,7 @@ Flags:
   -files string
         files touched
   -for-owner
-        reserve this post for the owner, not a worker job; the body names two or more answers (Yes:/No:/Option: lines) and one Recommended: line, or it goes to the lead
+        reserve this post for the owner, not a worker job; the body names two or more answers (Yes:/No:/Option: lines) and one Recommended: line, or the post is refused
   -links string
         related links
   -on string

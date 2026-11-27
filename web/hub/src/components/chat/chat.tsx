@@ -55,6 +55,7 @@ import {
   ShieldQuestionIcon,
   SparklesIcon,
   SquareDashedMousePointerIcon,
+  StarIcon,
   TerminalIcon,
   UsersIcon,
   WrenchIcon,
@@ -118,6 +119,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { logoFor } from "@/lib/logos";
+import { pendingChoices } from "@/lib/pending-question";
 import { BackButton, Pane, Split } from "@/components/chat/split";
 import { CommandPalette } from "@/components/shell/command-palette";
 import { MicButton, useDictation } from "@/components/chat/mic";
@@ -3875,6 +3877,10 @@ function PendingCard({
   const [reason, setReason] = useState("");
   const [denying, setDenying] = useState(false);
   if (pending.kind === "question") {
+    // TASK-149 item 13: the agent names two to six choices and recommends
+    // one; the answer is one pick. Only a question from an older build
+    // without choices is typed.
+    const asked = pendingChoices(pending);
     return (
       <div className="mx-auto mt-4 w-full max-w-3xl min-w-0">
         <div
@@ -3888,64 +3894,77 @@ function PendingCard({
               {pending.question}
             </p>
           </div>
-          {pending.choices.length ? (
+          {asked.choices.length ? (
             <div
               className="grid min-w-0 gap-1.5"
               role="group"
               aria-label="Choices"
             >
-              {pending.choices.map((ch) => (
+              {asked.choices.map((ch) => (
                 <Button
-                  key={ch}
+                  key={ch.answer}
                   type="button"
                   size="sm"
-                  variant="outline"
+                  variant={ch.recommended ? "default" : "outline"}
                   disabled={!!busy}
+                  aria-label={ch.label + (ch.recommended ? " (recommended)" : "")}
                   onClick={() =>
-                    void act("answer", () => writes.chatAnswer(id, ch))
+                    void act("answer", () => writes.chatAnswer(id, ch.answer))
                   }
                   className="pop h-auto min-h-8 w-full min-w-0 justify-start py-1.5 text-left whitespace-normal anywhere"
                 >
-                  {ch}
+                  {ch.recommended ? <StarIcon aria-hidden /> : null}
+                  <span className="min-w-0">
+                    <span className="font-medium">{ch.label}</span>
+                    {ch.effect ? (
+                      <span className="font-normal opacity-80">
+                        {" - "}
+                        {ch.effect}
+                      </span>
+                    ) : null}
+                    {ch.recommended ? (
+                      <span className="ml-1.5 text-xs font-normal opacity-80">
+                        Recommended
+                      </span>
+                    ) : null}
+                  </span>
                 </Button>
               ))}
             </div>
           ) : null}
-          <form
-            className="flex min-w-0 gap-2"
-            onSubmit={(e) => {
-              e.preventDefault();
-              const t = text.trim();
-              if (!t) return;
-              void act("answer", () => writes.chatAnswer(id, t)).then(() =>
-                setText(""),
-              );
-            }}
-          >
-            <Input
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              placeholder={
-                pending.choices.length
-                  ? "Or answer in your own words…"
-                  : "Your answer…"
-              }
-              aria-label="Your answer"
-              autoFocus
-            />
-            <Button
-              type="submit"
-              size="default"
-              disabled={!text.trim() || !!busy}
+          {asked.typed ? (
+            <form
+              className="flex min-w-0 gap-2"
+              onSubmit={(e) => {
+                e.preventDefault();
+                const t = text.trim();
+                if (!t) return;
+                void act("answer", () => writes.chatAnswer(id, t)).then(() =>
+                  setText(""),
+                );
+              }}
             >
-              {busy === "answer" ? (
-                <LoaderCircleIcon className="animate-spin" />
-              ) : (
-                <ArrowUpIcon />
-              )}{" "}
-              Answer
-            </Button>
-          </form>
+              <Input
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                placeholder="Your answer…"
+                aria-label="Your answer"
+                autoFocus
+              />
+              <Button
+                type="submit"
+                size="default"
+                disabled={!text.trim() || !!busy}
+              >
+                {busy === "answer" ? (
+                  <LoaderCircleIcon className="animate-spin" />
+                ) : (
+                  <ArrowUpIcon />
+                )}{" "}
+                Answer
+              </Button>
+            </form>
+          ) : null}
         </div>
       </div>
     );

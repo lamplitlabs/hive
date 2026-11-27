@@ -841,8 +841,10 @@ impl BoardData {
                 let mut hard_stop = hive_board::hard_stop_ask(&kind, &summary, body);
                 // A question the daemon asked (a restart drain, a sign-in,
                 // a lead seat) is never the lead's: the daemon answers it
-                // itself once the owner acts.
-                if hard_stop.is_empty() && kind == "question" && str_key(post, "agent") == "daemon"
+                // itself once the owner acts. The planner's stuck-thread
+                // question is the lead's (TASK-149 item 5).
+                if hard_stop.is_empty()
+                    && hive_board::daemon_owner_question(&kind, &str_key(post, "agent"), &summary)
                 {
                     hard_stop = "was asked by the daemon".into();
                 }

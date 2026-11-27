@@ -394,12 +394,14 @@ as a card in the transcript where it changed and, for the current plan, as the
 tool, on by default) show one level in, with the helper's report.
 
 The agent keeps going turn after turn; when it needs you it stops and one card
-appears - a question with its choices stacked full width, or a tool it wants to
-run - and the session says **Asked you** in the list and the tab title
-counts what waits (the transcript does not echo the question above the card;
-the steps fold while it waits). Answer in a word or a sentence, **Allow once**,
-**Always allow** or **Deny** with a reason the agent reads; nothing else
-blocks.
+appears - a question with its two to six choices stacked full width, the one
+the agent recommends first, filled and starred, or a tool it wants to run - and
+the session says **Asked you** in the list and the tab title counts what waits
+(the transcript does not echo the question above the card; the steps fold while
+it waits). Answer with one pick (the `question` tool refuses a call without
+choices and a recommended one, so there is no box to type in; a message you
+send from the composer still reaches the agent), **Allow once**, **Always
+allow** or **Deny** with a reason the agent reads; nothing else blocks.
 
 **Auto** (on by default) lets tools run
 without asking, as the daemon's own jobs do; switch it off for a

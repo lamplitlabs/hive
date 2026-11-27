@@ -9147,6 +9147,7 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             "proj".into(),
             Some(crate::lead::AwayBrief::default()),
             asks,
+            0,
         );
         assert!(
             brief.contains(&format!(

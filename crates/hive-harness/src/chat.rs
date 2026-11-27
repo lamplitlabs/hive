@@ -1453,7 +1453,9 @@ impl Ui for ChatUi {
     fn ask(&mut self, question: &str, choices: &[String]) -> Option<String> {
         let _ = writeln!(self.err, "\nquestion: {}", question.trim());
         for (i, choice) in choices.iter().enumerate() {
-            let _ = writeln!(self.err, "  {}) {}", i + 1, choice);
+            // The question tool puts the recommended choice first.
+            let mark = if i == 0 { " (recommended)" } else { "" };
+            let _ = writeln!(self.err, "  {}) {}{mark}", i + 1, choice);
         }
         if !self.tty {
             let _ = writeln!(self.err, "  (no terminal to answer; the model decides)");

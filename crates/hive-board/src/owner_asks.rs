@@ -256,6 +256,19 @@ Recommended: No - it is about this machine; do what the post says on it\n"
     }
 }
 
+/// Whether `kind`/`agent`/`summary` is a question the daemon asked for a
+/// person to act on at the machine (a restart drain, a sign-in, a lead
+/// seat, the toolkit): the owner's, answered with the daemon's own answers
+/// when it names none. The planner's stuck-thread question is the
+/// exception: the daemon posts it, but it asks the project's lead for a
+/// routine decision (TASK-149 item 5), so it is the lead's like any other
+/// routine ask.
+pub fn daemon_owner_question(kind: &str, agent: &str, summary: &str) -> bool {
+    kind == "question"
+        && agent == "daemon"
+        && !summary.trim().starts_with(hive_store::STUCK_THREAD_SUMMARY)
+}
+
 /// `body` with the answers the owner picks from when the asker wrote
 /// none ready to pick: the watcher's for a major upgrade (`major`), the
 /// loop's for its flat-fixture pause, the daemon's for a question the
@@ -283,7 +296,7 @@ pub fn with_default_owner_answers(
     if kind == "question" && summary == hive_store::EVOLUTION_FLAT_SUMMARY {
         return format!("{}\n\n{FLAT_PAUSE_ANSWERS}", body.trim_end());
     }
-    if kind == "question" && agent == "daemon" {
+    if daemon_owner_question(kind, agent, summary) {
         return format!("{}\n\n{}", body.trim_end(), daemon_default_answers(body));
     }
     body.to_string()
