@@ -88,7 +88,7 @@ struct ShellState {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum Item {
+pub(crate) enum Item {
     Word(String),
     /// The target of an output redirection: a path, `&N` or `&-`.
     Redirect(String),
@@ -103,7 +103,7 @@ enum Item {
 /// Splits a `/bin/sh` command line into words, separators and redirection
 /// targets, dropping quotes. Heredoc bodies are skipped: a `>` inside one
 /// is text, not a redirection.
-fn tokenize(command: &str) -> Vec<Item> {
+pub(crate) fn tokenize(command: &str) -> Vec<Item> {
     let chars: Vec<char> = command.chars().collect();
     let mut items = Vec::new();
     let mut word: Option<String> = None;
@@ -2208,11 +2208,11 @@ fn has_dotdot(path: &str) -> bool {
     path.split('/').any(|seg| seg == "..")
 }
 
-fn basename(word: &str) -> &str {
+pub(crate) fn basename(word: &str) -> &str {
     word.rsplit('/').next().unwrap_or(word)
 }
 
-fn strip_assignments(words: &mut Vec<String>) {
+pub(crate) fn strip_assignments(words: &mut Vec<String>) {
     while let Some(first) = words.first() {
         let Some((name, _)) = first.split_once('=') else {
             break;
@@ -2232,7 +2232,7 @@ fn strip_assignments(words: &mut Vec<String>) {
 
 /// Drops the leading options of a wrapper command; `value_flags` take the
 /// next word as their value. A `--` ends the options and is dropped too.
-fn strip_flags(words: &mut Vec<String>, value_flags: &[&str]) {
+pub(crate) fn strip_flags(words: &mut Vec<String>, value_flags: &[&str]) {
     while let Some(first) = words.first() {
         if first == "--" {
             words.remove(0);

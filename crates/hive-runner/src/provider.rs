@@ -1071,6 +1071,56 @@ hive-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOCK
                 .contains("registered as executor `hands-cr-001` for every project (approved by"),
             "{said:?}"
         );
+        // PR 291 review, item 2: the lease itself (run.rs `take_job`, jobs.rs `lease_job`),
+        // not only `executor_allows`. Another project's work leases on the rented machine; a
+        // job whose needs the machine lacks (a Linux hand, a job that needs macOS) stays queued
+        // and the idle line says why.
+        crate::test_helpers::new_bare_repo_named(&s, "another");
+        crate::capacity::pin_per_project(&s, 10);
+        let queue = |project: &str, title: &str, needs: &str| {
+            let (job, _) = crate::jobs::add_job(
+                &s,
+                project.into(),
+                "task".into(),
+                title.into(),
+                "b".into(),
+                1,
+                5,
+                format!("test:{title}"),
+                hive_store::HUMAN_AGENT.into(),
+                false,
+            )
+            .unwrap();
+            if !needs.is_empty() {
+                hive_board::set_job_needs(&s, &job.str("id"), needs, "human").unwrap();
+            }
+            job.str("id")
+        };
+        let mac_only = queue("proj", "needs a mac", "macos");
+        let other = queue("another", "another project's work", "");
+        let lease = || {
+            crate::run::take_job(
+                &s,
+                "aurora",
+                "",
+                "",
+                false,
+                TEST_NOW,
+                "hands-cr-001",
+                &[],
+                &Default::default(),
+                &[],
+            )
+            .unwrap()
+        };
+        let (job, _, why) = lease();
+        assert_eq!(job.str("id"), other, "why = {why}");
+        assert_eq!(job.str("project"), "another");
+        let (job, _, why) = lease();
+        assert!(job.0.is_empty(), "leased {job:?}");
+        assert!(why.contains("macos"), "the idle line names the need: {why}");
+        let status = must_one(&s, "SELECT status FROM jobs WHERE id = ?", &[&mac_only]);
+        assert_eq!(status.str("status"), "queued", "{status:?}");
     }
 
     fn once(s: &hive_store::Store, h: &ComputeHarness) -> String {
