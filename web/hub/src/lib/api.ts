@@ -317,6 +317,9 @@ export interface Proposal extends Who {
   kind?: string;
   decided_agent?: string;
   decided_name?: string;
+  // A proposed project goal (TASK-117): the hub's org row carries it as
+  // `goal_proposal`; the inbox folds it in here (goal-proposal-state.ts).
+  goal?: GoalProposal;
 }
 
 // A question that waits for the owner: a post marked for_owner, or one of the
@@ -531,6 +534,9 @@ export interface ProjectCardData extends Partial<EvolveGate> {
   // goal - and a hub that predates the field sends neither.
   goal_source?: GoalSource;
   goal_preview?: string; // the first line of the goal, at most ~120 characters; "" when nothing is stored
+  // The goal a lead or Hive's draft proposes, waiting for the owner's yes
+  // (TASK-117); null when none waits, absent on a hub that predates it.
+  goal_proposal?: GoalProposal | null;
   // What kind of machine this project's jobs need, comma-separated words
   // such as "macos,xcode"; "" means any machine. Project rows only.
   needs?: string;

@@ -1,5 +1,6 @@
 //! Hive: shared project goals.
 
+pub mod draft;
 pub mod history;
 pub mod review;
 
@@ -148,7 +149,7 @@ fn goal_secret_shaped(value: &str) -> bool {
     hive_store::secret_shaped(value)
 }
 
-fn public_references(s: &hive_store::Store, text: &str) -> Result<()> {
+pub(crate) fn public_references(s: &hive_store::Store, text: &str) -> Result<()> {
     let redacted = hive_bus::redactor(Some(s))(hive_bus::Event {
         detail: text.to_string(),
         ..hive_bus::Event::default()
@@ -192,7 +193,7 @@ pub fn can_edit(s: &hive_store::Store, p: &hive_store::Project, actor: &str) -> 
         && require_owner(&s.home, actor).is_ok()
 }
 
-fn project(conn: &rusqlite::Connection, slug: &str) -> Result<hive_store::Project> {
+pub(crate) fn project(conn: &rusqlite::Connection, slug: &str) -> Result<hive_store::Project> {
     if !SLUG_PATTERN.is_match(slug) || slug == hive_store::COMMONS_SLUG {
         return Err(hive_cli::errorf(
             2,
@@ -309,8 +310,8 @@ fn generated_for(s: &hive_store::Store, p: &hive_store::Project) -> Goal {
 /// Longest a README purpose line may run inside the generated goal.
 pub const PURPOSE_MAX_CHARS: usize = 280;
 const PURPOSE_MIN_CHARS: usize = 40;
-const README_READ_LIMIT: u64 = 64 * 1024;
-const README_NAMES: [&str; 6] = [
+pub(crate) const README_READ_LIMIT: u64 = 64 * 1024;
+pub(crate) const README_NAMES: [&str; 6] = [
     "README.md",
     "README.markdown",
     "Readme.md",

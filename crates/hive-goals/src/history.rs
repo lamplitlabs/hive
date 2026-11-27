@@ -179,6 +179,38 @@ fn git(path: &str, args: &[&str], deadline: Duration) -> Option<String> {
     ok.then(|| String::from_utf8_lossy(&buf).into_owned())
 }
 
+/// The subjects of the newest `n` non-merge commits of the checkout at
+/// `path`, newest first, with their day (`YYYY-MM-DD subject`). Empty when
+/// the path is not a git checkout or git does not answer in time.
+pub fn recent_subjects(path: &str, n: usize) -> Vec<String> {
+    let path = path.trim();
+    if path.is_empty() || n == 0 || !std::path::Path::new(path).is_dir() {
+        return Vec::new();
+    }
+    let count = n.to_string();
+    let Some(out) = git(
+        path,
+        &[
+            "log",
+            "--no-merges",
+            "--date=short",
+            "--format=%ad %s",
+            "-n",
+            &count,
+            "--",
+            ".",
+        ],
+        GIT_DEADLINE,
+    ) else {
+        return Vec::new();
+    };
+    out.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(|l| l.chars().take(SUBJECT_MAX_CHARS + 11).collect())
+        .collect()
+}
+
 fn read_log(path: &str) -> Option<Vec<Commit>> {
     let count = HISTORY_COMMITS.to_string();
     let out = git(

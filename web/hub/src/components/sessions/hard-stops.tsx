@@ -27,11 +27,13 @@ import { agentName } from "@/lib/words";
 import { cn } from "@/lib/utils";
 import { forYouRows, HARD_STOP_LABEL, hardStopRows, hardStopWords, type ForYouRow } from "./asks-state";
 import { rowHref } from "./row-href";
+import { GoalProposalCard, GoalProposalRowActions } from "@/components/project/goal-proposal";
+import { isGoalProposal } from "@/components/project/goal-proposal-state";
 
 // The hard-stop strip on Sessions (TASK-129): For you is gone, and only the
 // asks the hard stops keep for the owner - money, what can't be undone,
-// credentials, publication - still wait on a person. Everything else is the
-// project lead's to decide. One compact list over the session landing; a
+// credentials, publication, the project goal - still wait on a person.
+// Everything else is the project lead's to decide. One compact list over the session landing; a
 // question shows one button per answer, the Recommended one first (nothing
 // is typed); absent when nothing waits. A
 // decision row opens the record in a side panel with its three answers; Y
@@ -68,7 +70,7 @@ export function HardStops() {
   if (!inbox.ready || rows.length === 0) return null;
   return (
     <section id="hard-stops" aria-labelledby="hard-stops-title" className="min-w-0 rounded-lg border border-you/40 bg-you/5 p-3 sm:p-4">
-      <SectionHeading id="hard-stops-title" icon={ShieldAlertIcon} count={rows.length} countTone="you" note="Money, what can't be undone, credentials and publication wait for you; the leads decide the rest." className="mb-3">
+      <SectionHeading id="hard-stops-title" icon={ShieldAlertIcon} count={rows.length} countTone="you" note="Money, what can't be undone, credentials, publication and the project goal wait for you; the leads decide the rest." className="mb-3">
         {hardStopWords(rows.length)}
       </SectionHeading>
       <ListRows ariaLabel="Decisions only you can make">
@@ -94,9 +96,9 @@ function nameOf(o: Org | undefined, slug: string): string {
 function Row({ r, stop, inbox, brain, canDecide, caps, startOpen, selected, onOpen, projectName, router }: { r: ForYouRow; stop: string; inbox: ReturnType<typeof useInbox>; brain: string; canDecide: boolean; caps?: { vms_now: number; max_vms: number; hours_today: number; max_hours_per_day: number }; startOpen?: boolean; selected: boolean; onOpen?: () => void; projectName: string; router: ReturnType<typeof useRouter> }) {
   const [yn, setYn] = useState<YesNo | null>(null);
   // A question or a proposal opens in place, under its row: its whole text
-  // and, for a question, why its Recommended answer is the one. Closed, the
-  // row is one line like the rest.
-  const [expanded, setExpanded] = useState(!!startOpen);
+  // and, for a question, why its Recommended answer is the one; a proposed
+  // goal opens from the start. Closed, the row is one line like the rest.
+  const [expanded, setExpanded] = useState(!!startOpen || !!r.card);
   const toggle = useCallback(() => setExpanded((v) => !v), []);
   // A link that opens this row (a notification's ?answer=) brings it into view once.
   const item = useRef<HTMLDivElement>(null);
@@ -116,7 +118,13 @@ function Row({ r, stop, inbox, brain, canDecide, caps, startOpen, selected, onOp
     }
   } else if (kind === "proposal") {
     const p = inbox.proposals.find((x) => x.id === id);
-    if (p) {
+    if (p && isGoalProposal(p)) {
+      // A proposed goal (a goal change is the owner's alone): its answers on
+      // the row, the recommended one first; its whole text, the Why and why
+      // that answer is recommended in the card under it.
+      actions = <GoalProposalRowActions slug={p.slug || brain} g={p.goal} canDecide={canDecide && p.can_decide !== false} />;
+      if (expanded) details = <GoalProposalCard slug={p.slug || brain} g={p.goal} canDecide={canDecide && p.can_decide !== false} framed={false} withActions={false} />;
+    } else if (p) {
       actions = <ProposalActions p={p} canDecide={canDecide} register={setYn} />;
       if (expanded) details = <ItemText text={p.proposal_text} post={hrefs.post(p.slug || brain, p.id)} empty="The proposal says no more than its title." />;
     }

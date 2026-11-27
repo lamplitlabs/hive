@@ -683,6 +683,15 @@ impl Handler {
             let goal = crate::lifecycle::goal_summary(store, &p.slug);
             row.insert("goal_source".into(), json!(goal.source));
             row.insert("goal_preview".into(), json!(goal.preview));
+            // The goal a lead or Hive's draft proposes, waiting for the
+            // owner's yes (the Sessions strip and the project's Overview); null when
+            // none waits.
+            row.insert(
+                "goal_proposal".into(),
+                hive_goals::review::pending(store, &p.slug)
+                    .and_then(|x| serde_json::to_value(x).ok())
+                    .unwrap_or(Value::Null),
+            );
             row.insert("needs".into(), json!(p.needs));
         }
         row
