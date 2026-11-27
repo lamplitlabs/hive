@@ -11,6 +11,12 @@ pub(crate) struct VerifyMemo {
     pub(crate) by: String,
     pub(crate) agent: String,
     pub(crate) clone: String,
+    /// How long the check ran, the lock wait excluded, when the writer knew
+    /// it (a commit hook's check under `verify.lock`): a run whose own check
+    /// this memo spares still has a run time to write down for the lanes
+    /// rule (`jobs::VERIFY_RAN_EVENT`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) seconds: Option<u64>,
 }
 
 /// Verified-tree memos are a same-user latency cache, not an isolation boundary:
@@ -39,6 +45,7 @@ pub(crate) fn write(
         by: by.into(),
         agent: agent.into(),
         clone: clone.into(),
+        seconds: None,
     };
     let p = path(home, project, tree);
     if let Some(parent) = p.parent() {
@@ -135,6 +142,7 @@ mod tests {
             by: "hook".into(),
             agent: String::new(),
             clone: String::new(),
+            seconds: None,
         };
         let p = path(dir.path().to_str().unwrap(), "proj", "tree");
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();

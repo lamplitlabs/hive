@@ -535,6 +535,7 @@ pub(crate) fn capacity_note(
     held: String,
     disk: String,
     bulk: String,
+    lanes: serde_json::Value,
     now: String,
 ) {
     let note = serde_json::json!({
@@ -546,8 +547,32 @@ pub(crate) fn capacity_note(
         "held": held,
         "disk": disk,
         "bulk": bulk,
+        "lanes": lanes,
     });
     meta_upsert(s, "capacity", &note);
+}
+
+/// The capacity note's `lanes`: each project whose queued fleet work waits on
+/// its narrowed lanes rather than a slot, with the numbers `hive status`
+/// prints (TASK-156).
+pub(crate) fn lanes_note(waits: &[crate::jobs::LaneWait]) -> serde_json::Value {
+    serde_json::Value::Array(
+        waits
+            .iter()
+            .map(|w| {
+                serde_json::json!({
+                    "project": w.project,
+                    "lanes": w.lanes.lanes,
+                    "base": w.lanes.base,
+                    "busy": w.busy,
+                    "waiting": w.waiting,
+                    "verify_seconds": w.lanes.verify_seconds,
+                    "basis": w.lanes.basis,
+                    "reason": w.lanes.reason,
+                })
+            })
+            .collect(),
+    )
 }
 
 pub(crate) fn hands_wanted(
@@ -3051,7 +3076,15 @@ pub(crate) fn daemon(
             // elsewhere - so a held machine counts as short like a busy one
             // (before this a laptop held by its load all day never asked).
             let short = !inflight.is_empty() || load_held > 0 || disk_trimmed > 0;
-            let starved = queued > 0 && usable == started.len() && short;
+            // A fleet work job its project's narrowed lanes hold back waits
+            // on that project's checks taking turns, not on a slot: no free
+            // slot and no rented machine would start it (lease_job narrows
+            // whatever the executor), so it neither starves this machine nor
+            // asks for hands (TASK-156).
+            let lane_waits = crate::jobs::lanes_waiting(s);
+            let lane_queued: i32 = lane_waits.iter().map(|w| w.waiting as i32).sum();
+            let slot_queued = queued.saturating_sub(lane_queued).max(0);
+            let starved = slot_queued > 0 && usable == started.len() && short;
             if starved {
                 if starved_since.is_empty() {
                     starved_since = now.clone();
@@ -3068,6 +3101,7 @@ pub(crate) fn daemon(
                 gate.clone(),
                 disk_line,
                 bulk_line,
+                lanes_note(&lane_waits),
                 now.clone(),
             );
             // Work that needs a kind of machine none of the paired ones is
@@ -3324,9 +3358,14 @@ pub(crate) fn daemon(
                 if waited >= HANDS_WANTED_MINUTES {
                     // A machine the owner pre-authorised first; the question
                     // to the owner only when none may be rented.
-                    let waiting = format!(
-                        "{queued} job(s) waited {waited} min with every slot on this machine busy or held"
+                    let mut waiting = format!(
+                        "{slot_queued} job(s) waited {waited} min with every slot on this machine busy or held"
                     );
+                    if lane_queued > 0 {
+                        waiting.push_str(&format!(
+                            " ({lane_queued} more wait on their project's lanes, not on a slot)"
+                        ));
+                    }
                     match auto_compute(s, &waiting, HANDS_WANTED_MINUTES, &now, &actor) {
                         Ok(req) => say(
                             &o,
@@ -3369,7 +3408,7 @@ pub(crate) fn daemon(
                             let post = hands_wanted(
                                 s,
                                 crate::board::brain_project(c),
-                                queued,
+                                slot_queued,
                                 total_slots,
                                 waited,
                                 now.clone(),
