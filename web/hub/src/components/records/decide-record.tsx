@@ -11,9 +11,9 @@ import { showApiError } from "@/components/hive/confirm";
 import { ItemCard, ItemCardActions, ItemCardBody, ItemCardHeader, ItemCardKind, ItemCardMeta, ItemCardTitle } from "@/components/hive/item-card";
 import { ProjectLink, When } from "@/components/hive/who";
 import { tierWord } from "@/lib/words";
-import { writes, type RecordDecision, type RecordRow } from "@/lib/api";
-import { awaitsDecision } from "./records-state";
-import { invalidate } from "@/lib/use-api";
+import { enc, writes, type RecordDecision, type RecordDetail, type RecordRow } from "@/lib/api";
+import { awaitsDecision, declineHappens } from "./records-state";
+import { invalidate, useApi } from "@/lib/use-api";
 import { sentence } from "@/lib/format";
 
 // The human gates in the console (ADR-028). A Proposed ADR waits for the
@@ -79,6 +79,10 @@ export function DecideRecordDialog({ record, action, open, onOpenChange, onDone 
 
 function DecideBody({ record, action, busy, setBusy, onOpenChange, onDone }: { record: RecordRow; action: RecordDecision; busy: boolean; setBusy: (b: boolean) => void; onOpenChange: (o: boolean) => void; onDone?: (r: RecordRow) => void }) {
   const t = TEXT[action];
+  // Declining a record whose work is merged queues one job that takes the
+  // work out (TASK-147); the dialog says so before the owner picks.
+  const detail = useApi<RecordDetail>(action === "Rejected" ? "records/" + enc(record.id) + "?project=" + enc(record.project) : null, { refresh: false });
+  const happens = action === "Rejected" ? declineHappens(detail.data?.merged_work) : t.happens;
   const [words, setWords] = useState(t.reason);
   const trimmed = words.trim();
   const ready = trimmed.length > 0 && !busy;
@@ -137,7 +141,7 @@ function DecideBody({ record, action, busy, setBusy, onOpenChange, onDone }: { r
         </div>
         <div className="rounded-xl bg-muted/60 px-3.5 py-3">
           <div className="mb-0.5 text-[13px] font-medium text-foreground">What happens next</div>
-          <p className="text-[13px] leading-relaxed text-muted-foreground">{t.happens}</p>
+          <p className="text-[13px] leading-relaxed text-muted-foreground">{happens}</p>
         </div>
       </div>
       <DialogFooter className="items-center gap-2">

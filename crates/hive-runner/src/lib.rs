@@ -82,6 +82,7 @@ pub use hive_hand_core::proc;
 pub mod provider;
 pub mod recipe;
 pub mod reclaim;
+pub mod record_gate;
 pub(crate) mod records_sync;
 pub mod recover;
 pub mod recovery_api;

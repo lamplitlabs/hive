@@ -121,3 +121,25 @@ export function headings(md: string): Heading[] {
 export function wantsContents(md: string, hs: Heading[] = headings(md)): boolean {
   return hs.length >= 3 || (hs.length > 0 && (md || "").length > 1500);
 }
+
+// One pull request already merged that builds a record (the hub's
+// `merged_work` beside a record, TASK-147).
+export interface MergedWork {
+  task: string;
+  number: number;
+  url: string;
+  head: string;
+  at: string;
+}
+
+// What declining a record does, said before the owner picks: with work
+// already merged, one job takes it out; without, the record is only turned
+// down. Pure, so node --test runs it.
+export function declineHappens(merged: MergedWork[] | null | undefined): string {
+  const base = "The decision is turned down, with your words in its history. The record stays, so the reasoning isn't lost.";
+  const prs = (merged || []).filter((m) => m && m.number > 0);
+  if (!prs.length) return base;
+  const list = prs.map((m) => "#" + m.number).join(", ");
+  const what = prs.length === 1 ? "pull request " + list + " is" : "pull requests " + list + " are";
+  return base + " Its work is already merged (" + what + " on the default branch), so one job takes that work out as a new pull request.";
+}

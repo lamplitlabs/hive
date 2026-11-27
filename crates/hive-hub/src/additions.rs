@@ -1138,6 +1138,10 @@ impl Handler {
                 "body": revision.body,
                 "revisions": history,
                 "draft": crate::evolution::draft_summary(store, &rec.id, true),
+                // The merged pull requests of the tasks building this record:
+                // declining it queues one job that takes them out, and the
+                // console says so before the owner picks (TASK-147).
+                "merged_work": hive_runner::record_gate::merged_work_json(store, &rec),
             }),
         );
     }
