@@ -19,6 +19,13 @@ pub const MISSING_TRAILER_SENTENCE: &str = "this commit would not carry its trai
 /// plain sentence when one is still missing (`H: <agent>` is the same
 /// Hive-Agent with the same value for git), so the worker learns it at
 /// `git commit`, not from a refused landing.
+///
+/// `--no-divider` on both calls: without it `interpret-trailers` takes a
+/// `---` line as the start of a patch, puts the trailers above it and parses
+/// none below it, while the landing reads a commit's trailers (`git log
+/// %(trailers)`) from the end of the whole message - so a message holding a
+/// `---` line went out with trailers the landing could not see, or the hook
+/// refused it as missing them.
 pub fn provenance_hook(agent: &str, job_id: &str, executor: &str) -> String {
     let values = [agent, job_id, executor];
     let trailers = PROVENANCE_TRAILERS
@@ -35,8 +42,8 @@ pub fn provenance_hook(agent: &str, job_id: &str, executor: &str) -> String {
     format!(
         "#!/bin/sh\n\
 # hive: provenance trailers for every commit of this run (ADR-022). Local to this clone, never committed.\n\
-git interpret-trailers --in-place --if-exists addIfDifferent {parts} \"$1\" || exit 1\n\
-have=$(git interpret-trailers --parse \"$1\") || exit 1\n\
+git interpret-trailers --no-divider --in-place --if-exists addIfDifferent {parts} \"$1\" || exit 1\n\
+have=$(git interpret-trailers --no-divider --parse \"$1\") || exit 1\n\
 for t in {list}; do\n\
 \tprintf '%s\\n' \"$have\" | grep -qxF -- \"$t\" && continue\n\
 \techo \"hive: {MISSING_TRAILER_SENTENCE} '$t' (ADR-022), so the landing would refuse it. git reads the last paragraph of a message as trailers and took a 'Word: text' line there for it; end the message with a sentence instead and commit again.\" >&2\n\
@@ -104,6 +111,48 @@ mod tests {
         // A plain message gets the three as before.
         let out = commit(dir.path(), "second\n\nA sentence.");
         assert!(out.status.success());
+        assert_eq!(
+            trailers(dir.path()),
+            "Hive-Agent: aurora\nHive-Job: job-1\nHive-Executor: local"
+        );
+    }
+
+    #[test]
+    fn a_divider_line_in_the_message_does_not_hide_the_trailers() {
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().unwrap();
+        repo_with_hook(dir.path(), "aurora");
+        // Without --no-divider the hook put the trailers above the `---`
+        // line, where `git log %(trailers)` - what the landing reads - does
+        // not look.
+        let out = commit(
+            dir.path(),
+            "subject\n\nbody\n---\nA quoted diff stat or a rule line follows.",
+        );
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            trailers(dir.path()),
+            "Hive-Agent: aurora\nHive-Job: job-1\nHive-Executor: local"
+        );
+        let body = crate::test_helpers::run(dir.path(), &["git", "log", "-1", "--format=%B"]);
+        assert!(
+            body.trim_end().ends_with("Hive-Executor: local"),
+            "the trailers are not at the end of the message: {body}"
+        );
+        // An amend keeps one of each.
+        let out = crate::test_helpers::run_output(
+            dir.path(),
+            &["git", "commit", "-q", "--amend", "--no-edit"],
+        );
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         assert_eq!(
             trailers(dir.path()),
             "Hive-Agent: aurora\nHive-Job: job-1\nHive-Executor: local"
