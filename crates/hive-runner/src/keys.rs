@@ -161,6 +161,7 @@ pub(crate) fn pre_commit_hook_script(
     prepend_verify_scope(&mut b, base);
     // The verify runs in a subshell: the lock wrapper ends in `exit`, which
     // would otherwise leave the hook before the memo below is written.
+    b.push_str(VERIFY_RAN_OPEN);
     b.push_str("(\n");
     if pins.is_empty() {
         b.push_str(check_cmd);
@@ -168,6 +169,7 @@ pub(crate) fn pre_commit_hook_script(
         b.push_str(&crate::recipe::mise_wrap_shell(pins, check_cmd, clone));
     }
     b.push_str("\n)\nrc=$?\n");
+    b.push_str(VERIFY_RAN_READ);
     b.push_str(VERIFY_SCOPE_READ);
     b.push_str("if [ \"$rc\" -ne 0 ]; then exit \"$rc\"; fi\n");
     b.push_str("if [ -n \"$hive_scoped\" ]; then\n  echo \"hive: the commit's check was scoped to what changed since the job's base; no verified-tree memo is written, so the run's check and the landing run the full check\" >&2\n  exit 0\nfi\n");
@@ -194,6 +196,24 @@ if [ -n \"$hive_scope_file\" ]; then
 fi"
     );
 }
+
+/// Gives the lock wrapper a file to leave the check's run time in
+/// (`verify_lock::wrap_with_lock`, `HIVE_VERIFY_RAN_FILE`), so the memo below
+/// carries it: the run whose check the memo spares writes it down for the
+/// lanes rule (TASK-156).
+const VERIFY_RAN_OPEN: &str =
+    "hive_ran_file=$(mktemp \"${TMPDIR:-/tmp}/hive-verify-ran.XXXXXX\" 2>/dev/null || true)
+if [ -n \"$hive_ran_file\" ]; then export HIVE_VERIFY_RAN_FILE=\"$hive_ran_file\"; fi
+";
+
+/// Reads back the check's run time (digits only; empty when the lock is off
+/// or the check was killed), then removes the file.
+const VERIFY_RAN_READ: &str = "hive_ran=
+if [ -n \"$hive_ran_file\" ]; then
+  hive_ran=$(tr -cd '0-9' < \"$hive_ran_file\" 2>/dev/null || true)
+  rm -f \"$hive_ran_file\"
+fi
+";
 
 /// Reads back whether the check narrowed itself, then removes the scope file.
 const VERIFY_SCOPE_READ: &str = "hive_scoped=
@@ -262,7 +282,7 @@ if [ -n \"$tree\" ]; then
   memo_dir=\"$memo_home/verified/\"{project_q}
   at=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
   if [ -n \"$at\" ] && mkdir -p \"$memo_dir\" 2>/dev/null; then
-    {{ printf '%s' '{{\"verify_sha256\":\"{hash}\",\"at\":\"'; printf '%s' \"$at\"; printf '%s\\n' '\",\"by\":\"hook\",\"agent\":{agent_json},\"clone\":{clone_json}}}'; }} > \"$memo_dir/$tree\" 2>/dev/null || true
+    {{ printf '%s' '{{\"verify_sha256\":\"{hash}\",\"at\":\"'; printf '%s' \"$at\"; printf '%s' '\",\"by\":\"hook\",\"agent\":{agent_json},\"clone\":{clone_json}'; if [ -n \"$hive_ran\" ]; then printf ',\"seconds\":%s' \"$hive_ran\"; fi; printf '}}\\n'; }} > \"$memo_dir/$tree\" 2>/dev/null || true
   fi
 fi"
     );
@@ -1082,6 +1102,8 @@ mod tests {
         .expect("the hook wrote a memo for the committed tree");
         assert_eq!(memo.by, "hook");
         assert_eq!(memo.agent, "aurora");
+        // This check left no run time (no lock), so the memo claims none.
+        assert_eq!(memo.seconds, None);
 
         // A second commit with another file left modified but unstaged: the
         // verify saw a tree that is not the one committed, so no memo.
@@ -1102,5 +1124,49 @@ mod tests {
             .is_none(),
             "no memo for a tree verified with unstaged changes"
         );
+    }
+
+    /// TASK-156: the lock wrapper leaves the check's run time in
+    /// `HIVE_VERIFY_RAN_FILE` and the hook's memo carries it, so a run whose
+    /// own check the memo spares still writes its check time for the lanes rule.
+    #[test]
+    fn pre_commit_hook_memo_carries_the_checks_run_time() {
+        let _serial = crate::test_helpers::serial();
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let clone = dir.path().join("clone");
+        std::fs::create_dir_all(&clone).unwrap();
+        git_in(&clone, &["init", "-q", "-b", "main"]);
+        git_in(&clone, &["config", "user.email", "t@example.com"]);
+        git_in(&clone, &["config", "user.name", "t"]);
+        git_in(&clone, &["config", "commit.gpgsign", "false"]);
+        // What `verify_lock::wrap_with_lock` does after the check, in short.
+        let verify = "( true )\nhive_rc=$?\nif [ -n \"${HIVE_VERIFY_RAN_FILE:-}\" ]; then echo 412 > \"$HIVE_VERIFY_RAN_FILE\"; fi\nexit $hive_rc";
+        let script = pre_commit_hook_script(
+            verify,
+            verify,
+            None,
+            &[],
+            &clone.display().to_string(),
+            &home.display().to_string(),
+            "proj",
+            "aurora",
+            "",
+        );
+        write_pre_commit_hook(&clone.display().to_string(), &script).unwrap();
+        std::fs::write(clone.join("a.txt"), "one\n").unwrap();
+        git_in(&clone, &["add", "a.txt"]);
+        git_in(&clone, &["commit", "-q", "-m", "one"]);
+        let tree = git_in(&clone, &["rev-parse", "HEAD^{tree}"]);
+        let memo = crate::verify_memo::lookup(
+            &home.display().to_string(),
+            "proj",
+            &tree,
+            verify,
+            24,
+            chrono::Utc::now(),
+        )
+        .expect("the hook wrote a memo for the committed tree");
+        assert_eq!(memo.seconds, Some(412));
     }
 }

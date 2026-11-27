@@ -597,6 +597,41 @@ struct CapacityNote {
     inflight: i64,
     starved_since: String,
     held: String,
+    /// The projects whose fleet work waits on narrowed lanes, not on a slot
+    /// (hive-runner `daemon::lanes_note`, TASK-156).
+    lanes: Vec<LaneNote>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+struct LaneNote {
+    project: String,
+    lanes: i64,
+    base: i64,
+    busy: i64,
+    waiting: i64,
+    verify_seconds: Option<i64>,
+    basis: String,
+}
+
+impl LaneNote {
+    /// "lanes: proj 1 of 5 open, 4 in flight, 1 job(s) wait on them, not on
+    /// a slot (check ~10 min, median of 5 checks, the newest at T)".
+    fn line(&self) -> String {
+        let mut line = format!(
+            "lanes: {} {} of {} open, {} in flight, {} job(s) wait on them, not on a slot",
+            self.project, self.lanes, self.base, self.busy, self.waiting
+        );
+        if let Some(secs) = self.verify_seconds {
+            line.push_str(&format!(" (check ~{} min", (secs + 59) / 60));
+            if !self.basis.is_empty() {
+                line.push_str(", ");
+                line.push_str(&self.basis);
+            }
+            line.push(')');
+        }
+        line
+    }
 }
 
 fn read_capacity_note(s: &hive_store::Store) -> Result<(CapacityNote, bool)> {
@@ -630,6 +665,10 @@ pub fn capacity_status(s: &hive_store::Store) -> Result<String> {
             "; every slot busy for {} min - another machine would help (hive pair; hive record show WF-executors)",
             (now - start).num_minutes()
         ));
+    }
+    for lanes in &note.lanes {
+        line.push_str("; ");
+        line.push_str(&lanes.line());
     }
     Ok(line)
 }
@@ -1312,6 +1351,17 @@ mod tests {
         );
         assert_eq!(capacity_hold(&s).unwrap(), "");
         assert_eq!(capacity_disk(&s).unwrap(), "");
+        // Work its project's narrowed lanes hold back is said apart from the
+        // slots, with the numbers (TASK-156): free slots, no starvation, and
+        // the job still waits.
+        exec_sql(
+            &s,
+            r#"UPDATE meta SET value = '{"queued":3,"slots":5,"inflight":2,"starved_since":"","lanes":[{"project":"brain","lanes":2,"base":4,"busy":2,"waiting":3,"verify_seconds":600,"basis":"median of 5 checks, the newest at 2026-09-06T18:00:00Z"}]}' WHERE key = 'capacity'"#,
+        );
+        assert_eq!(
+            capacity_status(&s).unwrap(),
+            "3 job(s) queued, 5 slot(s), 2 in flight; lanes: brain 2 of 4 open, 2 in flight, 3 job(s) wait on them, not on a slot (check ~10 min, median of 5 checks, the newest at 2026-09-06T18:00:00Z)"
+        );
         exec_sql(
             &s,
             "UPDATE meta SET value = '{\"queued\":3,\"slots\":2,\"inflight\":0,\"starved_since\":\"\",\"held\":\"\",\"disk\":\"disk: 252 MB free, needs 1024; 6 projects waiting\"}' WHERE key = 'capacity'",

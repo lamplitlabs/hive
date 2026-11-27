@@ -2458,6 +2458,13 @@ pub(crate) fn run_job(
                     .flatten()
                 {
                     verify_rc = Some(0);
+                    crate::jobs::record_check_ran(
+                        s,
+                        &project.str("slug"),
+                        &job.str("id"),
+                        memo.seconds,
+                        &memo.by,
+                    );
                     verify_note = crate::verify_memo::note(&memo, &tree);
                     log.add(format!(
                         "$ {}\nhive: verify skipped: tree {tree} already passed this check on this store ({verify_note})",
@@ -2502,6 +2509,16 @@ pub(crate) fn run_job(
                             &job.str("id"),
                             &run_id,
                             &base,
+                        );
+                    }
+                    if rc == Some(0) && !ex.remote() {
+                        // Only this machine's checks take turns on its lock.
+                        crate::jobs::record_check_ran(
+                            s,
+                            &project.str("slug"),
+                            &job.str("id"),
+                            crate::verify_lock::ran_seconds(&vout),
+                            "run",
                         );
                     }
                     if rc == Some(0) && ex.dirty().is_empty() {
@@ -2969,6 +2986,72 @@ pub(crate) fn run_job(
             crate::unchecked::drop_branch(&root, &u.branch);
         }
         log.put(&summary);
+    }
+    // A machine that stopped answering after the worker started may still
+    // hold the run's commits: they are fetched before anything cleans the
+    // clone (TASK-156 item 5). On 2026-11-27 a rented machine whose hours
+    // were up dropped one `verify` call (ssh exit 255) 3 h 50 min into a run;
+    // the `clean` a moment later answered and removed the clone with the
+    // work in it, and the machine was released. Now the commits go to the
+    // failed-work branch like a failed check's, and when they cannot be
+    // fetched the clone stays and is marked (`work_not_fetched`): the
+    // machine is not released idle inside its hours while it holds them,
+    // and when they are up the loss is said on the job's task
+    // (`compute::say_lost_work`). Nothing here rents or extends a machine.
+    if transport_error && ex.started() && ex.remote() && !o.dry_run && !root.is_empty() {
+        let run_base =
+            crate::util::must_one(&c, "SELECT base FROM runs WHERE id = ?", &[&run_id]).str("base");
+        let made = if run_base.is_empty() {
+            0
+        } else {
+            ex.commit_count(&run_base)
+        };
+        if made > 0 {
+            commits = made;
+            let kept_branch = crate::land::failed_work_branch(agent, &job.str("id"));
+            let mut fetch_failed = false;
+            let kept = crate::land::keep_failed_work(
+                &root,
+                |dst| {
+                    // The run's own token may be cancelled: the fetch gets one of its own.
+                    let ok = matches!(
+                        fetch_run_work(
+                            s,
+                            &hive_bus::CancellationToken::new(),
+                            ex.as_ref(),
+                            &job.str("id"),
+                            &root,
+                            dst,
+                            &log,
+                        ),
+                        Ok(o) if o.exit_code == 0
+                    );
+                    fetch_failed = !ok;
+                    ok
+                },
+                &run_base,
+                &kept_branch,
+                &home,
+                &project.str("slug"),
+            );
+            if !kept.is_empty() {
+                summary.push_str(&format!(
+                    "; {made} commit(s) fetched before the clone went: {kept}"
+                ));
+            } else if fetch_failed {
+                work_not_fetched = true;
+                let how = ex.fetch_by_hand(&root, &kept_branch);
+                summary.push_str(&format!(
+                    "; its {made} commit(s) could not be fetched, so the clone is kept{}",
+                    if how.is_empty() {
+                        String::new()
+                    } else {
+                        format!(": {how}")
+                    }
+                ));
+            }
+            log.put(&summary);
+        }
     }
     // The runner stopped the check of finished work: its commits are kept on
     // a branch of the project's checkout before the clone goes, and the
