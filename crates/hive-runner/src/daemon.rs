@@ -2182,14 +2182,22 @@ pub(crate) fn daemon(
                     stages.mark("records");
                     // The decide role (ADR-072) answers the routine asks
                     // it can before the lead's pass reads what is left.
+                    // Both work from one reading of the project's asks:
+                    // it reads every marked post's thread.
+                    let asks = crate::lead::owner_addressed_asks(s, slug.clone());
                     if !o.dry_run {
-                        for line in crate::decide::tend_decide(s, &slug, &now) {
+                        for line in crate::decide::tend_decide_with(s, &slug, &now, &asks) {
                             say(&o, line);
                         }
                     }
                     stages.mark("decide");
-                    for line in crate::lead::tend_lead(s, slug.clone(), now.clone(), actor.clone())
-                    {
+                    for line in crate::lead::tend_lead_with(
+                        s,
+                        slug.clone(),
+                        now.clone(),
+                        actor.clone(),
+                        asks,
+                    ) {
                         say(&o, line);
                     }
                     for line in crate::lead_roles::tend_role_leads(s, &slug, &now, &actor) {

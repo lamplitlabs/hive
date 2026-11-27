@@ -376,6 +376,46 @@ pub(crate) struct RunCost {
     pub cost: f64,
 }
 
+/// The model a run is started with (`--model`): the agent file's when the
+/// job runs as one and `models.allowed` lets it through, else the kind's
+/// and class's; empty for the provider's default or a custom worker
+/// command, whose model is its own.
+pub(crate) fn started_model(
+    s: &hive_store::Store,
+    kind: &str,
+    model_class: &str,
+    spec: Option<&hive_harness::agents::AgentDef>,
+    worker_cmd: &str,
+) -> String {
+    if !worker_cmd.is_empty() {
+        return String::new();
+    }
+    crate::exec::worker_model(s, kind, model_class, spec)
+}
+
+/// The model a finished run ran on: `ran_model` when it was started with
+/// one, else the model its harness session recorded (the provider's
+/// default, resolved by the harness), else empty (a worker that kept no
+/// session).
+pub(crate) fn resolved_run_model(
+    q: &(impl crate::util::Querier + ?Sized),
+    ran_model: &str,
+    run_id: &str,
+    job_id: &str,
+    since: &str,
+) -> String {
+    if !ran_model.trim().is_empty() {
+        return ran_model.to_string();
+    }
+    q.conn()
+        .query_row(
+            "SELECT model FROM harness_sessions WHERE (run_id = ?1 OR (run_id = '' AND job_id = ?2 AND job_id != '' AND started_at >= ?3)) AND model != '' ORDER BY started_at DESC LIMIT 1",
+            rusqlite::params![run_id, job_id, since],
+            |r| r.get::<_, String>(0),
+        )
+        .unwrap_or_default()
+}
+
 /// Sums the run's harness sessions: the ones that name the run, and a
 /// session of the job started during the run that names none (a worker
 /// started without `HIVE_SESSION`); zero for a worker that kept none (a
@@ -1287,11 +1327,13 @@ pub(crate) fn run_job(
     // lines record it, not the setting (ADR-072 part 5).
     let mut ran_model = String::new();
     if agent != crate::util::HUMAN_AGENT {
-        let mut model =
-            crate::exec::worker_model(s, &job.str("kind"), &model_class, agent_spec.as_ref());
-        if !o.worker_cmd.is_empty() {
-            model.clear();
-        }
+        let model = started_model(
+            s,
+            &job.str("kind"),
+            &model_class,
+            agent_spec.as_ref(),
+            &o.worker_cmd,
+        );
         ran_model = model.clone();
         let a = crate::board::agent_row(&c, agent.to_string());
         let kind = if is_nil(&a) {
@@ -3048,8 +3090,11 @@ pub(crate) fn run_job(
                 parsed.votes.len()
             ));
         }
+        // No `--model`: the harness resolved the provider's default and
+        // its session names it; the decision records that, not nothing.
+        let decided_model = resolved_run_model(&c, &ran_model, &run_id, &job.str("id"), now);
         let decided =
-            apply_result_decisions_ran(s, job.clone(), parsed.clone(), &mut log, &ran_model);
+            apply_result_decisions_ran(s, job.clone(), parsed.clone(), &mut log, &decided_model);
         if !parsed.decisions.is_empty()
             && job.str("kind") == crate::lead::LEAD_KIND
             && !job
@@ -7411,6 +7456,83 @@ mod tests {
         }
         s.finish_harness_session(id, "done", "submitted", "", "", cost, "")
             .unwrap();
+    }
+
+    /// TASK-148 item 3: a lead run started without `--model` (no model
+    /// set: the provider's default) records the model its harness session
+    /// resolved on its decisions, not an empty one.
+    #[test]
+    fn a_run_without_a_model_records_the_default_its_session_resolved() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        let c = s.conn().unwrap();
+        assert_eq!(resolved_run_model(&*c, "", "run-1", "job-1", TEST_NOW), "");
+        s.begin_harness_session(hive_store::HarnessSession {
+            id: "h-other".into(),
+            run_id: "run-0".into(),
+            job_id: "job-0".into(),
+            model: "someone-elses".into(),
+            started_at: TEST_NOW.into(),
+            ..Default::default()
+        })
+        .unwrap();
+        s.begin_harness_session(hive_store::HarnessSession {
+            id: "h-lead".into(),
+            run_id: "run-1".into(),
+            job_id: "job-1".into(),
+            provider: "copilot".into(),
+            model: "provider-default".into(),
+            started_at: TEST_NOW.into(),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(
+            resolved_run_model(&*c, "", "run-1", "job-1", TEST_NOW),
+            "provider-default"
+        );
+        assert_eq!(
+            resolved_run_model(&*c, "pinned", "run-1", "job-1", TEST_NOW),
+            "pinned",
+            "a model the run was started with wins"
+        );
+    }
+
+    /// TASK-148 item 5: `run_job` starts a run pinned to an agent file on
+    /// that file's model (what its decisions then record), and a custom
+    /// worker command on none.
+    #[test]
+    fn a_run_as_an_agent_file_is_started_on_its_model() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        set_setting(&s, "light_model", "light-setting");
+        let dir = tempfile::tempdir().unwrap();
+        let agents = dir.path().join(".hive/agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(
+            agents.join("decider.md"),
+            "---\ndescription: Decides.\nmodel: agent-pinned\nhive:\n  kinds: [lead]\n---\nDecide.\n",
+        )
+        .unwrap();
+        let mut job = Row::new();
+        job.insert("id", json!("J-1"));
+        job.insert("kind", json!(crate::lead::LEAD_KIND));
+        job.insert("agent", json!("decider"));
+        let spec = crate::agent_specs::spec_for_job(&s, &job, "proj", dir.path().to_str().unwrap())
+            .spec
+            .expect("the pinned agent file");
+        assert_eq!(
+            started_model(&s, crate::lead::LEAD_KIND, "", Some(&spec), ""),
+            "agent-pinned"
+        );
+        assert_eq!(
+            started_model(&s, crate::lead::LEAD_KIND, "", None, ""),
+            "light-setting"
+        );
+        assert_eq!(
+            started_model(&s, crate::lead::LEAD_KIND, "", Some(&spec), "sh -c true"),
+            "",
+            "a custom worker command picks its own model"
+        );
     }
 
     #[test]
