@@ -878,7 +878,7 @@ fn run_job(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
             }
             let p = current_project(s, &c.project)?;
             let agent = check_run_as(s, &p.slug, &fs.get_string("run-as"))?;
-            check_task_source(s, &fs.get_string("source"))?;
+            let source = check_task_source(s, &p.slug, &fs.get_string("source"))?;
             let (j, created) = add_job(
                 s,
                 JobInput {
@@ -888,7 +888,7 @@ fn run_job(c: &mut Context, fs: &FlagSet, args: &[String]) -> Result<()> {
                     brief: fs.get_string("brief"),
                     tier: fs.get_int("tier") as i64,
                     priority: fs.get_int("priority") as i64,
-                    source: fs.get_string("source"),
+                    source,
                     created_by: c.agent.clone(),
                     agent,
                     needs: fs.get_string("needs"),

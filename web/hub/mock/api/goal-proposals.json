@@ -1,0 +1,9 @@
+{
+  "hive": {
+    "post": "P-goal-hive",
+    "agent": "hive:goal-draft",
+    "date": "2026-11-22T04:40:00Z",
+    "text": "Hive is the place where people, agents and machines work together on this project. Keep every change proved by Hive's own checks, land small reviewed branches, and show each change with a face in a before/after report the owner can read without opening the diff.",
+    "why": "The project has no goal of its own yet: agents read a generated summary of the README. The last 30 days of landed work, the open tasks and the board's threads point at reviewed, check-proved changes with visible reports, so this goal names what the work already aims at and gives the planner something to measure it against."
+  }
+}

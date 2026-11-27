@@ -74,11 +74,13 @@ export interface ForYouRow {
   text?: string;
   /** Why only the owner may decide it, as the hub marks a question or a proposal (`hard_stop`, TASK-129); empty or absent when the lead decides it. */
   hardStop?: string;
+  /** The row shows its whole card from the start (a proposed goal, TASK-117). */
+  card?: boolean;
 }
 
 export interface ForYouInput {
   decisions: { id: string; project: string; title: string; kind: string; updated_at?: string; date?: string }[];
-  proposals: { id: string; slug?: string; summary: string; proposal_text?: string; date: string; thread_key?: string; hard_stop?: string }[];
+  proposals: { id: string; slug?: string; summary: string; proposal_text?: string; date: string; thread_key?: string; hard_stop?: string; kind?: string }[];
   questions: { id: string; slug?: string; summary: string; body?: string; date: string; stop?: boolean; thread_key?: string; on_post?: string; hard_stop?: string }[];
   compute: { id: string; project: string; size: string; hours: number; requested_by: string; at: string }[];
   work: { id: string; project: string; title: string; brief?: string; updated_at?: string; created_at?: string; reviewed_at?: string }[];
@@ -106,7 +108,8 @@ export function forYouRows(i: ForYouInput): ForYouRow[] {
   if (i.provider) rows.push({ key: "provider:" + i.provider.name, section: "problems", kind: "tool", project: "", title: i.provider.expired ? (i.provider.label || i.provider.name) + " sign-in expired" : "Connect " + (i.provider.label || i.provider.name), meta: i.provider.expired ? "Sign in again so agents can use their model" : "Agents have no model provider yet", href: "/settings/?connect=" + encodeURIComponent(i.provider.name) + "#harness", at: "", urgent: true, fix: i.provider.expired ? "Sign in" : "Connect" });
   for (const q of i.questions) rows.push({ key: "question:" + q.id, section: "questions", kind: "question", project: q.slug || brain, title: isStop(q) ? STOP_TITLE : q.summary, text: q.body, hardStop: q.hard_stop || undefined, at: q.date, urgent: !!q.stop, yesNo: true });
   for (const r of i.decisions) rows.push({ key: "decision:" + r.id, section: "decisions", kind: "decision", project: r.project, title: r.title, meta: r.id, at: first(r.updated_at, r.date), yesNo: true });
-  for (const p of i.proposals) rows.push({ key: "proposal:" + p.id, section: "proposals", kind: "proposal", project: p.slug || brain, title: p.summary, text: p.proposal_text, hardStop: p.hard_stop || undefined, at: p.date, yesNo: true });
+  // A proposed project goal (TASK-117) reads as what it is and opens as its card.
+  for (const p of i.proposals) rows.push({ key: "proposal:" + p.id, section: "proposals", kind: "proposal", project: p.slug || brain, title: p.summary, text: p.proposal_text, hardStop: p.hard_stop || undefined, ...(p.kind === "goal" ? { meta: "New project goal", card: true } : {}), at: p.date, yesNo: true });
   // A request filed on the shared board asks for a machine every project can use (compute-state ANY_PROJECT; spelled out because this module imports nothing at run time).
   for (const c of i.compute) rows.push({ key: "compute:" + c.id, section: "compute", kind: "machine", project: c.project, ...(c.project === "commons" ? { projectWord: "Any project" } : {}), title: c.size + " for " + c.hours + (c.hours === 1 ? " hour" : " hours"), meta: "Asked by " + c.requested_by, at: c.at, yesNo: true });
   for (const w of i.work) rows.push({ key: "work:" + w.id, section: "work", kind: "suggestion", project: w.project, title: w.title, text: w.brief, meta: w.id, at: first(w.reviewed_at, w.updated_at, w.created_at), yesNo: true });
@@ -160,16 +163,18 @@ export function waitingWords(n: number): string {
 // else is the project lead's to decide, so the strip on Sessions shows only
 // these, each with its buttons. `owner` is a hard stop the hub marks that is
 // none of the four (a Tier 2 decision, a command a proposal would authorize,
-// the self-improvement loop's stop).
-export type HardStop = "money" | "destructive" | "credentials" | "publication" | "owner";
+// the self-improvement loop's stop). `goal` is a change to the project goal
+// (a goal Hive drafted, TASK-117): only the owner sets the goal.
+export type HardStop = "money" | "destructive" | "credentials" | "publication" | "goal" | "owner";
 
-export const HARD_STOP_ORDER: HardStop[] = ["money", "destructive", "credentials", "publication", "owner"];
+export const HARD_STOP_ORDER: HardStop[] = ["money", "destructive", "credentials", "publication", "goal", "owner"];
 
 export const HARD_STOP_LABEL: Record<HardStop, string> = {
   money: "Money",
   destructive: "Can't be undone",
   credentials: "Credentials",
   publication: "Publication",
+  goal: "Project goal",
   owner: "Only you",
 };
 
@@ -197,6 +202,7 @@ export function hardStopKind(why: string): HardStop {
   if (/destructive|irreversible|undone|delet/.test(w)) return "destructive";
   if (/credential/.test(w)) return "credentials";
   if (/publication/.test(w)) return "publication";
+  if (/\bgoal\b/.test(w)) return "goal";
   return "owner";
 }
 

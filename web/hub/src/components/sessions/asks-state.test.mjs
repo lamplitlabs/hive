@@ -277,3 +277,14 @@ test("a major-upgrade finding the hub gives the owner reaches the strip with the
   assert.equal(answers.kind, "pick");
   assert.deepEqual(answers.options.map((o) => [o.label, o.recommended]), [["Upgrade it", true], ["Leave it to me", false]]);
 });
+
+test("a proposed goal is a proposal row that names itself and opens as its card", () => {
+  const rows = forYouRows({ ...empty, proposals: [{ id: "P-9", slug: "hive", summary: "Hive proposes this goal", date: "2026-11-22T05:00:00Z", kind: "goal" }, { id: "P-1", slug: "hive", summary: "Raise the budget", date: "2026-11-21T05:00:00Z" }] });
+  const goal = rows.find((r) => r.key === "proposal:P-9");
+  assert.equal(goal.section, "proposals");
+  assert.equal(goal.meta, "New project goal");
+  assert.equal(goal.card, true);
+  const plain = rows.find((r) => r.key === "proposal:P-1");
+  assert.equal(plain.card, undefined);
+  assert.equal(plain.meta, undefined);
+});

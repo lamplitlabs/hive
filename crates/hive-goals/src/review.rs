@@ -321,7 +321,10 @@ pub fn is_proposal(body: &str) -> bool {
 
 /// The proposed goal text and the reason, from a proposal body: everything
 /// after the marker line up to a `Why:` paragraph is the goal; that
-/// paragraph is the reason. None when the text does not pass the goal rules.
+/// paragraph is the reason. Lines of one paragraph join with a space; a
+/// blank line keeps the paragraphs apart and a list item (`- `, `* `, `1. `)
+/// keeps its own line, so a goal drafted in parts reads the same once taken.
+/// None when the text does not pass the goal rules.
 pub fn parse_proposal(body: &str) -> Option<(String, String)> {
     if !is_proposal(body) {
         return None;
@@ -330,6 +333,7 @@ pub fn parse_proposal(body: &str) -> Option<(String, String)> {
     let mut text = String::new();
     let mut why = String::new();
     let mut in_why = false;
+    let mut paragraph_break = false;
     for line in rest {
         let t = line.trim();
         if !in_why && t.to_lowercase().starts_with("why:") {
@@ -338,19 +342,42 @@ pub fn parse_proposal(body: &str) -> Option<(String, String)> {
             continue;
         }
         if in_why {
+            if t.is_empty() {
+                continue;
+            }
             if !why.is_empty() {
                 why.push(' ');
             }
             why.push_str(t);
-        } else {
-            if !text.is_empty() {
+            continue;
+        }
+        if t.is_empty() {
+            paragraph_break = !text.is_empty();
+            continue;
+        }
+        if !text.is_empty() {
+            if paragraph_break {
+                text.push_str("\n\n");
+            } else if list_item(t) {
+                text.push('\n');
+            } else {
                 text.push(' ');
             }
-            text.push_str(t);
         }
+        paragraph_break = false;
+        text.push_str(t);
     }
     let text = crate::normalize(&text).ok()?;
     Some((text, why.trim().to_string()))
+}
+
+/// Whether a line opens a list item: `- `, `* `, `+ ` or `12. `.
+fn list_item(line: &str) -> bool {
+    if line.starts_with("- ") || line.starts_with("* ") || line.starts_with("+ ") {
+        return true;
+    }
+    let digits = line.chars().take_while(|c| c.is_ascii_digit()).count();
+    digits > 0 && line[digits..].starts_with(". ")
 }
 
 fn parse_time(s: &str) -> Option<DateTime<Utc>> {
@@ -680,7 +707,17 @@ fn lead_reading(conn: &Connection, slug: &str, since: &str) -> Option<LeadReadin
     })
 }
 
-fn open_proposal(conn: &Connection, slug: &str) -> Option<Proposal> {
+/// The proposed goal that waits for the owner on a project, if any: the
+/// newest undecided `goal/amend` opinion whose body parses as a proposal.
+/// The console's Sessions strip (a goal change is a hard stop) and the
+/// project's Overview read it from the org rows; None when the store cannot
+/// be read.
+pub fn pending(s: &hive_store::Store, slug: &str) -> Option<Proposal> {
+    let conn = s.conn().ok()?;
+    open_proposal(&conn, slug)
+}
+
+pub(crate) fn open_proposal(conn: &Connection, slug: &str) -> Option<Proposal> {
     let mut st = conn
         .prepare(
             "SELECT p.id, p.agent, p.date, p.body FROM posts p WHERE p.project = ? AND p.area = ? AND p.thread = ? AND p.kind = 'opinion' AND p.resolution = '' AND NOT EXISTS (SELECT 1 FROM decisions d WHERE d.post_id = p.id) ORDER BY p.date DESC, p.id DESC LIMIT 10",
