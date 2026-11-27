@@ -407,6 +407,24 @@ pub fn stop_job(
     let conn = s.conn()?;
     let job = job_by_id_conn(&conn, job_id)?
         .ok_or_else(|| refuse(2, format!("No job {}", py_repr(job_id))))?;
+    // The guard `finish_job` keeps: only the owner or the agent that holds
+    // the lease ends a leased job. The run's watcher records any stop as
+    // the owner's, so without it one agent stopped another's run - a
+    // lead's sitting, a review in the middle of a merge (TASK-169 item 5).
+    if job.status == "leased"
+        && !job.lease_agent.is_empty()
+        && !actor.is_empty()
+        && job.lease_agent != actor
+        && actor != hive_store::HUMAN_AGENT
+    {
+        return Err(refuse(
+            2,
+            format!(
+                "Job {} ({}) is leased by {}, not {actor}; only the owner or that agent stops its run",
+                job.id, job.kind, job.lease_agent
+            ),
+        ));
+    }
     let run: Option<(String, String)> = conn
         .query_row(
             "SELECT id, executor FROM runs WHERE job_id = ? AND status = 'running' ORDER BY started_at DESC, id DESC LIMIT 1",
@@ -4251,6 +4269,26 @@ mod tests {
                 params![away.id, lease_agent, TEST_NOW],
             )
             .unwrap();
+        // Another agent may not stop it: only the owner or the lease holder.
+        let err = stop_job(&s, &away.id, false, "someone-else").err().unwrap();
+        assert_eq!(code(Some(&err)), 2);
+        assert!(
+            what_any(&err).contains(&format!("leased by {lease_agent}, not someone-else")),
+            "{}",
+            what_any(&err)
+        );
+        let stops: i64 = s
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE action = ?",
+                [RUN_STOP_ACTION],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stops, 0, "a refused stop records nothing");
+        let own = stop_job(&s, &away.id, false, &lease_agent).unwrap();
+        assert_eq!(own.run, "run-away");
         let r = stop_job(&s, &away.id, true, "human").unwrap();
         assert_eq!(
             (r.run.as_str(), r.executor.as_str(), r.requeue),
@@ -4260,7 +4298,7 @@ mod tests {
             .conn()
             .unwrap()
             .query_row(
-                "SELECT detail FROM events WHERE action = ? AND subject = 'run-away'",
+                "SELECT detail FROM events WHERE action = ? AND subject = 'run-away' ORDER BY seq DESC LIMIT 1",
                 [RUN_STOP_ACTION],
                 |r| r.get(0),
             )

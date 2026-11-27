@@ -58,6 +58,14 @@ pub(crate) fn stop_on_record(s: &hive_store::Store, job_id: &str, run_id: &str) 
     if r.int("holds") > 0 {
         return "a hold is on record for its harness session".into();
     }
+    // `hive job stop` (run.stop): the watcher reads it every few seconds,
+    // so a stop and the signal it led to can land between two reads. The
+    // stop is the owner's, not an outside one (TASK-169 item 8).
+    match crate::run::owner_stop(&*conn, run_id) {
+        Some(true) => return "the owner stopped it to run again (hive job stop --requeue)".into(),
+        Some(false) => return "the owner stopped it (hive job stop)".into(),
+        None => {}
+    }
     if crate::yield_lane::yielded(s, job_id, run_id) {
         return "the runner held it so the owner's work could start first".into();
     }
@@ -299,6 +307,39 @@ pub(crate) fn tend_outside_signal_findings(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_owner_stop_is_a_stop_on_record() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        assert_eq!(stop_on_record(&s, "job-1", "run-1"), "");
+        crate::util::event_at(
+            &*s.conn().unwrap(),
+            crate::test_helpers::TEST_NOW,
+            hive_store::HUMAN_AGENT,
+            hive_board::RUN_STOP_ACTION,
+            "run-1",
+            json!({"job": "job-1", "executor": "", "requeue": false}),
+        );
+        assert_eq!(
+            stop_on_record(&s, "job-1", "run-1"),
+            "the owner stopped it (hive job stop)"
+        );
+        assert_eq!(stop_on_record(&s, "job-2", "run-2"), "");
+        crate::util::event_at(
+            &*s.conn().unwrap(),
+            crate::test_helpers::TEST_NOW,
+            hive_store::HUMAN_AGENT,
+            hive_board::RUN_STOP_ACTION,
+            "run-2",
+            json!({"job": "job-2", "executor": "", "requeue": true}),
+        );
+        assert!(
+            stop_on_record(&s, "job-2", "run-2").contains("--requeue"),
+            "{}",
+            stop_on_record(&s, "job-2", "run-2")
+        );
+    }
 
     #[test]
     fn only_a_kill_from_outside_is_an_outside_signal() {

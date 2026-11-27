@@ -816,6 +816,9 @@ pub(crate) fn take_job_first(
         why.push_str(&needs_queue_note(
             &c, &exrow, &caps, reserved, &projects, any_proj, project,
         ));
+        if exrow.str("name") != crate::executor::LOCAL_EXECUTOR {
+            why.push_str(&crate::class_red::kept_off_note(&c, &exrow, now, project));
+        }
         return Ok((Row::new(), exrow, why));
     }
     Ok((job, exrow, String::new()))
@@ -2512,7 +2515,9 @@ pub(crate) fn run_job(
                     }
                     verify_rc = rc;
                     // A check that passed on a paired or rented machine
-                    // lifts a red mark on its class (class_red.rs).
+                    // lifts a red mark on its class (class_red.rs) - on a
+                    // tree with this job's commits, once a landing names
+                    // the job (TASK-169 item 6).
                     if rc == Some(0) && ex.remote() {
                         crate::class_red::mark_green(
                             &c,
@@ -2522,6 +2527,7 @@ pub(crate) fn run_job(
                             &job.str("id"),
                             &run_id,
                             &base,
+                            commits > 0,
                         );
                     }
                     if rc == Some(0) && ex.dirty().is_empty() {
@@ -2943,6 +2949,21 @@ pub(crate) fn run_job(
     }
     stop_watch();
     hand_watch.stop();
+    // `hive job stop` without `--requeue` cut the run (owner_stop): in its
+    // setup, end check or landing that reads as a run the runner stopped,
+    // which keeps the commits and requeues the job free so its next run
+    // lands them - the opposite of the stop the owner asked for. It ends
+    // as the owner's cancel does in the worker (TASK-169 item 4).
+    if status == "lost" && owner_cancelled.load(Ordering::SeqCst) {
+        status = "failed".into();
+        summary = match summary.strip_prefix(LOST_RUN_SUMMARY) {
+            Some(rest) => format!("cancelled by the owner{rest}"),
+            None => "cancelled by the owner".into(),
+        };
+        check_stopped = None;
+        exit_code = Some(5);
+        log.put(&summary);
+    }
     // The worker is gone: close any session it left `running` with a reason,
     // instead of waiting hours for the sweep to mark it `lost` with no error.
     let closed = crate::steps_mirror::close_running_sessions(
@@ -7051,6 +7072,99 @@ mod tests {
             ],
         );
         assert_eq!(refs.trim(), "", "nothing lands without a commit");
+    }
+
+    /// TASK-169 item 4: `hive job stop` without `--requeue` while the run is
+    /// in its end check ends the job cancelled, as in the worker. Before, the
+    /// cut check read as the runner's stop: the commits were kept and the
+    /// job requeued free, so its next run landed what the owner stopped.
+    #[test]
+    fn job_stop_in_the_end_check_ends_the_job_rather_than_keeping_its_work() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = hive_testutil::env_lock();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let s = new_store();
+        let (proj, root) = new_repo(&s);
+        join(&s, "aurora");
+        let marker = std::path::Path::new(&s.home).join("check-started");
+        let mark = crate::util::shell_quote(&marker.display().to_string());
+        crate::util::exec1(
+            &s.conn().unwrap(),
+            "UPDATE projects SET verify_cmd = ? WHERE slug = ?",
+            &[&format!("touch {mark}; sleep 60"), &proj.str("slug")],
+        );
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "a note".into(),
+            "add a note".into(),
+            1,
+            0,
+            "test".into(),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        let job_id = job.str("id");
+        let leased = crate::jobs::lease_job(
+            &s,
+            "aurora".into(),
+            TEST_NOW.into(),
+            crate::jobs::LeaseOpts {
+                job_id: job_id.clone(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!leased.0.is_empty(), "lease returned no job");
+        let run_store = s.clone();
+        let (result_tx, result_rx) = crossbeam_channel::bounded(1);
+        std::thread::spawn(move || {
+            let worker = "echo note > NOTE.md && git add NOTE.md && git commit -q -m note && echo 'SUMMARY: done - added a note'";
+            let r = run_job(
+                &run_store,
+                leased,
+                "aurora",
+                TEST_NOW,
+                RunOpts {
+                    worker_cmd: format!("sh -c {}", crate::util::shell_quote(worker)),
+                    ..Default::default()
+                },
+            );
+            let _ = result_tx.send(r);
+        });
+        let began = std::time::Instant::now();
+        while !marker.exists() {
+            assert!(
+                began.elapsed() < crate::test_helpers_daemon::test_wait(Duration::from_secs(60)),
+                "the check never started"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        hive_board::stop_job(&s, &job_id, false, crate::util::HUMAN_AGENT).unwrap();
+        let r = result_rx
+            .recv_timeout(crate::test_helpers_daemon::test_wait(Duration::from_secs(
+                60,
+            )))
+            .expect("the run did not settle after the owner stopped it")
+            .unwrap();
+        let log = std::fs::read_to_string(r.str("log")).unwrap_or_default();
+        assert_eq!(r.str("status"), "failed", "run: {r:?}\n{log}");
+        assert!(
+            r.str("summary").starts_with("cancelled by the owner"),
+            "run: {r:?}"
+        );
+        let j = crate::jobs::job_row(&s.conn().unwrap(), job_id.clone());
+        assert_eq!(j.str("status"), "failed", "job: {j:?}");
+        assert!(
+            crate::unchecked::pending(&s, &job_id, &root).is_none(),
+            "nothing is kept for a next run"
+        );
+        let kept = crate::unchecked::unchecked_branch("aurora", &job_id);
+        assert!(!crate::unchecked::branch_exists(&root, &kept));
     }
 
     /// TASK-134 follow-up: a forced restart stopped job-20261126T082845Z-4ef6b5
