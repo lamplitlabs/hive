@@ -3368,6 +3368,8 @@ export type AddMachineInput =
     }
   | {
       mode: "request";
+      // Whose work the machine takes: a project's slug, or "commons" (the
+      // console's "Any project") for a machine every project can use.
       project: string;
       size?: string;
       hours?: number;

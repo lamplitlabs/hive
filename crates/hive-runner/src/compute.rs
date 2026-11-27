@@ -605,8 +605,8 @@ impl ComputeWorker {
                 req.id, m.executor, m.provider, m.name, req.hours
             ),
             &format!(
-                "The machine {} asked for is up: `{}` on {}, registered as executor `{}` for project `{}` (approved by {}). The daemon releases it when its {} hour(s) are over or after {} idle minutes, whichever comes first; once the hours are over it takes no new work, and a run in flight then is finished first. `hive executor list` shows it meanwhile.\n\nReason given: {}\n",
-                req.requested_by, m.name, m.provider, m.executor, req.project, req.decided_by, req.hours, COMPUTE_IDLE_MINUTES, req.reason
+                "The machine {} asked for is up: `{}` on {}, registered as executor `{}` for {} (approved by {}). The daemon releases it when its {} hour(s) are over or after {} idle minutes, whichever comes first; once the hours are over it takes no new work, and a run in flight then is finished first. `hive executor list` shows it meanwhile.\n\nReason given: {}\n",
+                req.requested_by, m.name, m.provider, m.executor, hive_tasks::machine_projects_words(&req.project), req.decided_by, req.hours, COMPUTE_IDLE_MINUTES, req.reason
             ),
         );
         self.say_line(format!("compute {} ready: executor {}", req.id, m.executor));

@@ -823,6 +823,24 @@ mod tests {
         );
         assert_eq!(status, 201, "pending: {result:?}");
         assert_eq!(result["request"]["status"], "pending");
+        // "Any project" in the console: the request names the shared board, and its
+        // machine is paired for every project (hive_tasks::machine_projects).
+        let (status, result) = http::additions_request(
+            h.clone(),
+            "POST",
+            "/api/v1/compute/executors",
+            r#"{"mode":"request","project":"commons","size":"small","hours":2,"reason":"a full queue","approve":false}"#,
+        );
+        assert_eq!(status, 201, "any project: {result:?}");
+        assert_eq!(result["request"]["project"], hive_tasks::ANY_PROJECT);
+        assert_eq!(result["request"]["status"], "pending");
+        let (_, listed) = http::additions_request(h.clone(), "GET", "/api/v1/compute", "");
+        assert!(
+            listed["requests"]
+                .as_array()
+                .is_some_and(|rows| rows.iter().any(|r| r["project"] == "commons")),
+            "listed: {listed:?}"
+        );
         let (status, result) = http::additions_request(
             h.clone(),
             "POST",
