@@ -1301,7 +1301,7 @@ Usage: hive review list [--project SLUG] | show N | diff N | checkout N | merge 
 
 Flags:
   -by owner
-        merge: owner merges for the owner, past the complexity rule
+        merge|changes: owner gives the owner's verdict (a merge past the complexity rule; changes after a hand-over); a command run outside a job is the owner's
   -note string
         changes|owner: the review's findings (the follow-up job's brief, or what the owner reads)
 ```
