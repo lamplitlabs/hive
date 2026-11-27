@@ -18,9 +18,17 @@
 //! is not cached, so the first one with Node present makes the console.
 //! `HIVE_HUB_SKIP_BUILD=1` skips npm and embeds whatever `out/` holds, for
 //! work on the Rust side that does not touch the console.
+//!
+//! A built export carries a stamp, and the stamp is an input too
+//! (`build_stamp.rs`): clones that share one
+//! `CARGO_TARGET_DIR` share this script's fingerprint, and without it a
+//! clone could be taken for built and embed no console at all.
 
 use std::path::Path;
 use std::process::Command;
+
+#[path = "build_stamp.rs"]
+mod build_stamp;
 
 /// What the export is built from, relative to `web/hub`. `mock/` is not
 /// here: it does not shape the export. The same list, from the workspace
@@ -72,6 +80,9 @@ fn main() {
         }
         return;
     }
+    // Missing in a clone that has not built its console here: the script
+    // runs there, whatever the mtimes of the clone's inputs say.
+    println!("{}", build_stamp::rerun_line(&out));
     if !npm_available() {
         placeholder(&out, "npm is not on PATH");
         return;
@@ -85,6 +96,13 @@ fn main() {
         "npm run build in {} wrote no out/index.html",
         hub.display()
     );
+    let out_dir = std::env::var_os("OUT_DIR");
+    build_stamp::record(
+        &out,
+        Path::new(&manifest),
+        out_dir.as_deref().map(Path::new),
+    )
+    .unwrap_or_else(|err| panic!("stamp the console export in {}: {err}", out.display()));
 }
 
 /// Whether `npm` can be started at all; a failure of any other kind is left

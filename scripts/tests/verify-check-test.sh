@@ -1,7 +1,8 @@
 #!/bin/sh
 # Tests how many chunks scripts/verify-check.sh runs at once, through its
-# `--pool` option, and which crates the pre-commit gate checks, through its
-# `--scope` option: both print and exit before anything is built, so the
+# `--pool` option, which crates the pre-commit gate checks, through its
+# `--scope` option, and whether it stops on a console placeholder, through
+# its `--console` option: all print and exit before anything is built, so the
 # test takes seconds (the scope cases need cargo and git on PATH).
 #
 #   sh scripts/tests/verify-check-test.sh
@@ -76,6 +77,52 @@ case "$said" in
     printf 'FAIL  %s\n        stderr: %s\n' "a VERIFY_POOL that is not a number is named" "$said"
     ;;
 esac
+
+# What the console export holds (`--console`): the check stops on a
+# placeholder with the cause and the fix, before any hive-hub test reads it.
+console_case() {
+  want=$1
+  want_rc=$2
+  name=$3
+  layout=$4
+  dir=$(mktemp -d "${TMPDIR:-/tmp}/verify-check-console.XXXXXX")
+  case "$layout" in
+    placeholder)
+      mkdir -p "$dir/web/hub/out"
+      # The page crates/hive-hub/build.rs writes when it builds no console.
+      printf '%s\n' '<!doctype html>' '<html lang="en">' \
+        '<head><meta charset="utf-8"><title>Hive console</title></head>' \
+        '<body><p>The Hive console was not built: install Node.js 22+ and rebuild <code>hive</code>.</p></body>' \
+        '</html>' > "$dir/web/hub/out/index.html"
+      ;;
+    built)
+      mkdir -p "$dir/web/hub/out/_next/static"
+      echo '<!doctype html><title>Hive</title>' > "$dir/web/hub/out/index.html"
+      ;;
+  esac
+  said=$(cd "$dir" && "$test_shell" "$script" --console 2> "$dir.err")
+  status=$?
+  err=$(cat "$dir.err")
+  rm -rf "$dir" "$dir.err"
+  loud=yes
+  if [ "$want_rc" -ne 0 ]; then
+    case "$err" in
+      *"the console is not built"*"npm ci && npm run build"*) ;;
+      *) loud=no ;;
+    esac
+  fi
+  if [ "$status" -eq "$want_rc" ] && [ "$said" = "$want" ] && [ "$loud" = yes ]; then
+    passed=$((passed + 1))
+    printf 'ok    %s\n' "$name"
+  else
+    failed=$((failed + 1))
+    printf 'FAIL  %s\n        exit %s, said %s, want %s; stderr: %s\n' "$name" "$status" "$said" "$want" "$err"
+  fi
+}
+
+console_case "console: placeholder (207 bytes)" 1 "the 207-byte placeholder fails loudly with the fix" placeholder
+console_case "console: missing" 1 "a missing export fails loudly with the fix" missing
+console_case "console: built" 0 "a built console passes" built
 
 # What the pre-commit gate checks (`--scope`): a scratch workspace of
 # path-only crates, so cargo tree resolves it offline. core is what every
