@@ -270,7 +270,7 @@ pub(super) fn fix_or_hold(
     let brief = format!(
         "The finished branches of task {task} ({title}) each passed their own check, but merged together onto `{def}` they do not compile: `{cmd}` on the merged tree (commit {tip}) says\n\n```\n{errors}\n```\n\n\
          The branches, in the order the task's pull request merges them:\n\n{list}\n\n\
-         Start from the current `{def}`{which}, merge them in that order (`git merge`, or cherry-pick their commits), fix what one side's change broke in the other - a signature one changed that the other still calls the old way, a name one moved - keeping the intent of both, run the project's check, and commit on your own branch.{open} \
+         Start from the current `{def}`{which}, merge them in that order with `git merge --no-ff <commit>` - never a cherry-pick or a rebase, which the landing refuses as copies of work you did not write - fix what one side's change broke in the other - a signature one changed that the other still calls the old way, a name one moved - keeping the intent of both, run the project's check, and commit on your own branch.{open} \
          Leave those branches as they are; the task's pull request opens from your branch once its merged tree compiles.\n\n\
          What the jobs said of their work:\n\n{results}",
         title = rt.title,

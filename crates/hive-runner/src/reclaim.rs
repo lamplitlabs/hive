@@ -188,9 +188,28 @@ pub(crate) fn sweep_temp_dir(root: &Path, stale: Duration, dry_run: bool) -> Tem
 }
 
 /// The temp roots the ladder sweeps: the process's own temp dir (what
-/// `TMPDIR` names) and `/tmp` when that is a different place. Tests swap
-/// `TEMP_ROOTS` for a root of their own so no test touches the machine's.
+/// `TMPDIR` names) and `/tmp` when that is a different place. In a test
+/// build nothing, unless the test swapped roots of its own in
+/// (`swap_temp_roots`): a daemon pass of any test that crosses the disk
+/// floor climbs the ladder, and the machine's temp dirs hold the test homes
+/// and check scratch of every other worker on it (TASK-161).
 pub(crate) fn temp_roots() -> Vec<PathBuf> {
+    #[cfg(test)]
+    {
+        TEMP_ROOTS
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .unwrap_or_default()
+    }
+    #[cfg(not(test))]
+    {
+        machine_temp_roots()
+    }
+}
+
+#[cfg_attr(test, allow(dead_code))]
+fn machine_temp_roots() -> Vec<PathBuf> {
     let mut roots = vec![std::env::temp_dir()];
     let tmp = PathBuf::from("/tmp");
     let same = |a: &Path, b: &Path| {
@@ -206,12 +225,41 @@ pub(crate) fn temp_roots() -> Vec<PathBuf> {
     roots
 }
 
-pub(crate) type TempRootsFn = fn() -> Vec<PathBuf>;
-pub(crate) static TEMP_ROOTS: LazyLock<std::sync::RwLock<TempRootsFn>> =
-    LazyLock::new(|| std::sync::RwLock::new(temp_roots));
+/// The roots a test swapped in; `None` (the start) sweeps nothing.
+#[cfg(test)]
+static TEMP_ROOTS: std::sync::RwLock<Option<Vec<PathBuf>>> = std::sync::RwLock::new(None);
 
-fn current_temp_roots() -> Vec<PathBuf> {
-    (*TEMP_ROOTS.read().unwrap_or_else(|e| e.into_inner()))()
+/// Points the ladder at `roots` until the guard drops; tests that take it
+/// hold `serial()` first, since the swap is process-wide.
+#[cfg(test)]
+#[must_use = "the swap holds only while its guard lives"]
+pub(crate) fn swap_temp_roots(roots: Vec<PathBuf>) -> TempRootsSwap {
+    let was = TEMP_ROOTS
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .replace(roots);
+    TempRootsSwap { was }
+}
+
+/// Whether a test swapped roots in: `once_daemon` then leaves the sweep on.
+#[cfg(test)]
+pub(crate) fn temp_roots_swapped() -> bool {
+    TEMP_ROOTS
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_some()
+}
+
+#[cfg(test)]
+pub(crate) struct TempRootsSwap {
+    was: Option<Vec<PathBuf>>,
+}
+
+#[cfg(test)]
+impl Drop for TempRootsSwap {
+    fn drop(&mut self) {
+        *TEMP_ROOTS.write().unwrap_or_else(|e| e.into_inner()) = self.was.take();
+    }
 }
 
 /// One top-level entry of a root and its size, for the owner's note.
@@ -376,7 +424,7 @@ pub(crate) fn reclaim(
         crate::retention::empty_trash(&home);
     }
     let mut temp = TempSweep::default();
-    let roots = current_temp_roots();
+    let roots = temp_roots();
     for root in &roots {
         let got = sweep_temp_dir(root, TEMP_GRACE, dry_run);
         temp.freed += got.freed;
@@ -625,30 +673,23 @@ mod tests {
         d
     }
 
-    /// Points the ladder at a temp root of the test's own for the guard's
-    /// lifetime; tests that take it hold `serial()` first.
+    /// Points the ladder at a temp root of the test's own, a fresh private
+    /// dir, for the guard's lifetime; tests that take it hold `serial()`
+    /// first. Each test gets its own root so parallel test processes (the
+    /// verify script's chunks) never share one.
     struct TestRoots {
-        was: TempRootsFn,
+        root: tempfile::TempDir,
+        _swap: TempRootsSwap,
     }
-    fn test_temp_root() -> PathBuf {
-        std::env::temp_dir().join("hive-reclaim-test-root")
-    }
-    fn test_roots() -> Vec<PathBuf> {
-        vec![test_temp_root()]
+    impl TestRoots {
+        fn path(&self) -> &Path {
+            self.root.path()
+        }
     }
     fn use_test_roots() -> TestRoots {
-        let root = test_temp_root();
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        let was = *TEMP_ROOTS.read().unwrap();
-        *TEMP_ROOTS.write().unwrap() = test_roots;
-        TestRoots { was }
-    }
-    impl Drop for TestRoots {
-        fn drop(&mut self) {
-            *TEMP_ROOTS.write().unwrap() = self.was;
-            let _ = std::fs::remove_dir_all(test_temp_root());
-        }
+        let root = tempfile::tempdir().unwrap();
+        let swap = swap_temp_roots(vec![root.path().to_path_buf()]);
+        TestRoots { root, _swap: swap }
     }
 
     #[test]
@@ -795,10 +836,10 @@ mod tests {
     #[test]
     fn reclaim_under_the_floor_sweeps_a_finished_clone_at_once_and_records_it() {
         let _serial = crate::test_helpers::serial();
-        let _roots = use_test_roots();
+        let roots = use_test_roots();
         let s = new_store();
         // A leftover of ours in the temp root goes on rung 1.
-        let leaked = fill(&test_temp_root(), ".tmpLeak01", 2048);
+        let leaked = fill(roots.path(), ".tmpLeak01", 2048);
         aged(&leaked, TEMP_GRACE * 2);
         crate::test_helpers::new_bare_repo(&s);
         let id = crate::test_helpers_sweep::sweep_job(&s, "done", "");
@@ -909,11 +950,11 @@ mod tests {
     #[test]
     fn sweep_reclaim_flag_runs_the_ladder_and_a_dry_run_records_nothing() {
         let _serial = crate::test_helpers::serial();
-        let _roots = use_test_roots();
+        let roots = use_test_roots();
         let s = new_store();
         s.set_setting(hive_store::HUMAN_AGENT, "daemon.min_free_mb", "0")
             .unwrap();
-        let leaked = fill(&test_temp_root(), ".tmpLeak02", 2048);
+        let leaked = fill(roots.path(), ".tmpLeak02", 2048);
         aged(&leaked, TEMP_GRACE * 2);
         let out =
             crate::test_helpers_provider::invoke_ok(&s, "sweep", "", &["--reclaim", "--dry-run"]);

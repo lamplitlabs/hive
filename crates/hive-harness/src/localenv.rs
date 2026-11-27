@@ -1,7 +1,7 @@
 use crate::background::{OUTPUT_BUFFER_LIMIT, Process};
 use crate::harness::{Environment, Observation};
 use hive_provider::CancelToken;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
@@ -14,6 +14,7 @@ pub use hive_cli::procs::{
     DEFAULT_KILL_GRACE, KilledProc, ProcessGroup, kill_tree_under, kill_tree_under_sparing,
     kill_tree_under_with_grace, processes_under,
 };
+use hive_cli::procs::{ProcInfo, kill_tree_under_sparing_in};
 
 /// How long the output readers may lag behind once every writer we know of
 /// is dead; a pipe held by something we could not kill must not hang a step.
@@ -38,6 +39,11 @@ pub struct LocalEnv {
     /// leaves them be. Shared with the forks a subagent gets, whose sweeps
     /// must not take the parent's processes either.
     spared: Arc<Mutex<HashSet<i32>>>,
+    /// The processes in groups of their own seen descending from a spared
+    /// group, by pid: a worker whose parent has since exited is reparented
+    /// and its ancestry no longer leads back, yet it is still the managed
+    /// process's work. Shared with the forks like `spared`.
+    lineage: Arc<Mutex<HashMap<i32, Descent>>>,
     /// The sandbox every command runs under in a lockdown session
     /// ([`crate::lockdown`]); None runs them as they are.
     lockdown: Option<crate::lockdown::Lockdown>,
@@ -53,8 +59,87 @@ pub fn new_local_env(cwd: impl Into<String>, env: Option<Vec<String>>) -> LocalE
         kill_grace: DEFAULT_KILL_GRACE,
         sweep_dir,
         spared: Arc::new(Mutex::new(HashSet::new())),
+        lineage: Arc::new(Mutex::new(HashMap::new())),
         lockdown: None,
     }
+}
+
+/// How many parents the sweep climbs from a process looking for a managed
+/// one; a deeper chain (or a loop in a listing taken mid-change) is not
+/// followed further and the process counts as a straggler.
+const ANCESTRY_LIMIT: usize = 64;
+
+/// What the sweep remembers of a process seen descending from a managed
+/// background process: its own group then, and the managed group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Descent {
+    pgid: i32,
+    root: i32,
+}
+
+/// The spared group `p` works for: its own group, a remembered descent that
+/// still matches (same pid in the same group, the managed process still
+/// running), or the first such ancestor within [`ANCESTRY_LIMIT`] parents.
+/// `parents` maps pid to (ppid, pgid) from the same listing as `p`.
+fn managed_root(
+    p: &ProcInfo,
+    parents: &HashMap<i32, (i32, i32)>,
+    spared: &HashSet<i32>,
+    lineage: &HashMap<i32, Descent>,
+) -> Option<i32> {
+    let known = |pid: i32, pgid: i32| {
+        if spared.contains(&pgid) {
+            return Some(pgid);
+        }
+        lineage
+            .get(&pid)
+            .filter(|d| d.pgid == pgid && spared.contains(&d.root))
+            .map(|d| d.root)
+    };
+    if let Some(root) = known(p.pid, p.pgid) {
+        return Some(root);
+    }
+    let mut pid = p.ppid;
+    for _ in 0..ANCESTRY_LIMIT {
+        let &(ppid, pgid) = parents.get(&pid)?;
+        if let Some(root) = known(pid, pgid) {
+            return Some(root);
+        }
+        if ppid <= 1 || ppid == pid {
+            return None;
+        }
+        pid = ppid;
+    }
+    None
+}
+
+/// Updates `lineage` from one listing and says which processes of it the
+/// sweep spares: entries whose process is gone, changed group or whose
+/// managed process ended are dropped, and every process now descending from
+/// a spared group is recorded, so it stays spared after its parent exits.
+fn spared_pids(
+    listing: &[ProcInfo],
+    spared: &HashSet<i32>,
+    lineage: &mut HashMap<i32, Descent>,
+) -> HashSet<i32> {
+    let parents: HashMap<i32, (i32, i32)> =
+        listing.iter().map(|p| (p.pid, (p.ppid, p.pgid))).collect();
+    lineage.retain(|pid, d| {
+        spared.contains(&d.root) && parents.get(pid).is_some_and(|&(_, pgid)| pgid == d.pgid)
+    });
+    if spared.is_empty() {
+        return HashSet::new();
+    }
+    let seen: Vec<(i32, Descent)> = listing
+        .iter()
+        .filter_map(|p| {
+            managed_root(p, &parents, spared, lineage)
+                .map(|root| (p.pid, Descent { pgid: p.pgid, root }))
+        })
+        .collect();
+    let pids = seen.iter().map(|(pid, _)| *pid).collect();
+    lineage.extend(seen.into_iter().filter(|(_, d)| !spared.contains(&d.pgid)));
+    pids
 }
 
 /// The job clone to sweep for stragglers: `HIVE_CLONE` from the worker's
@@ -139,38 +224,23 @@ impl LocalEnv {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .clone();
-                if spared.is_empty() {
-                    return kill_tree_under_sparing(dir, self.kill_grace, |_| false);
-                }
                 // A managed background process's children may lead groups
                 // of their own (`next build` starts its type-check worker
                 // detached): they are still its work, not a command's
                 // stragglers, so anything descending from a spared group is
                 // spared too. Killing that worker failed the console's build
                 // under a check run in the background, and with it the check.
-                let parents: std::collections::HashMap<i32, (i32, i32)> =
-                    hive_cli::procs::list_processes()
-                        .into_iter()
-                        .map(|p| (p.pid, (p.ppid, p.pgid)))
-                        .collect();
-                let descends = |p: &hive_cli::procs::ProcInfo| {
-                    let mut pid = p.ppid;
-                    for _ in 0..64 {
-                        let Some(&(ppid, pgid)) = parents.get(&pid) else {
-                            return false;
-                        };
-                        if spared.contains(&pgid) {
-                            return true;
-                        }
-                        if ppid <= 1 || ppid == pid {
-                            return false;
-                        }
-                        pid = ppid;
-                    }
-                    false
-                };
-                kill_tree_under_sparing(dir, self.kill_grace, |p| {
-                    spared.contains(&p.pgid) || descends(p)
+                // The ancestry comes from the very listing the sweep kills
+                // from: a worker born after a separate parent listing found
+                // no parent there and was taken for a straggler.
+                let listing = hive_cli::procs::list_processes();
+                let keep = spared_pids(
+                    &listing,
+                    &spared,
+                    &mut self.lineage.lock().unwrap_or_else(|e| e.into_inner()),
+                );
+                kill_tree_under_sparing_in(dir, self.kill_grace, &listing, |p| {
+                    keep.contains(&p.pid)
                 })
             }
             None => Vec::new(),
@@ -867,6 +937,147 @@ mod tests {
         let left = env.close();
         assert!(left.iter().any(|k| k.pid == worker), "{left:?}");
         wait_until(|| !alive(worker), "the worker to go at close");
+    }
+
+    #[test]
+    fn a_managed_worker_stays_spared_after_its_parent_exits() {
+        // The worker leads its own group under an intermediate shell of the
+        // managed process; once that shell exits the worker is reparented
+        // and its ancestry no longer leads back. The sweep that saw it
+        // descend remembers it.
+        let dir = tempfile::tempdir().unwrap();
+        let mut env = env_in(dir.path()).with_sweep_dir(Some(dir.path().to_path_buf()));
+        let mut p = env
+            .spawn(
+                "sh -c 'perl -e \"setpgrp(0, 0); exec @ARGV\" sleep 300 & echo $! > worker.pid; \
+                 echo $$ > middle.pid; while [ ! -e go ]; do sleep 0.1; done'; sleep 300",
+            )
+            .unwrap();
+        let read_pid = |name: &str| {
+            std::fs::read_to_string(dir.path().join(name))
+                .ok()
+                .and_then(|t| t.trim().parse::<i32>().ok())
+        };
+        wait_until(
+            || {
+                read_pid("middle.pid").is_some()
+                    && read_pid("worker.pid").is_some_and(|w| {
+                        hive_cli::procs::list_processes()
+                            .iter()
+                            .any(|i| i.pid == w && i.pgid == w && i.name == "sleep")
+                    })
+            },
+            "the worker to lead its own group",
+        );
+        let worker = read_pid("worker.pid").unwrap();
+        let middle = read_pid("middle.pid").unwrap();
+        let obs = env.execute(&CancelToken::new(), "echo first", Duration::from_secs(10));
+        assert_eq!(
+            obs.output, "first\n",
+            "nothing swept while the parent lives"
+        );
+        std::fs::write(dir.path().join("go"), "").unwrap();
+        wait_until(
+            || {
+                hive_cli::procs::list_processes()
+                    .iter()
+                    .any(|i| i.pid == worker && i.ppid != middle)
+            },
+            "the worker's parent to exit",
+        );
+        let obs = env.execute(
+            &CancelToken::new(),
+            "sleep 300 & echo $! > stray.pid; echo ran",
+            Duration::from_secs(10),
+        );
+        assert!(
+            obs.output.contains("killed 1 background process"),
+            "the stray goes: {}",
+            obs.output
+        );
+        assert!(alive(worker), "the orphaned worker was swept");
+        assert!(p.stop());
+        // With the managed process gone its remembered worker is a straggler.
+        let left = env.close();
+        assert!(left.iter().any(|k| k.pid == worker), "{left:?}");
+        wait_until(|| !alive(worker), "the worker to go at close");
+        assert!(env.lineage.lock().unwrap().is_empty());
+    }
+
+    fn proc_info(pid: i32, ppid: i32, pgid: i32) -> ProcInfo {
+        ProcInfo {
+            pid,
+            ppid,
+            pgid,
+            name: "p".into(),
+            cwd: PathBuf::new(),
+            exe: PathBuf::new(),
+        }
+    }
+
+    #[test]
+    fn the_ancestry_walk_stops_at_its_limit() {
+        // A chain of processes, each in a group of its own, under the
+        // managed group 100: process 100 + n sits n parents below it.
+        let chain = |len: i32| -> Vec<ProcInfo> {
+            (0..=len)
+                .map(|n| {
+                    let pid = 100 + n;
+                    proc_info(pid, if n == 0 { 1 } else { pid - 1 }, pid)
+                })
+                .collect()
+        };
+        let spared = HashSet::from([100]);
+        let limit = ANCESTRY_LIMIT as i32;
+        let listing = chain(limit + 1);
+        let keep = spared_pids(&listing, &spared, &mut HashMap::new());
+        assert!(keep.contains(&100), "the managed process itself");
+        assert!(keep.contains(&(100 + limit)), "{limit} parents up: spared");
+        assert!(
+            !keep.contains(&(100 + limit + 1)),
+            "{} parents up: past the limit, a straggler",
+            limit + 1
+        );
+        // A loop in the listing ends at the limit as well.
+        let looped = vec![proc_info(7, 8, 7), proc_info(8, 7, 8)];
+        assert!(spared_pids(&looped, &spared, &mut HashMap::new()).is_empty());
+    }
+
+    #[test]
+    fn the_remembered_lineage_follows_the_process_not_the_pid() {
+        let spared = HashSet::from([100]);
+        let mut lineage = HashMap::new();
+        let first = vec![
+            proc_info(100, 1, 100),
+            proc_info(101, 100, 100),
+            proc_info(102, 101, 102),
+        ];
+        let keep = spared_pids(&first, &spared, &mut lineage);
+        assert_eq!(keep, HashSet::from([100, 101, 102]));
+        assert_eq!(
+            lineage,
+            HashMap::from([(
+                102,
+                Descent {
+                    pgid: 102,
+                    root: 100
+                }
+            )]),
+            "only the worker in a group of its own is remembered"
+        );
+        // Its parent exited: reparented to init, still spared.
+        let orphaned = vec![proc_info(100, 1, 100), proc_info(102, 1, 102)];
+        assert!(spared_pids(&orphaned, &spared, &mut lineage).contains(&102));
+        // The pid reused by a process in another group: not the worker.
+        let reused = vec![proc_info(100, 1, 100), proc_info(102, 1, 555)];
+        assert!(!spared_pids(&reused, &spared, &mut lineage).contains(&102));
+        assert!(lineage.is_empty());
+        // Never seen descending: an orphan cannot be told from a straggler.
+        assert!(!spared_pids(&orphaned, &spared, &mut lineage).contains(&102));
+        // The managed process ended: what it left is forgotten.
+        spared_pids(&first, &spared, &mut lineage);
+        assert!(spared_pids(&orphaned, &HashSet::new(), &mut lineage).is_empty());
+        assert!(lineage.is_empty());
     }
 
     #[test]

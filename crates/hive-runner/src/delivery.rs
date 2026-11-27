@@ -174,6 +174,9 @@ struct ReadyTask {
     branches: Vec<(String, String)>,
     /// The task's pull request still open, as its `land.pr` detail.
     open: Option<Value>,
+    /// Why the store could not say whether the task has a pull request
+    /// open: the task is held, not taken for one with none (`open_pr`).
+    unread: Option<String>,
 }
 
 fn ready_tasks(s: &hive_store::Store, slug: &str) -> Vec<ReadyTask> {
@@ -221,7 +224,10 @@ fn ready_tasks(s: &hive_store::Store, slug: &str) -> Vec<ReadyTask> {
         if branches.is_empty() {
             continue;
         }
-        let open = open_pr(&conn, slug, &id);
+        let (open, unread) = match open_pr(&conn, slug, &id) {
+            Ok(open) => (open, None),
+            Err(why) => (None, Some(why)),
+        };
         if let Some(pr) = &open {
             let delivered = jobs_of(pr);
             if branches.iter().all(|(j, _)| delivered.contains(j)) {
@@ -233,6 +239,7 @@ fn ready_tasks(s: &hive_store::Store, slug: &str) -> Vec<ReadyTask> {
             title: t.str("title"),
             branches,
             open,
+            unread,
         });
     }
     out
@@ -367,39 +374,45 @@ fn conversation_branches(root: &str, def: &str, now_unix: i64) -> Vec<ChatBranch
 
 /// The task's pull request still open as far as Hive knows: the newest
 /// `land.pr` of the task with no `land.merged` or `land.pr-closed` after it,
-/// as its event detail.
+/// as its event detail. `Err` when the store could not be read: that is no
+/// answer, and above all not "no pull request" - work with an open pull
+/// request taken for never delivered is pushed with a plain force onto the
+/// pull request's head.
 pub(crate) fn open_pr(
     q: &(impl crate::util::Querier + ?Sized),
     slug: &str,
     task: &str,
-) -> Option<Value> {
-    let (action, detail) = last_event(q, slug, "task", task, false)?;
-    (action == "land.pr").then_some(detail)
+) -> Result<Option<Value>, String> {
+    Ok(last_event(q, slug, "task", task, false)?
+        .and_then(|(action, detail)| (action == "land.pr").then_some(detail)))
 }
 
 /// The job's pull request still open as far as Hive knows, as its `land.pr`
-/// detail: the experiment lane leaves such a job alone.
+/// detail: the experiment lane leaves such a job alone. `Err` when the
+/// store could not be read, as for [`open_pr`].
 pub(crate) fn open_pr_for_job(
     q: &(impl crate::util::Querier + ?Sized),
     slug: &str,
     job: &str,
-) -> Option<Value> {
-    let (action, detail) = last_event(q, slug, "job", job, false)?;
-    (action == "land.pr").then_some(detail)
+) -> Result<Option<Value>, String> {
+    Ok(last_event(q, slug, "job", job, false)?
+        .and_then(|(action, detail)| (action == "land.pr").then_some(detail)))
 }
 
 /// The newest delivery event about one piece of work - the task, job,
 /// experiment or head branch named by `field` - as (action, detail). A job
 /// is also found in the `jobs` list of a pull request that carried it (a
 /// task's or a fix's). With `holds` the `land.pr-held` notes count too.
+/// `Err` (opening with `STORE_UNREAD`) when the store could not be read:
+/// a caller must not take that for a work never delivered.
 fn last_event(
     q: &(impl crate::util::Querier + ?Sized),
     slug: &str,
     field: &str,
     value: &str,
     holds: bool,
-) -> Option<(String, Value)> {
-    last_event_at(q, slug, field, value, holds).map(|(action, detail, _)| (action, detail))
+) -> Result<Option<(String, Value)>, String> {
+    Ok(last_event_at(q, slug, field, value, holds)?.map(|(action, detail, _)| (action, detail)))
 }
 
 /// [`last_event`] with the time the event was written.
@@ -409,10 +422,10 @@ fn last_event_at(
     field: &str,
     value: &str,
     holds: bool,
-) -> Option<(String, Value, String)> {
-    last_events(q, slug, field, value, holds, 1)
+) -> Result<Option<(String, Value, String)>, String> {
+    Ok(last_events(q, slug, field, value, holds, 1)?
         .into_iter()
-        .next()
+        .next())
 }
 
 /// The newest delivery events about one piece of work, newest first, at
@@ -424,9 +437,9 @@ fn last_events(
     value: &str,
     holds: bool,
     limit: usize,
-) -> Vec<(String, Value, String)> {
+) -> Result<Vec<(String, Value, String)>, String> {
     let Some(about) = about_work(field) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let actions = if holds {
         "'land.pr', 'land.pr-held', 'land.merged', 'land.pr-closed'"
@@ -506,14 +519,31 @@ fn holds_since_delivery(
         .collect())
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Tests: every read through `delivery_rows` fails while set and the
+    /// store's other reads go on, as when one read fails and the next one
+    /// succeeds.
+    static DELIVERIES_UNREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The rows of a delivery-event query about `value`. A failed read is an
+/// error naming the work, never an empty answer: no row reads as "never
+/// delivered", and the push that follows such an answer forces.
 fn delivery_rows(
     q: &(impl crate::util::Querier + ?Sized),
     sql: &str,
     slug: &str,
     value: &str,
-) -> Vec<(String, Value, String)> {
-    crate::util::query_rows(q, sql, &[&slug, &value])
-        .unwrap_or_default()
+) -> Result<Vec<(String, Value, String)>, String> {
+    #[cfg(test)]
+    if DELIVERIES_UNREAD.get() {
+        return Err(format!(
+            "{STORE_UNREAD}the deliveries of {value} could not be read: disk I/O error"
+        ));
+    }
+    Ok(crate::util::query_rows(q, sql, &[&slug, &value])
+        .map_err(|e| format!("{STORE_UNREAD}the deliveries of {value} could not be read: {e}"))?
         .iter()
         .map(|row| {
             (
@@ -522,20 +552,26 @@ fn delivery_rows(
                 row.str("at"),
             )
         })
-        .collect()
+        .collect())
 }
 
-/// The newest `land.pr` of pull request `number`, as its detail.
-fn pr_event(q: &(impl crate::util::Querier + ?Sized), slug: &str, number: i64) -> Option<Value> {
+/// The newest `land.pr` of pull request `number`, as its detail; `Err`
+/// when the store could not be read.
+fn pr_event(
+    q: &(impl crate::util::Querier + ?Sized),
+    slug: &str,
+    number: i64,
+) -> Result<Option<Value>, String> {
     let rows = crate::util::query_rows(
         q,
         "SELECT detail FROM events WHERE subject = ? AND action = 'land.pr' AND json_valid(detail)
          AND json_extract(detail, '$.number') = ? ORDER BY seq DESC LIMIT 1",
         &[&slug, &number],
     )
-    .unwrap_or_default();
-    rows.first()
-        .map(|r| serde_json::from_str(&r.str("detail")).unwrap_or(Value::Null))
+    .map_err(|e| format!("{STORE_UNREAD}pull request #{number} could not be read: {e}"))?;
+    Ok(rows
+        .first()
+        .map(|r| serde_json::from_str(&r.str("detail")).unwrap_or(Value::Null)))
 }
 
 fn field<'a>(v: &'a Value, name: &str) -> &'a str {
@@ -604,9 +640,10 @@ fn held_already(
     value: &str,
     key: &str,
     now: &str,
-) -> bool {
-    last_event_at(q, slug, field, value, true).is_some_and(|(action, d, at)| {
-        action == "land.pr-held"
+) -> Result<bool, String> {
+    Ok(
+        last_event_at(q, slug, field, value, true)?.is_some_and(|(action, d, at)| {
+            action == "land.pr-held"
             && field_of(&d, "work") == key
             // A hold for a newer job carrying the same commits is read
             // again each pass (`repeated_by`): it stands while that job's
@@ -614,7 +651,8 @@ fn held_already(
             && d.get("repeated_by").is_none()
             && !(forge_fault(&field_of(&d, "note"))
                 && crate::failure::recover_due(at, forge_tries(&d) - 1).as_str() <= now)
-    })
+        }),
+    )
 }
 
 /// The tries in a row a forge hold stands for (`tries`). A hold without
@@ -815,7 +853,7 @@ pub(crate) fn hold_experiment(
     );
     let held = s
         .conn()
-        .is_ok_and(|conn| held_already(&conn, &slug, "job", &id, &work, now));
+        .is_ok_and(|conn| held_already(&conn, &slug, "job", &id, &work, now).unwrap_or(false));
     if !held {
         hold_as(
             s,
@@ -844,7 +882,9 @@ fn hold_as(
             let (name, id) = ["task", "job", "head"]
                 .into_iter()
                 .find_map(|name| Some((name, detail.get(name)?.as_str()?)))?;
-            let (action, last) = last_event(&conn, slug, name, id, true)?;
+            // A failed read counts the hold as the first of its run: a
+            // shorter wait, never a push.
+            let (action, last) = last_event(&conn, slug, name, id, true).ok().flatten()?;
             (action == "land.pr-held"
                 && field(&last, "work") == field(&detail, "work")
                 && forge_fault(field(&last, "note")))
@@ -880,11 +920,14 @@ fn next_for(
     sha: &str,
     held_key: &str,
     now: &str,
-) -> Next {
-    if held_already(q, slug, field, value, held_key, now) {
-        return Next::Nothing;
+) -> Result<Next, String> {
+    // A store that cannot be read is no answer: `Open` on that silence
+    // took work with a pull request open for never delivered, and its push
+    // went out with a plain force onto the pull request's head.
+    if held_already(q, slug, field, value, held_key, now)? {
+        return Ok(Next::Nothing);
     }
-    match last_event(q, slug, field, value, false) {
+    Ok(match last_event(q, slug, field, value, false)? {
         None => Next::Open,
         Some((action, d)) if action == "land.pr" => {
             let to = field_of(&d, "to");
@@ -900,13 +943,13 @@ fn next_for(
         // Merged or closed at this very sha: delivered; new commits since
         // are a new pull request.
         Some((_, d)) => {
-            if pr_event(q, slug, number_of(&d)).is_some_and(|pr| field_of(&pr, "to") == sha) {
+            if pr_event(q, slug, number_of(&d))?.is_some_and(|pr| field_of(&pr, "to") == sha) {
                 Next::Nothing
             } else {
                 Next::Open
             }
         }
-    }
+    })
 }
 
 /// Whether `old` is an ancestor of `new` (both known to the checkout).
@@ -1053,6 +1096,10 @@ struct Conflict {
     /// conflicts with is the task's other branches, and one job joins them
     /// all (`join_or_hold`).
     siblings: bool,
+    /// The task's job branches the build merges, as indices into its
+    /// branches: the ones another side carries already are passed over
+    /// (`carried_elsewhere`), and a join merges these alone.
+    sides: Vec<usize>,
 }
 
 /// What a pull request targets: the default branch, or the head of the open
@@ -1351,7 +1398,17 @@ fn deliver(s: &hive_store::Store, project: &Row, now: &str) -> Vec<String> {
         // waiting for a new job of the task.
         let Ok(conn) = s.conn() else { break };
         let (key, top) = task_key(&conn, &root, &slug, rt);
-        if held_already(&conn, &slug, "task", task, &key, now) {
+        // Whether the task has a pull request open, or a hold standing,
+        // could not be read: held for that, never taken for "nothing open".
+        let unread = match held_already(&conn, &slug, "task", task, &key, now) {
+            Ok(true) => continue,
+            Ok(false) => rt.unread.clone(),
+            Err(why) => Some(why),
+        };
+        if let Some(why) = unread {
+            drop(conn);
+            hold(s, now, &slug, json!({"task": task, "work": key}), &why);
+            lines.push(format!("task pr {slug} {task}: held: {why}"));
             continue;
         }
         if !retries.allows("task", task, &key) {
@@ -1391,7 +1448,7 @@ fn deliver(s: &hive_store::Store, project: &Row, now: &str) -> Vec<String> {
         if !exists {
             if !why.is_empty() {
                 let Ok(conn) = s.conn() else { break };
-                if !held_already(&conn, &slug, "job", &id, &branch, now) {
+                if !held_already(&conn, &slug, "job", &id, &branch, now).unwrap_or(true) {
                     drop(conn);
                     hold(s, now, &slug, json!({"job": id, "work": branch}), &why);
                     lines.push(format!("job pr {slug} {id}: held: {why}"));
@@ -1409,25 +1466,43 @@ fn deliver(s: &hive_store::Store, project: &Row, now: &str) -> Vec<String> {
         }
         let Ok(conn) = s.conn() else { break };
         let (key, sha, top) = job_key(&conn, &root, &slug, rj);
-        let next = next_for(&conn, &root, &slug, "job", &id, &sha, &key, now);
-        if next == Next::Nothing {
-            continue;
-        }
-        // A try again of a job whose commits a newer finished job carries
-        // on a pull request still open or merged: held for that, under the
-        // branch and commit alone, which stands whatever pull request the
-        // work would stack on. It is read again each pass: should the newer
-        // job's pull request close unmerged, this one is tried again.
-        if retries.again("job", &id, &key)
-            && let Some(newer) = repeated_by(&conn, &root, &def, &slug, job, &sha)
-        {
+        let next = match next_for(&conn, &root, &slug, "job", &id, &sha, &key, now) {
+            Ok(Next::Nothing) => continue,
+            Ok(next) => next,
+            Err(why) => {
+                drop(conn);
+                hold(s, now, &slug, json!({"job": id, "work": key}), &why);
+                lines.push(format!("job pr {slug} {id}: held: {why}"));
+                continue;
+            }
+        };
+        // A try again of a job whose commits another job carries on a pull
+        // request still open or merged: held for that, under the branch and
+        // commit alone, which stands whatever pull request the work would
+        // stack on. It is read again each pass: should that pull request
+        // close unmerged, this one is tried again. A read that fails - the
+        // store, or a git call that fails or times out - says nothing of
+        // the commits: the work stays held and is read again next pass.
+        let repeat = if retries.again("job", &id, &key) {
+            repeated_by(&conn, &root, &def, &slug, job, &sha)
+        } else {
+            Ok(None)
+        };
+        let newer = match repeat {
+            Ok(newer) => newer,
+            Err(why) => {
+                lines.push(format!("job pr {slug} {id}: kept held: {why}"));
+                continue;
+            }
+        };
+        if let Some(newer) = newer {
             let key = work_key(&branch, &own_tip(&root, &sha));
             if repeat_held(&conn, &slug, &id, &key, &newer.job) {
                 continue;
             }
             drop(conn);
             let note = format!(
-                "{branch} is not tried again: job {} finished later and its pull request #{} ({}) carries every commit of it",
+                "{branch} is not tried again: job {} has its commits on pull request #{} ({}), which carries every commit of it",
                 newer.job,
                 newer.number,
                 if newer.merged { "merged" } else { "open" }
@@ -1473,10 +1548,20 @@ fn deliver(s: &hive_store::Store, project: &Row, now: &str) -> Vec<String> {
         }
         let key = work_key(&cb.branch, &cb.sha);
         let Ok(conn) = s.conn() else { break };
-        let next = next_for(&conn, &root, &slug, "head", &cb.branch, &cb.sha, &key, now);
-        if next == Next::Nothing {
-            continue;
-        }
+        let next = match next_for(&conn, &root, &slug, "head", &cb.branch, &cb.sha, &key, now) {
+            Ok(Next::Nothing) => continue,
+            Ok(next) => next,
+            Err(why) => {
+                drop(conn);
+                let mut d = json!({"head": cb.branch, "work": key});
+                if let Some(id) = cb.conversation() {
+                    d["conversation"] = json!(id);
+                }
+                hold(s, now, &slug, d, &why);
+                lines.push(format!("proposed {slug} {}: held: {why}", cb.branch));
+                continue;
+            }
+        };
         if !retries.allows("head", &cb.branch, &key) {
             deferred += 1;
             continue;
@@ -1666,7 +1751,7 @@ type WorkId = (&'static str, String);
 /// The held works this pass tries again: of those whose hold no longer
 /// stands, the `RETRIES_PER_PASS` with the oldest holds. Work never held,
 /// and work whose commits changed since its hold (`same_work`), is new and
-/// not counted. A job a newer finished job repeats is held for that instead
+/// not counted. A job another job repeats is held for that instead
 /// (`repeated_by`) and takes no place.
 #[derive(Debug, Default)]
 struct Retries {
@@ -1711,7 +1796,9 @@ fn retries_this_pass(
             continue;
         };
         let (key, _) = task_key(&conn, root, slug, rt);
-        if same_work(&held, &key) && !held_already(&conn, slug, "task", &rt.task, &key, now) {
+        if same_work(&held, &key)
+            && held_already(&conn, slug, "task", &rt.task, &key, now) == Ok(false)
+        {
             due.push((seq, ("task", rt.task.clone())));
         }
         r.held.insert(("task", rt.task.clone()), held);
@@ -1723,8 +1810,9 @@ fn retries_this_pass(
         };
         let (key, sha, _) = job_key(&conn, root, slug, rj);
         if same_work(&held, &key)
-            && next_for(&conn, root, slug, "job", &id, &sha, &key, now) != Next::Nothing
-            && repeated_by(&conn, root, def, slug, &rj.job, &sha).is_none()
+            && next_for(&conn, root, slug, "job", &id, &sha, &key, now)
+                .is_ok_and(|next| next != Next::Nothing)
+            && matches!(repeated_by(&conn, root, def, slug, &rj.job, &sha), Ok(None))
         {
             due.push((seq, ("job", id.clone())));
         }
@@ -1736,7 +1824,8 @@ fn retries_this_pass(
         };
         let key = work_key(&cb.branch, &cb.sha);
         if same_work(&held, &key)
-            && next_for(&conn, root, slug, "head", &cb.branch, &cb.sha, &key, now) != Next::Nothing
+            && next_for(&conn, root, slug, "head", &cb.branch, &cb.sha, &key, now)
+                .is_ok_and(|next| next != Next::Nothing)
         {
             due.push((seq, ("head", cb.branch.clone())));
         }
@@ -1751,8 +1840,8 @@ fn retries_this_pass(
     r
 }
 
-/// A newer finished job that carries a held job's commits, and where it
-/// carries them: on its pull request still open, or merged.
+/// Another job that carries a held job's commits, and where it carries
+/// them: on its pull request still open, or merged.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Repeat {
     job: String,
@@ -1760,15 +1849,16 @@ struct Repeat {
     merged: bool,
 }
 
-/// How many newer finished jobs `repeated_by` reads for one held job, the
-/// newest first.
-const REPEAT_CANDIDATES: usize = 50;
+/// How the repeat rule's note begins when the store or git failed or
+/// timed out: the rule could not tell, and a hold it could not read again
+/// is kept rather than released.
+const REPEAT_UNREAD: &str = "whether another job carries its commits could not be read: ";
 
 /// The commits a job made itself on its branch at `sha`: those after the
 /// default branch along the first parents, merges left out - the stack's
 /// top merged in by `take_in` is a merge, and what it brought sits on its
-/// second parent, so it is not the job's.
-fn own_commits(root: &str, def: &str, sha: &str) -> Vec<String> {
+/// second parent, so it is not the job's. `Err` when git failed.
+fn own_commits(root: &str, def: &str, sha: &str) -> Result<Vec<String>, String> {
     let listed = crate::util::git_timeout(
         root,
         Duration::from_secs(30),
@@ -1780,28 +1870,44 @@ fn own_commits(root: &str, def: &str, sha: &str) -> Vec<String> {
         ],
     );
     if !listed.ok() {
-        return Vec::new();
+        return Err(git_said(&listed));
     }
-    listed
+    Ok(listed
         .stdout
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
         .map(str::to_string)
-        .collect()
+        .collect())
+}
+
+/// What a failed git call of the repeat rule said, for its note.
+fn git_said(out: &crate::util::GitResult) -> String {
+    let said = out
+        .err
+        .clone()
+        .unwrap_or_else(|| format!("git exited {}: {}", out.code, out.stderr.trim()));
+    format!("{REPEAT_UNREAD}{}", crate::run::squeeze(&said, 200))
 }
 
 /// Whether every commit of `own` is in `other` by its change: reachable
 /// from it, or the same patch there (`git cherry`, which compares patch
-/// ids, so a commit picked or rebased onto another branch counts).
-fn carried_by(root: &str, def: &str, sha: &str, own: &[String], other: &str) -> bool {
+/// ids, so a commit picked or rebased onto another branch counts). `Err`
+/// when git failed or timed out: that says nothing of the commits.
+fn carried_by(
+    root: &str,
+    def: &str,
+    sha: &str,
+    own: &[String],
+    other: &str,
+) -> Result<bool, String> {
     let cherry = crate::util::git_timeout(
         root,
         Duration::from_secs(60),
         &["cherry", other, sha, &format!("refs/heads/{def}")],
     );
     if !cherry.ok() {
-        return false;
+        return Err(git_said(&cherry));
     }
     let missing: std::collections::BTreeSet<&str> = cherry
         .stdout
@@ -1809,19 +1915,108 @@ fn carried_by(root: &str, def: &str, sha: &str, own: &[String], other: &str) -> 
         .filter_map(|l| l.strip_prefix("+ "))
         .map(str::trim)
         .collect();
-    !own.iter().any(|c| missing.contains(c.as_str()))
+    Ok(!own.iter().any(|c| missing.contains(c.as_str())))
 }
 
-/// The newest job finished after `job` whose delivered or open work
-/// carries every commit `job` made itself on its branch at `sha`: its pull
-/// request is open, or merged, and holds those commits by their change
-/// (`carried_by`). Trying `job` again would open a second pull request of
-/// the same commits. Where the jobs came from says nothing: one source
-/// names different work from one sitting to the next (a lead's idle work
-/// counts again at every sitting, a schedule does what it finds, a newer
-/// security job answers only the alerts the older one left). A newer job
+/// Every pull request on record that delivers a job other than `job` and
+/// is still open or merged, newest first, as (job, number, merged, the
+/// pushed head `to`). A task's pull request names its jobs in `jobs`; the
+/// first of them other than `job` stands for it. Any age: a window of the
+/// newest few let a carrier fall out of it, and the held job was tried
+/// again and opened a second pull request of the same commits.
+fn carriers(
+    q: &(impl crate::util::Querier + ?Sized),
+    slug: &str,
+    job: &str,
+    branch: &str,
+) -> Result<Vec<(String, i64, bool, String)>, String> {
+    let rows = crate::util::query_rows(
+        q,
+        &format!(
+            "SELECT action, detail FROM events WHERE subject = ? AND action IN ({DELIVERED})
+             AND json_valid(detail) ORDER BY seq"
+        ),
+        &[&slug],
+    )
+    .map_err(|e| format!("{STORE_UNREAD}the pull requests of {slug} could not be read: {e}"))?;
+    // By number: the newest state, the newest pushed head, and the jobs
+    // the pull request delivers.
+    #[derive(Default)]
+    struct Pr {
+        action: String,
+        to: String,
+        head: String,
+        jobs: Vec<String>,
+    }
+    let mut by_number: BTreeMap<i64, Pr> = BTreeMap::new();
+    for row in rows {
+        let d: Value = serde_json::from_str(&row.str("detail")).unwrap_or(Value::Null);
+        let number = number_of(&d);
+        if number == 0 {
+            continue;
+        }
+        let action = row.str("action");
+        let entry = by_number.entry(number).or_default();
+        // A later `land.pr` of a merged number is a push recorded after the
+        // merge was seen: the merge stands (`open_prs_in_order`).
+        if action == "land.pr" && entry.action == "land.merged" {
+            continue;
+        }
+        let mut jobs: Vec<String> = d
+            .get("jobs")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !field(&d, "job").is_empty() {
+            jobs.insert(0, field_of(&d, "job"));
+        }
+        if action == "land.pr" {
+            entry.to = field_of(&d, "to");
+            entry.head = field_of(&d, "head");
+        }
+        if !jobs.is_empty() {
+            entry.jobs = jobs;
+        }
+        entry.action = action;
+    }
+    Ok(by_number
+        .into_iter()
+        .rev()
+        .filter(|(_, pr)| {
+            pr.action != "land.pr-closed"
+                && !pr.to.is_empty()
+                // The held job's own pull request is no repeat of it, nor
+                // is one proposed by hand from its branch.
+                && !pr.jobs.iter().any(|j| j == job)
+                && (branch.is_empty() || pr.head != branch)
+        })
+        .filter_map(|(number, pr)| {
+            let other = pr.jobs.into_iter().next()?;
+            Some((other, number, pr.action == "land.merged", pr.to))
+        })
+        .collect())
+}
+
+/// Another job whose delivered or open work carries every commit `job`
+/// made itself on its branch at `sha`: its pull request is open, or
+/// merged, and holds those commits by their change (`carried_by`). Trying
+/// `job` again would open a second pull request of the same commits. Any
+/// other job counts, older or newer: of two held jobs with the same
+/// commits, released together, the one tried first opens its pull request
+/// and the other is held for it. Where the jobs came from says nothing:
+/// one source names different work from one sitting to the next (a lead's
+/// idle work counts again at every sitting, a schedule does what it finds,
+/// a newer security job answers only the alerts the older one left). A job
 /// whose delivery is held, or whose pull request was closed unmerged,
 /// carries nothing; nor does a job with no commits of its own.
+///
+/// `Err` when the store or git could not say: the caller keeps the work
+/// held, as a failed read must not release a hold.
 fn repeated_by(
     q: &(impl crate::util::Querier + ?Sized),
     root: &str,
@@ -1829,54 +2024,76 @@ fn repeated_by(
     slug: &str,
     job: &Row,
     sha: &str,
-) -> Option<Repeat> {
+) -> Result<Option<Repeat>, String> {
     if sha.is_empty() {
-        return None;
+        return Ok(None);
     }
-    let own = own_commits(root, def, sha);
+    let own = own_commits(root, def, sha)?;
     if own.is_empty() {
-        return None;
+        return Ok(None);
     }
-    let newer = crate::util::query_rows(
-        q,
-        &format!(
-            "SELECT j.id FROM jobs j
-             WHERE j.project = ?1 AND j.status = 'done' AND j.id <> ?2
-             AND (j.created_at > ?3 OR (j.created_at = ?3 AND j.finished_at > ?4))
-             ORDER BY j.created_at DESC, j.finished_at DESC LIMIT {REPEAT_CANDIDATES}"
-        ),
-        &[
-            &slug,
-            &job.str("id"),
-            &job.str("created_at"),
-            &job.str("finished_at"),
-        ],
-    )
-    .unwrap_or_default();
-    newer.into_iter().find_map(|other| {
-        let id = other.str("id");
-        let (action, d) = last_event(q, slug, "job", &id, false)?;
-        if action != "land.pr" && action != "land.merged" {
-            return None;
+    let candidates = carriers(q, slug, &job.str("id"), &job.str("branch"))?;
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+    // The pushed heads the checkout has: a head it has not got carries
+    // nothing it can show (a pull request from another clone).
+    let tos: Vec<&str> = candidates.iter().map(|(_, _, _, to)| to.as_str()).collect();
+    let mut args = vec!["rev-list", "--no-walk", "--ignore-missing"];
+    args.extend(tos.iter().copied());
+    let present = crate::util::git_timeout(root, Duration::from_secs(30), &args);
+    if !present.ok() {
+        return Err(git_said(&present));
+    }
+    let present: std::collections::BTreeSet<&str> = present.stdout.lines().map(str::trim).collect();
+    let candidates: Vec<_> = candidates
+        .iter()
+        .filter(|(_, _, _, to)| present.contains(to.as_str()))
+        .collect();
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+    // One call over every candidate first: a commit of the job that none
+    // of them has, by patch or by reachability, is listed with `<`, and
+    // then no one of them carries all. Only when they do together is each
+    // read on its own, so a pass reads every pull request on record for a
+    // held job without a `git cherry` for each.
+    let ranges: Vec<String> = candidates
+        .iter()
+        .map(|(_, _, _, to)| format!("{sha}...{to}"))
+        .collect();
+    let mut args = vec!["rev-list", "--left-right", "--cherry-mark", "--no-merges"];
+    args.extend(ranges.iter().map(String::as_str));
+    args.push("--");
+    let marked = crate::util::git_timeout(root, Duration::from_secs(60), &args);
+    if !marked.ok() {
+        return Err(git_said(&marked));
+    }
+    let alone: std::collections::BTreeSet<&str> = marked
+        .stdout
+        .lines()
+        .filter_map(|l| l.strip_prefix('<'))
+        .map(str::trim)
+        .collect();
+    if own.iter().any(|c| alone.contains(c.as_str())) {
+        return Ok(None);
+    }
+    for (other, number, merged, to) in candidates {
+        if carried_by(root, def, sha, &own, to)? {
+            return Ok(Some(Repeat {
+                job: other.clone(),
+                number: *number,
+                merged: *merged,
+            }));
         }
-        let number = number_of(&d);
-        // What went to the forge, not what the branch holds now: the
-        // pushed head of the pull request on record.
-        let to = pr_event(q, slug, number).map(|pr| field_of(&pr, "to"))?;
-        if to.is_empty() || rev(root, &format!("{to}^{{commit}}")).is_empty() {
-            return None;
-        }
-        carried_by(root, def, sha, &own, &to).then(|| Repeat {
-            job: id,
-            number,
-            merged: action == "land.merged",
-        })
-    })
+    }
+    Ok(None)
 }
 
 /// Whether the job's newest delivery event is the hold `repeated_by`
-/// wrote for this very work (`key`) and newer job: written once, and read
+/// wrote for this very work (`key`) and other job: written once, and read
 /// again each pass, so it stands while that job's work is open or merged.
+/// A store that cannot be read keeps it standing.
 fn repeat_held(
     q: &(impl crate::util::Querier + ?Sized),
     slug: &str,
@@ -1884,8 +2101,12 @@ fn repeat_held(
     key: &str,
     newer: &str,
 ) -> bool {
-    last_event(q, slug, "job", job, true).is_some_and(|(action, d)| {
-        action == "land.pr-held" && field(&d, "work") == key && field(&d, "repeated_by") == newer
+    last_event(q, slug, "job", job, true).map_or(true, |last| {
+        last.is_some_and(|(action, d)| {
+            action == "land.pr-held"
+                && field(&d, "work") == key
+                && field(&d, "repeated_by") == newer
+        })
     })
 }
 
@@ -2307,11 +2528,14 @@ fn task_retry(
     let Some(tried) = tried_since(&conn, &slug, "task", task)? else {
         return Ok(None);
     };
-    let closed = last_event(&conn, &slug, "task", task, false)
-        .filter(|(action, _)| action != "land.pr")
-        .and_then(|(_, closed)| pr_event(&conn, &slug, number_of(&closed)))
-        .filter(|pr| field(pr, "head") == head)
-        .map(|pr| field_of(&pr, "to"));
+    let closed = match last_event(&conn, &slug, "task", task, false)? {
+        Some((action, closed)) if action != "land.pr" => {
+            pr_event(&conn, &slug, number_of(&closed))?
+        }
+        _ => None,
+    }
+    .filter(|pr| field(pr, "head") == head)
+    .map(|pr| field_of(&pr, "to"));
     drop(conn);
     let there = fetch_head(s, &root, up, head)?;
     if there.is_empty() {
@@ -2494,6 +2718,7 @@ fn deliver_task(
                     files: unmerged,
                     base: base.clone(),
                     siblings: merges_alone(&wt_path, &start, rev),
+                    sides: merges.iter().filter_map(|m| m.2).collect(),
                 })),
                 _ => format!(
                     "{what} does not merge cleanly onto {} with the task's other branches: {}",
@@ -2652,7 +2877,7 @@ fn rebase_or_hold(
         s,
         slug.clone(),
         "task".into(),
-        format!("Rebase {} onto {def}: {}", c.branch, rt.title),
+        format!("Merge {} onto {def}: {}", c.branch, rt.title),
         brief,
         job.int("tier").max(1),
         job.int("priority"),
@@ -2758,11 +2983,20 @@ fn join_or_hold(
     } else {
         String::new()
     };
+    // Only the branches the build merges: one another side carries already
+    // (a first job's old branch after a rebuild, the ones a join merged) is
+    // passed over, and merging it again meets the conflict it was left out
+    // for. An empty list (no build named any) keeps every branch.
+    let sides: Vec<&(String, String)> = if c.sides.is_empty() {
+        rt.branches.iter().collect()
+    } else {
+        c.sides.iter().filter_map(|&i| rt.branches.get(i)).collect()
+    };
     let mut list = String::new();
     let mut shas = Vec::new();
     let mut tier = 1;
     let mut priority = 0;
-    for (job, branch) in &rt.branches {
+    for (job, branch) in sides.iter().copied() {
         let sha = rev(&root, &format!("refs/heads/{branch}"));
         list.push_str(&format!(
             "- `{branch}` (job {job}): `git merge --no-ff {sha}`\n"
@@ -2782,11 +3016,17 @@ fn join_or_hold(
         }
     }
     let brief = format!(
-        "Task {task} ({title}) has {n} finished job branches. Each merges onto `{def}` alone, but they conflict with each other: `{branch}` (job {job_id}) conflicts with the ones before it in {files}.\n\n\
+        "Task {task} ({title}) has {n} finished job branches to bring together{passed}. Each merges onto `{def}` alone, but they conflict with each other: `{branch}` (job {job_id}) conflicts with the ones before it in {files}.\n\n\
          Start from the current `{def}`{which} and merge every branch below into it, in this order:\n\n{list}\n\
          {MERGE_RECIPE} Commit on your own branch and leave the branches as they are: your branch then carries the task's work, and the task's pull request opens from it alone.",
         title = rt.title,
-        n = rt.branches.len(),
+        n = sides.len(),
+        passed = match rt.branches.len() - sides.len() {
+            0 => String::new(),
+            k => format!(
+                " ({k} more of its branches are carried by these already and are left out: do not merge them)"
+            ),
+        },
         branch = c.branch,
         job_id = c.job,
     );
@@ -2810,8 +3050,8 @@ fn join_or_hold(
             return format!("task pr {slug} {task}: held: {note}");
         }
     };
-    let jobs: Vec<&str> = rt.branches.iter().map(|(j, _)| j.as_str()).collect();
-    let branches: Vec<&str> = rt.branches.iter().map(|(_, b)| b.as_str()).collect();
+    let jobs: Vec<&str> = sides.iter().map(|(j, _)| j.as_str()).collect();
+    let branches: Vec<&str> = sides.iter().map(|(_, b)| b.as_str()).collect();
     event(
         s,
         now,
@@ -3018,7 +3258,7 @@ fn deliver_fix(
     let id = job.str("id");
     let branch = job.str("branch");
     let conn = s.conn().map_err(|e| e.to_string())?;
-    let orig = pr_event(&conn, &slug, number)
+    let orig = pr_event(&conn, &slug, number)?
         .ok_or_else(|| format!("no pull request #{number} of {slug} is known to Hive"))?;
     drop(conn);
     let head = field_of(&orig, "head");
@@ -3253,11 +3493,11 @@ pub(crate) fn propose_branch(
         &sha,
         &stack_key(work_key(branch, &sha), top.as_ref()),
         now,
-    );
+    )?;
     drop(conn);
     if next == Next::Nothing {
         let conn = s.conn().map_err(|e| e.to_string())?;
-        let d = last_event(&conn, &slug, "head", branch, false)
+        let d = last_event(&conn, &slug, "head", branch, false)?
             .map(|(_, d)| d)
             .unwrap_or(Value::Null);
         return Ok(Delivered {
@@ -3405,11 +3645,11 @@ pub(crate) fn deliver_experiment(
         &sha,
         &stack_key(work_key(&branch, &sha), top.as_ref()),
         now,
-    );
+    )?;
     drop(conn);
     if next == Next::Nothing {
         let conn = s.conn().map_err(|e| e.to_string())?;
-        let d = open_pr_for_job(&conn, &slug, &id).ok_or_else(|| {
+        let d = open_pr_for_job(&conn, &slug, &id)?.ok_or_else(|| {
             format!(
                 "{branch} was delivered at {} already",
                 crate::recipe::short(&sha, 12)
@@ -3563,7 +3803,7 @@ fn poll_open(s: &hive_store::Store, project: &Row, now: &str) -> Vec<String> {
         match state.state.as_str() {
             "MERGED" => {
                 lines.push(settle_merged(s, project, &pr, &state, now));
-                let stacked = stacked_on_head(s, &slug, &pr);
+                let stacked = stacked_on_head(s, &slug, &pr) || kept_unread(s, &slug, &pr);
                 lines.extend(retarget_stacked(s, project, &up, &pr, &listed, false, now));
                 if stacked {
                     lines.extend(delete_kept_head(s, project, &up, &pr, &state));
@@ -4152,6 +4392,22 @@ fn stacked_on_head(s: &hive_store::Store, slug: &str, pr: &Value) -> bool {
         })
 }
 
+/// Whether the merge of `pr` kept its branch because the store could not
+/// say which pull requests were open (`review.merged` with `branch_kept`):
+/// it is deleted here once a pass reads that none is based on it.
+fn kept_unread(s: &hive_store::Store, slug: &str, pr: &Value) -> bool {
+    let n = number_of(pr);
+    s.conn().is_ok_and(|c| {
+        crate::util::query_rows(
+            &c,
+            "SELECT 1 AS k FROM events WHERE subject = ? AND action = 'review.merged' AND json_valid(detail)
+             AND json_extract(detail, '$.number') = ? AND json_extract(detail, '$.branch_kept') IS NOT NULL LIMIT 1",
+            &[&slug, &n],
+        )
+        .is_ok_and(|rows| !rows.is_empty())
+    })
+}
+
 /// Deletes a merged pull request's head on the upstream once no open pull
 /// request is based on it any more. The merge kept it while some were
 /// (`review::merge`: GitHub closes, never retargets, the pull requests
@@ -4401,12 +4657,13 @@ fn rebuild_stacked(
                         &format!(
                             "Pull request #{n} ({url}) was stacked on #{}, which was closed without merging, so #{n} carries #{}'s rejected commits. \
                              Rebuilding {head} on {} without them conflicts in {list}, so the pull request was left as it is and still targets {below}. \
-                             Start a branch from {}, bring over only #{n}'s own commits (`git cherry-pick` of what {} has beyond {}), resolve the conflicts keeping the intent of both sides, run the project's check, force-push it to {head} and retarget the pull request to {}; the pull request follows the branch.",
+                             Start a branch from {}, merge #{n}'s head ({}) into it with `git merge --no-ff` - not a copy of its commits, which the landing refuses as work the worker did not write - and take out what #{} added (its commits up to {}) in that merge or a commit of your own, keeping the intent of #{n}'s own work; run the project's check, force-push it to {head} and retarget the pull request to {}; the pull request follows the branch.",
                             dropped.number,
                             dropped.number,
                             onto.branch,
                             onto.branch,
                             crate::recipe::short(&was, 12),
+                            dropped.number,
                             crate::recipe::short(&onto.old_below, 12),
                             onto.branch
                         ),
@@ -4504,16 +4761,60 @@ fn rebuild_branch(
         .into());
     }
     let in_wt = |args: &[&str]| crate::util::git_timeout(&wt_path, Duration::from_secs(300), args);
-    let r = in_wt(&[
-        "-c",
-        "user.name=Hive",
-        "-c",
-        "user.email=hive@localhost",
-        "rebase",
-        "--onto",
-        &onto.sha,
-        &cut,
-    ]);
+    let rebase = |merges: bool| {
+        let mut args = vec![
+            "-c",
+            "user.name=Hive",
+            "-c",
+            "user.email=hive@localhost",
+            "rebase",
+        ];
+        if merges {
+            args.push("--rebase-merges");
+        }
+        args.extend(["--onto", onto.sha.as_str(), cut.as_str()]);
+        in_wt(&args)
+    };
+    let unmerged = || -> Vec<String> {
+        in_wt(&["diff", "--name-only", "--diff-filter=U"])
+            .stdout
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect()
+    };
+    let mut r = rebase(false);
+    // A branch a join built holds the join's resolutions in merge commits,
+    // which a plain rebase drops: it replays the sides one by one into the
+    // conflict the join resolved. Such a branch is replayed again with its
+    // merges kept, and when a kept merge meets that conflict once more (its
+    // first parent moved), the branch's own change is taken whole - its
+    // range merged onto the new base from the cut, which carries the
+    // resolutions - before the conflict is the task's.
+    let mut conflicted = Vec::new();
+    if !r.ok() {
+        conflicted = unmerged();
+        let _ = in_wt(&["rebase", "--abort"]);
+        let merges = git(&["rev-list", "--merges", "--count", &format!("{cut}..{was}")])
+            .stdout
+            .trim()
+            .parse::<i64>()
+            .unwrap_or(0);
+        if merges > 0 {
+            let kept = rebase(true);
+            if kept.ok() {
+                r = kept;
+            } else {
+                let _ = in_wt(&["rebase", "--abort"]);
+                let _ = in_wt(&["checkout", "-q", "--detach", &was]);
+                let whole = replay_whole(&wt_path, head, onto, &cut, &was);
+                if whole.ok() {
+                    r = whole;
+                }
+            }
+        }
+    }
     let result = if r.ok() {
         let tip = in_wt(&["rev-parse", "HEAD"]).stdout.trim().to_string();
         let own = in_wt(&["rev-list", "--count", &format!("{}..{tip}", onto.sha)])
@@ -4529,14 +4830,8 @@ fn rebuild_branch(
             Ok((tip, own))
         }
     } else {
-        let unmerged: Vec<String> = in_wt(&["diff", "--name-only", "--diff-filter=U"])
-            .stdout
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty())
-            .map(str::to_string)
-            .collect();
         let _ = in_wt(&["rebase", "--abort"]);
+        let unmerged = conflicted;
         Err(if unmerged.is_empty() {
             Rebuild::Other(format!(
                 "rebase of {head} onto {} failed: {}",
@@ -4555,6 +4850,54 @@ fn rebuild_branch(
     push_rev(s, root, up, &tip, head, Some(&was))?;
     let _ = git(&["update-ref", &format!("refs/heads/{head}"), &tip]);
     Ok(Rebuilt { was, tip, own })
+}
+
+/// Replays a branch's own change, `cut..was`, onto `onto` as one commit:
+/// the three-way merge of `was` onto the new base with the cut as its
+/// base, so the resolutions the branch's merge commits hold stay. Leaves
+/// the worktree on the new commit, or fails and leaves it as it was when
+/// the change does not merge onto the new base.
+fn replay_whole(
+    wt: &str,
+    head: &str,
+    onto: &Onto,
+    cut: &str,
+    was: &str,
+) -> hive_hand_core::util::GitResult {
+    let git = |args: &[&str]| crate::util::git_timeout(wt, Duration::from_secs(300), args);
+    let mt = git(&[
+        "merge-tree",
+        "--write-tree",
+        "--merge-base",
+        cut,
+        &onto.sha,
+        was,
+    ]);
+    let tree = mt.stdout.lines().next().unwrap_or("").trim().to_string();
+    if !mt.ok() || tree.is_empty() {
+        return mt;
+    }
+    let message = format!(
+        "{head}: its own change rebuilt on {} without what was below it\n\nWas {was}, cut from {cut}; the merges on it are kept in this one commit.",
+        onto.branch
+    );
+    let commit = git(&[
+        "-c",
+        "user.name=Hive",
+        "-c",
+        "user.email=hive@localhost",
+        "commit-tree",
+        &tree,
+        "-p",
+        &onto.sha,
+        "-m",
+        &message,
+    ]);
+    let sha = commit.stdout.trim().to_string();
+    if !commit.ok() || sha.is_empty() {
+        return commit;
+    }
+    git(&["checkout", "-q", "--detach", &sha])
 }
 
 /// The jobs a pull request delivered: the `jobs` list of its `land.pr`,
@@ -6878,7 +7221,7 @@ mod tests {
 
         let lines = tend_proj(&s, &proj, &at(5));
         let held = format!(
-            "job pr proj {old}: held: hive/worker/old is not tried again: job {new} finished later and its pull request #7 (open) carries every commit of it"
+            "job pr proj {old}: held: hive/worker/old is not tried again: job {new} has its commits on pull request #7 (open), which carries every commit of it"
         );
         assert_eq!(lines, [held], "{lines:?}");
         assert_eq!(last_detail(&s, "land.pr-held")["repeated_by"], new);
@@ -6956,6 +7299,288 @@ mod tests {
         run(&repo, &["git", "remote", "set-url", "origin", &bare]);
         let lines = tend_proj(&s, &proj, &at(5));
         assert_eq!(jobs_of_events(&s, "land.pr"), [old], "{lines:?}");
+    }
+
+    /// Sets `DELIVERIES_UNREAD` for as long as it lives.
+    struct DeliveriesUnread;
+    impl DeliveriesUnread {
+        fn on() -> Self {
+            DELIVERIES_UNREAD.set(true);
+            DeliveriesUnread
+        }
+    }
+    impl Drop for DeliveriesUnread {
+        fn drop(&mut self) {
+            DELIVERIES_UNREAD.set(false);
+        }
+    }
+
+    /// A task whose pull request is open gets a new job while one read of
+    /// its deliveries fails. That read said "no pull request" before, and
+    /// the build went onto the pull request's head with a plain force. Now
+    /// the task is held, its head on the forge stays as it was, and once
+    /// the store reads again the pull request is updated, not opened twice.
+    #[test]
+    fn a_task_whose_deliveries_cannot_be_read_is_held_and_not_pushed() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        let task = task_with_two_branches(&s, &proj, &repo);
+        tend_proj(&s, &proj, TEST_NOW);
+        let head = format!("refs/heads/{}", task_branch(&task));
+        let opened = bare_ref(&bare, &head);
+        let c = push_branch(&s, &proj, &repo, "hive/worker/c").str("id");
+        exec1(
+            &s,
+            "UPDATE jobs SET source = ? WHERE id = ?",
+            &[&format!("task:{task}"), &c],
+        );
+
+        let unread = DeliveriesUnread::on();
+        let lines = tend_proj(&s, &proj, &crate::util::plus_minutes(TEST_NOW, 1));
+        drop(unread);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with(&format!("task pr proj {task}: held: {STORE_UNREAD}"))),
+            "{lines:?}"
+        );
+        assert_eq!(bare_ref(&bare, &head), opened, "pushed on a failed read");
+        assert_eq!(events(&s, "land.pr"), 1);
+
+        let lines = tend_proj(&s, &proj, &crate::util::plus_minutes(TEST_NOW, 7));
+        let tip = ref_of(&repo, "refs/heads/hive/worker/c");
+        run(
+            &repo,
+            &[
+                "git",
+                "merge-base",
+                "--is-ancestor",
+                &tip,
+                &bare_ref(&bare, &head),
+            ],
+        );
+        assert_eq!(last_detail(&s, "land.pr")["number"], 7, "{lines:?}");
+        let creates = gh
+            .calls()
+            .iter()
+            .filter(|c| c.starts_with("pr create"))
+            .count();
+        assert_eq!(creates, 1, "{:?}", gh.calls());
+    }
+
+    /// The same for a job's own pull request: new commits on its branch
+    /// while one read fails are held, not pushed as a new pull request
+    /// with a plain force onto the open one's head.
+    #[test]
+    fn a_job_whose_deliveries_cannot_be_read_is_held_and_not_pushed() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        let job = push_branch(&s, &proj, &repo, "hive/worker/a").str("id");
+        tend_proj(&s, &proj, TEST_NOW);
+        let head = format!(
+            "refs/heads/{}",
+            field_of(&last_detail(&s, "land.pr"), "head")
+        );
+        let opened = bare_ref(&bare, &head);
+        let tip = commit_on(&repo, "hive/worker/a", "more.txt");
+
+        let unread = DeliveriesUnread::on();
+        let lines = tend_proj(&s, &proj, &crate::util::plus_minutes(TEST_NOW, 1));
+        drop(unread);
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| l.starts_with(&format!("job pr proj {job}: held: {STORE_UNREAD}")))
+                .count(),
+            1,
+            "{lines:?}"
+        );
+        assert_eq!(bare_ref(&bare, &head), opened, "pushed on a failed read");
+        assert_eq!(events(&s, "land.pr"), 1);
+
+        let lines = tend_proj(&s, &proj, &crate::util::plus_minutes(TEST_NOW, 7));
+        run(
+            &repo,
+            &[
+                "git",
+                "merge-base",
+                "--is-ancestor",
+                &tip,
+                &bare_ref(&bare, &head),
+            ],
+        );
+        assert_eq!(last_detail(&s, "land.pr")["number"], 7, "{lines:?}");
+        let creates = gh
+            .calls()
+            .iter()
+            .filter(|c| c.starts_with("pr create"))
+            .count();
+        assert_eq!(creates, 1, "{:?}", gh.calls());
+    }
+
+    /// The job that carries a held job's commits stays found however many
+    /// jobs finish after it: the rule read the 50 newest later jobs, and
+    /// with fifty more done the held job opened a second pull request of
+    /// the same commits.
+    #[test]
+    fn a_carrier_is_found_past_fifty_later_jobs() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let _gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        let old = push_branch(&s, &proj, &repo, "hive/worker/old").str("id");
+        let old_tip = ref_of(&repo, "refs/heads/hive/worker/old");
+        sourced(&s, &old, "schedule:SCHED-1", "2026-09-06T08:00:00Z");
+        let at = |minutes: i32| crate::util::plus_minutes(TEST_NOW, minutes);
+        let gone = format!("{bare}.gone");
+        run(&repo, &["git", "remote", "set-url", "origin", &gone]);
+        tend_proj(&s, &proj, &at(0));
+        let new = carrying(&s, &proj, &repo, "hive/worker/new", &old_tip);
+        sourced(&s, &new, "suggestion:x", "2026-09-06T09:00:00Z");
+        run(&repo, &["git", "remote", "set-url", "origin", &bare]);
+        tend_proj(&s, &proj, &at(1));
+        assert_eq!(jobs_of_events(&s, "land.pr"), std::slice::from_ref(&new));
+
+        // Fifty-one later jobs: one past the window the rule read.
+        for n in 0..51 {
+            let (j, _) = hive_board::add_job(
+                &s,
+                hive_board::JobInput {
+                    project: "proj".into(),
+                    kind: "task".into(),
+                    title: format!("later {n}"),
+                    brief: "b".into(),
+                    tier: 1,
+                    created_by: "worker".into(),
+                    ..Default::default()
+                },
+            )
+            .expect("add job");
+            exec1(
+                &s,
+                "UPDATE jobs SET status = 'done', finished_at = ?, created_at = ? WHERE id = ?",
+                &[
+                    &TEST_NOW,
+                    &format!("2026-09-06T10:{:02}:00Z", n % 60),
+                    &j.id,
+                ],
+            );
+        }
+        let lines = tend_proj(&s, &proj, &at(5));
+        assert_eq!(
+            last_detail(&s, "land.pr-held")["repeated_by"],
+            new,
+            "{lines:?}"
+        );
+        assert_eq!(jobs_of_events(&s, "land.pr"), std::slice::from_ref(&new));
+    }
+
+    /// Two held jobs with the same commits, released together: the older
+    /// opens its pull request and the newer is held for it. Only a newer
+    /// job counted as the one a repeat repeats, so both opened one.
+    #[test]
+    fn of_two_held_jobs_with_the_same_commits_only_one_opens_a_pull_request() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let _gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        let new = push_branch(&s, &proj, &repo, "hive/worker/new").str("id");
+        let new_tip = ref_of(&repo, "refs/heads/hive/worker/new");
+        let old = carrying(&s, &proj, &repo, "hive/worker/old", &new_tip);
+        sourced(&s, &old, "schedule:SCHED-1", "2026-09-06T08:00:00Z");
+        sourced(&s, &new, "suggestion:x", "2026-09-06T09:00:00Z");
+        let at = |minutes: i32| crate::util::plus_minutes(TEST_NOW, minutes);
+        let gone = format!("{bare}.gone");
+        run(&repo, &["git", "remote", "set-url", "origin", &gone]);
+        tend_proj(&s, &proj, &at(0));
+        assert_eq!(events(&s, "land.pr-held"), 2);
+
+        run(&repo, &["git", "remote", "set-url", "origin", &bare]);
+        let lines = tend_proj(&s, &proj, &at(5));
+        assert_eq!(
+            jobs_of_events(&s, "land.pr"),
+            std::slice::from_ref(&old),
+            "{lines:?}"
+        );
+        assert_eq!(last_detail(&s, "land.pr-held")["repeated_by"], old);
+        let lines = tend_proj(&s, &proj, &at(60));
+        assert!(lines.is_empty(), "{lines:?}");
+    }
+
+    /// A `git cherry` that fails says nothing of the commits: a job held
+    /// for a repeat stays held, and is read again once git answers. It
+    /// read as "not carried" and released the hold.
+    #[cfg(unix)]
+    #[test]
+    fn a_failing_git_cherry_keeps_a_repeat_held() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let _gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        let old = push_branch(&s, &proj, &repo, "hive/worker/old").str("id");
+        let old_tip = ref_of(&repo, "refs/heads/hive/worker/old");
+        sourced(&s, &old, "schedule:SCHED-1", "2026-09-06T08:00:00Z");
+        let at = |minutes: i32| crate::util::plus_minutes(TEST_NOW, minutes);
+        let gone = format!("{bare}.gone");
+        run(&repo, &["git", "remote", "set-url", "origin", &gone]);
+        tend_proj(&s, &proj, &at(0));
+        let new = carrying(&s, &proj, &repo, "hive/worker/new", &old_tip);
+        sourced(&s, &new, "suggestion:x", "2026-09-06T09:00:00Z");
+        run(&repo, &["git", "remote", "set-url", "origin", &bare]);
+        tend_proj(&s, &proj, &at(1));
+        tend_proj(&s, &proj, &at(5));
+        assert_eq!(last_detail(&s, "land.pr-held")["repeated_by"], new);
+
+        // git fails every `cherry` from here on, and only that.
+        let real = hive_gitenv::git_program();
+        let bin = tempfile::tempdir().unwrap();
+        let wrapper = bin.path().join("git");
+        std::fs::write(
+            &wrapper,
+            format!(
+                "#!/bin/sh\nfor a in \"$@\"; do [ \"$a\" = cherry ] && {{ echo 'fatal: cherry broke' >&2; exit 128; }}; done\nexec '{}' \"$@\"\n",
+                real.display()
+            ),
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let path = hive_testutil::setenv(
+            "PATH",
+            format!(
+                "{}:{}",
+                bin.path().display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        );
+        let lines = tend_proj(&s, &proj, &at(60));
+        assert_eq!(
+            jobs_of_events(&s, "land.pr"),
+            std::slice::from_ref(&new),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l
+                .starts_with(&format!("job pr proj {old}: kept held: {REPEAT_UNREAD}"))
+                && l.contains("cherry broke")),
+            "{lines:?}"
+        );
+        drop(path);
+
+        let lines = tend_proj(&s, &proj, &at(120));
+        assert!(lines.is_empty(), "{lines:?}");
+        assert_eq!(jobs_of_events(&s, "land.pr"), std::slice::from_ref(&new));
     }
 
     /// Whether a try is a try again of a held work reads the hold key
@@ -7822,7 +8447,11 @@ mod tests {
         assert_eq!(events(&s, "land.pr"), 2);
         assert_eq!(ref_of(&repo, "refs/heads/hive/worker/a"), tip_a);
         assert_eq!(bare_ref(&bare, "refs/heads/hive/worker/a"), tip_a);
-        assert!(open_pr_for_job(&s.conn().unwrap(), "proj", &b).is_some());
+        assert!(
+            open_pr_for_job(&s.conn().unwrap(), "proj", &b)
+                .unwrap()
+                .is_some()
+        );
 
         // A land.pr by hand from before, naming no job: found by its head.
         let c = push_branch(&s, &proj, &repo, "hive/worker/c").str("id");
@@ -7839,7 +8468,7 @@ mod tests {
                 "url": "https://github.com/o/r/pull/9", "head": "hive/worker/c",
                 "base": "main", "remote": "origin", "to": tip_c, "jobs": [], "opened": true}),
         );
-        assert!(open_pr_for_job(&conn, "proj", &c).is_some());
+        assert!(open_pr_for_job(&conn, "proj", &c).unwrap().is_some());
         drop(conn);
         let lines = tend_proj(&s, &proj, &crate::util::plus_minutes(TEST_NOW, 2));
         assert!(!lines.iter().any(|l| l.contains(&c)), "{lines:?}");
@@ -8460,6 +9089,10 @@ exit 0
         );
         assert!(brief.contains("error[E0061]"), "{brief}");
         assert!(brief.contains("- `hive/worker/a` (job "), "{brief}");
+        // A merge, never a copy: the landing refuses cherry-picked commits
+        // as work the worker did not write.
+        assert!(brief.contains("`git merge --no-ff <commit>`"), "{brief}");
+        assert!(!brief.contains("cherry-pick their commits"), "{brief}");
         for j in [&a, &b] {
             assert_eq!(
                 job_row(&s, j).str("branch"),
@@ -8637,7 +9270,7 @@ exit 0
         assert_eq!(fu.str("source"), format!("task:{task}"));
         assert!(
             fu.str("title")
-                .starts_with("Rebase hive/worker/b onto main:"),
+                .starts_with("Merge hive/worker/b onto main:"),
             "{}",
             fu.str("title")
         );
@@ -8769,6 +9402,65 @@ exit 0
         );
     }
 
+    /// A join lists only the branches the build merges: one another branch
+    /// carries already is passed over by the build, so the join brief does
+    /// not name it either (TASK-139 item 7) - merging it again would meet
+    /// the conflict it was left out for.
+    #[test]
+    fn a_join_brief_leaves_out_a_branch_another_one_carries() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let _gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, _bare) = push_fixture(&s);
+        let task = task_with_branches(
+            &s,
+            &proj,
+            &repo,
+            "Add the thing",
+            &["hive/worker/a", "hive/worker/b", "hive/worker/c"],
+        );
+        // `a` and `b` write the same file; `c` was cut from `a` and carries
+        // it whole, so the build passes `a` over and `b` meets `c`.
+        let a_tip = commit_on(&repo, "hive/worker/a", "shared.txt");
+        let b_tip = commit_on(&repo, "hive/worker/b", "shared.txt");
+        run(&repo, &["git", "branch", "-f", "hive/worker/c", &a_tip]);
+        let c_tip = commit_on(&repo, "hive/worker/c", "c.txt");
+        let a = job_row_by_branch(&s, "hive/worker/a");
+        let b = job_row_by_branch(&s, "hive/worker/b");
+        let c = job_row_by_branch(&s, "hive/worker/c");
+
+        tend_proj(&s, &proj, TEST_NOW);
+        let join = last_detail(&s, "land.rebase");
+        assert_eq!(join["join"], true, "{join}");
+        assert_eq!(join["task"], task);
+        let mut joined: Vec<String> = join["jobs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|j| j.as_str().unwrap().to_string())
+            .collect();
+        joined.sort();
+        let mut sides = vec![b.clone(), c.clone()];
+        sides.sort();
+        assert_eq!(joined, sides, "{join}");
+        assert!(!joined.contains(&a), "{join}");
+        let brief = job_row(&s, join["follow_up"].as_str().unwrap()).str("brief");
+        for tip in [&b_tip, &c_tip] {
+            assert!(
+                brief.contains(&format!("`git merge --no-ff {tip}`")),
+                "{brief}"
+            );
+        }
+        assert!(
+            !brief.contains(&format!("`git merge --no-ff {a_tip}`"))
+                && !brief.contains("hive/worker/a`"),
+            "{brief}"
+        );
+        assert!(brief.contains("has 2 finished job branches"), "{brief}");
+        assert!(brief.contains("1 more of its branches"), "{brief}");
+    }
+
     /// Branches of one task that each merge onto the base alone but
     /// conflict with each other are one join job's work, even after a
     /// rebase job ran for the task (TASK-129 was held for the owner so).
@@ -8864,10 +9556,12 @@ exit 0
         // With the identity `run` gives git: a user without a name in the
         // password database (a rented Linux machine's) otherwise fails the
         // merge on "empty ident name" before it stops at the conflict, and
-        // the commit below finds no merge message.
+        // the commit below finds no merge message. LC_ALL=C keeps git's
+        // "CONFLICT" untranslated under a machine's own locale.
         let merged = std::process::Command::new("git")
             .args(["merge", "-q", "--no-ff", "--no-edit", &b_tip])
             .current_dir(&repo)
+            .env("LC_ALL", "C")
             .env("GIT_AUTHOR_NAME", "t")
             .env("GIT_AUTHOR_EMAIL", "t@x")
             .env("GIT_COMMITTER_NAME", "t")
@@ -9343,6 +10037,112 @@ exit 0
         assert_eq!(events(&s, "land.pr-rebuilt"), 1);
     }
 
+    /// A stacked pull request built by a join holds the join's
+    /// resolution in a merge commit. When the pull request below closes
+    /// unmerged, the rebuild keeps that resolution instead of replaying the
+    /// branches one by one into the conflict the join resolved, which held
+    /// the pull request for the owner (TASK-139 item 5).
+    #[test]
+    fn a_stacked_pull_request_built_by_a_join_is_rebuilt_with_the_joins_resolution() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        gh.track_remote(&bare);
+        let (first, second, first_head) = stacked_task(&s, &proj, &repo, &bare, &gh);
+        let second_branch = task_branch(&second);
+        let main = bare_ref(&bare, "refs/heads/main");
+
+        // #8's head is a join: two sides that write the same file, merged
+        // on top of #7's head, the second merge resolved by hand.
+        let second_head = bare_ref(&bare, &format!("refs/heads/{second_branch}"));
+        run(&repo, &["git", "branch", "-f", "side-x", &second_head]);
+        run(&repo, &["git", "branch", "-f", "side-y", &second_head]);
+        commit_on(&repo, "side-x", "joined.txt");
+        commit_on(&repo, "side-y", "joined.txt");
+        run(
+            &repo,
+            &["git", "checkout", "-q", "-B", "join", &second_head],
+        );
+        run(
+            &repo,
+            &["git", "merge", "-q", "--no-ff", "-m", "take x", "side-x"],
+        );
+        let clash = std::process::Command::new("git")
+            .args(["merge", "-q", "--no-ff", "-m", "take y", "side-y"])
+            .current_dir(&repo)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@x")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@x")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .unwrap();
+        assert!(!clash.status.success(), "the sides must conflict");
+        std::fs::write(std::path::Path::new(&repo).join("joined.txt"), "x and y\n").unwrap();
+        run(&repo, &["git", "add", "joined.txt"]);
+        run(&repo, &["git", "commit", "-q", "--no-edit"]);
+        run(&repo, &["git", "checkout", "-q", "main"]);
+        let joined = ref_of(&repo, "refs/heads/join");
+        run(
+            &repo,
+            &[
+                "git",
+                "push",
+                "-q",
+                "-f",
+                &bare,
+                &format!("join:{second_branch}"),
+            ],
+        );
+
+        gh.set_state(7, "CLOSED");
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("#7 closed unmerged; task back in progress")),
+            "{lines:?}"
+        );
+        assert_eq!(events(&s, "land.pr-held"), 0, "{lines:?}");
+        assert_eq!(events(&s, "land.pr-rebuilt"), 1, "{lines:?}");
+        let tip = bare_ref(&bare, &format!("refs/heads/{second_branch}"));
+        assert_ne!(tip, joined);
+        assert_eq!(gh.base_of(8), "main");
+        // The join's resolution is what the rebuilt head holds, and #7's
+        // commits are gone from it.
+        assert_eq!(
+            run(&repo, &["git", "show", &format!("{tip}:joined.txt")]),
+            "x and y\n"
+        );
+        let first_own = run(
+            &repo,
+            &[
+                "git",
+                "diff",
+                "--name-only",
+                &format!("{main}..{first_head}"),
+            ],
+        );
+        let rebuilt = run(
+            &repo,
+            &["git", "diff", "--name-only", &format!("{main}..{tip}")],
+        );
+        for f in first_own.lines() {
+            assert!(
+                !rebuilt.lines().any(|r| r == f),
+                "{f} is still on #8: {rebuilt}"
+            );
+        }
+        assert!(rebuilt.lines().any(|r| r == "joined.txt"), "{rebuilt}");
+        assert!(
+            rebuilt.lines().any(|r| r == "hive_worker_c.txt"),
+            "{rebuilt}"
+        );
+        let _ = first;
+    }
+
     /// A follow-up job on a rebuilt pull request is cut from the rebuilt
     /// head and edits what the first job added; the first job's branch
     /// still holds the commits from before the rebuild. Those are on the
@@ -9519,6 +10319,16 @@ exit 0
             &[&second],
         );
         assert_eq!(told, 1);
+        // The way out it names is a merge, never a copy of the commits.
+        let body = crate::util::query_rows(
+            &s.conn().unwrap(),
+            "SELECT body FROM messages WHERE task_id = ? AND body LIKE '%conflicts in shared%'",
+            &[&second],
+        )
+        .unwrap()[0]
+            .str("body");
+        assert!(body.contains("`git merge --no-ff`"), "{body}");
+        assert!(!body.contains("git cherry-pick"), "{body}");
         assert!(
             crate::util::git_timeout(&repo, Duration::from_secs(10), &["worktree", "list"])
                 .stdout
@@ -9736,7 +10546,7 @@ exit 0
         assert_eq!(
             fu.str("title"),
             format!(
-                "Rebase hive/worker/c onto {}: Add the other thing",
+                "Merge hive/worker/c onto {}: Add the other thing",
                 task_branch(&first)
             )
         );

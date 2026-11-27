@@ -423,13 +423,24 @@ pub fn processes_under(dir: &Path) -> Vec<ProcInfo> {
     if !sweepable_dir(dir) {
         return Vec::new();
     }
+    processes_under_in(dir, &list_processes())
+}
+
+/// [`processes_under`] over a listing the caller already took with
+/// [`list_processes`], so what it decides about those processes (their
+/// parents) and what is found under `dir` come from one snapshot.
+pub fn processes_under_in(dir: &Path, listing: &[ProcInfo]) -> Vec<ProcInfo> {
+    if !sweepable_dir(dir) {
+        return Vec::new();
+    }
     let dirs = dir_variants(dir);
     let me = std::process::id() as i32;
     let parent = sys::parent_pid();
-    list_processes()
-        .into_iter()
+    listing
+        .iter()
         .filter(|p| p.pid > 1 && p.pid != me && p.pid != parent)
         .filter(|p| under_any(&p.cwd, &dirs) || under_any(&p.exe, &dirs))
+        .cloned()
         .collect()
 }
 
@@ -455,7 +466,23 @@ pub fn kill_tree_under_sparing(
     grace: Duration,
     spare: impl Fn(&ProcInfo) -> bool,
 ) -> Vec<KilledProc> {
-    let found: Vec<ProcInfo> = processes_under(dir)
+    if !sweepable_dir(dir) {
+        return Vec::new();
+    }
+    kill_tree_under_sparing_in(dir, grace, &list_processes(), spare)
+}
+
+/// [`kill_tree_under_sparing`] over a listing the caller took with
+/// [`list_processes`]: a `spare` that judges a process by its ancestors must
+/// read them from the same snapshot the sweep kills from, or a process born
+/// between two listings finds no parent and is taken for a straggler.
+pub fn kill_tree_under_sparing_in(
+    dir: &Path,
+    grace: Duration,
+    listing: &[ProcInfo],
+    spare: impl Fn(&ProcInfo) -> bool,
+) -> Vec<KilledProc> {
+    let found: Vec<ProcInfo> = processes_under_in(dir, listing)
         .into_iter()
         .filter(|p| !spare(p))
         .collect();
