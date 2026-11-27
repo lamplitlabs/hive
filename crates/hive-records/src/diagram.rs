@@ -3,8 +3,9 @@
 //!
 //! A record lives in the store and has nowhere to keep a picture file, so a
 //! decision record shows its change as a diagram drawn with box-drawing
-//! characters inside a fenced block (`TPL-adr`, `WF-decision`). The console,
-//! the site and GitHub all show such a block as it was written.
+//! characters inside a fenced block (`TPL-adr`, `WF-decision`). The console
+//! and GitHub show such a block as it was written, and the site draws it from
+//! the same characters.
 //! `web/site/src/lib/diagram.ts` holds the same rules for the pages under
 //! `docs/`; keep the two in step.
 

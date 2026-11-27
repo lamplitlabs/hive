@@ -1,0 +1,72 @@
+/*
+  The pictures of a docs page (src/lib/markdown.ts finds them, src/lib/doc-shot.ts
+  writes the markup): a picture kept under docs/ is framed, links to itself at
+  its own size and says so, and one that stands alone is a figure as wide as
+  the column with its words under it.
+*/
+@layer components {
+  .prose img {
+    max-width: 100%;
+    height: auto;
+    border-radius: 0.6rem;
+  }
+  /*
+    A picture of a screen is 1440 wide and the column about 816: it is shown at
+    the whole width of the column, not the 60 characters a line of text is held
+    to, so its words are as large as the page can make them.
+  */
+  .prose figure.shot-figure {
+    max-width: none;
+    margin: 1.8em 0;
+  }
+  .prose figure.shot-figure figcaption {
+    max-width: 68ch;
+    margin-top: 0.7rem;
+    font-size: 0.875rem;
+    line-height: 1.5;
+    text-wrap: pretty;
+    color: var(--muted-foreground);
+  }
+  /* The frame: the pictures are dark, so the ground under a loading one is too. */
+  .prose a.shot {
+    position: relative;
+    display: block;
+    /* No wider than the picture is: a picture of a dialog is shown at its own size, not stretched to the column. */
+    width: fit-content;
+    max-width: 100%;
+    margin: 1.4em 0;
+    border: 1px solid color-mix(in oklab, var(--border) 70%, rgb(120 140 190 / 0.5));
+    border-radius: 0.8rem;
+    overflow: hidden;
+    background: #070b1a;
+    box-shadow: var(--shadow-card);
+    line-height: 0;
+    transition: border-color 0.15s;
+  }
+  .prose figure.shot-figure a.shot {
+    margin: 0;
+  }
+  .prose a.shot:hover {
+    border-color: var(--teal);
+  }
+  .prose a.shot img {
+    display: block;
+    border-radius: 0;
+  }
+  /*
+    The mark that says a click opens the picture larger (.shot-open, drawn in
+    globals.css for the pictures of the landing page too). On a picture that
+    is wider than the column, and so shown smaller than it is, the mark is
+    always there. On any other it shows on a touch screen, and where there is
+    a pointer when the picture is pointed at or reached by keyboard.
+  */
+  .prose a.shot-large .shot-open {
+    opacity: 1;
+  }
+  @media (hover: hover) {
+    .prose a.shot:hover .shot-open,
+    .prose a.shot:focus-visible .shot-open {
+      opacity: 1;
+    }
+  }
+}

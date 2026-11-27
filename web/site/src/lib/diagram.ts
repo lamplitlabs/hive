@@ -1,15 +1,16 @@
 // A diagram drawn in text: a fenced block of the docs whose lines are made of
-// box-drawing characters. It needs no library and no picture file, so GitHub,
-// this site and the console all show it as it was written, and a decision
-// record kept in the store can carry one. docs/development.md says how to
-// write one; this file says when a block is one and what makes it badly drawn.
+// box-drawing characters. It needs no library and no picture file: GitHub and
+// the console show it as it was written, this site draws it from the same
+// characters (doc-diagram.ts), and a decision record kept in the store can
+// carry one. docs/development.md says how to write one; this file says when a
+// block is one and what makes it badly drawn.
 // Pure, so the node tests import it as it is.
 
 /** The widest a diagram may be: the console's reading panel shows that many characters of a code block without scrolling sideways. */
 export const DIAGRAM_MAX_COLUMNS = 72;
 
 /** Which ways each line character reaches: up, down, left, right. */
-const ARMS: Readonly<Record<string, string>> = {
+export const ARMS: Readonly<Record<string, string>> = {
   "─": "lr",
   "│": "ud",
   "┌": "dr",
@@ -22,7 +23,8 @@ const ARMS: Readonly<Record<string, string>> = {
   "┴": "ulr",
   "┼": "udlr",
 };
-const ARROWS = "→←↑↓";
+/** The four arrowheads, and the way each one points. */
+export const ARROWS = "→←↑↓";
 const BOX_DRAWING = /[\u2500-\u257F]/;
 
 /** Whether a fenced block is a diagram: plain text (no language, or `text`) that holds a box-drawing character. */

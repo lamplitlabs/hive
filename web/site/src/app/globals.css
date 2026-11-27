@@ -1,4 +1,7 @@
 @import "tailwindcss";
+/* The docs' pictures and the docs' diagrams have a file each: the rules of one never meet the rules of the other. */
+@import "./docs-shots.css";
+@import "./docs-diagrams.css";
 
 /*
   hivefleet.dev - the public site of Hive, the open-source tool.
@@ -289,6 +292,124 @@
     mask-image: radial-gradient(120% 100% at 72% 0%, #000 12%, transparent 76%);
   }
 
+  /*
+    A picture of the console (components/console-shot.tsx). The frame is the
+    console's own night ground on either paper, so a picture taken in the dark
+    theme never ends in a hard edge. The view is a window of a set shape, and
+    the picture is moved inside it to show the part a crop names: a smaller
+    part on a narrow screen, where the whole screen would be too small to read.
+  */
+  .shot-frame {
+    display: block;
+    overflow: hidden;
+    border: 1px solid color-mix(in oklab, var(--border) 70%, rgb(120 140 190 / 0.5));
+    border-radius: 1rem;
+    background: #070b1a;
+    box-shadow: var(--shadow-pop);
+    transition: border-color 0.15s;
+  }
+  @media (prefers-color-scheme: dark) {
+    /* The pictures are as dark as a dark page: a lighter edge lifts the frame off it. */
+    .shot-frame {
+      border-color: rgb(150 170 215 / 0.34);
+    }
+  }
+  .shot-frame:hover {
+    border-color: var(--teal);
+  }
+  .shot-view {
+    position: relative;
+    display: block;
+    overflow: hidden;
+    aspect-ratio: var(--shot-ratio);
+  }
+  .shot-view img {
+    position: absolute;
+    top: var(--shot-top);
+    left: var(--shot-left);
+    width: var(--shot-width);
+    max-width: none;
+    height: auto;
+  }
+  @media (min-width: 40rem) {
+    .shot-view {
+      aspect-ratio: var(--shot-ratio-wide);
+    }
+    .shot-view img {
+      top: var(--shot-top-wide);
+      left: var(--shot-left-wide);
+      width: var(--shot-width-wide);
+    }
+  }
+  /* An edge where the place cuts the picture: the picture fades into the frame there, so the cut reads as "the screen goes on". */
+  .shot-fade {
+    position: absolute;
+    pointer-events: none;
+  }
+  .shot-fade-left,
+  .shot-fade-right {
+    top: 0;
+    bottom: 0;
+    width: 20%;
+  }
+  .shot-fade-top,
+  .shot-fade-bottom {
+    right: 0;
+    left: 0;
+    height: 20%;
+  }
+  @media (max-width: 39.99rem) {
+    /* On a narrow screen the cut takes a larger share of each line: the fade is wider there. */
+    .shot-fade-left,
+    .shot-fade-right {
+      width: 32%;
+    }
+  }
+  /* Solid at the very edge, so a word the edge cuts is gone before it is cut. */
+  .shot-fade-left {
+    left: 0;
+    background: linear-gradient(to right, #070b1a 8%, rgb(7 11 26 / 0.8) 40%, transparent);
+  }
+  .shot-fade-right {
+    right: 0;
+    background: linear-gradient(to left, #070b1a 8%, rgb(7 11 26 / 0.8) 40%, transparent);
+  }
+  .shot-fade-top {
+    top: 0;
+    background: linear-gradient(to bottom, #070b1a 8%, rgb(7 11 26 / 0.8) 40%, transparent);
+  }
+  .shot-fade-bottom {
+    bottom: 0;
+    background: linear-gradient(to top, #070b1a 14%, rgb(7 11 26 / 0.82) 45%, transparent);
+  }
+  /* What a click does, said on the picture: always where there is no pointer to hover with, on hover and focus elsewhere. */
+  .shot-open {
+    position: absolute;
+    right: 0.6rem;
+    bottom: 0.6rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    border: 1px solid rgb(255 255 255 / 0.18);
+    border-radius: 999px;
+    background: rgb(7 11 26 / 0.86);
+    padding: 0.25rem 0.6rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+    line-height: 1.2;
+    color: rgb(255 255 255 / 0.92);
+    transition: opacity 0.15s;
+  }
+  @media (hover: hover) {
+    .shot-open {
+      opacity: 0;
+    }
+    .shot-frame:hover .shot-open,
+    .shot-frame:focus-visible .shot-open {
+      opacity: 1;
+    }
+  }
+
   /* A pointy-top hexagon: the shape of the mark's core, for a step's number or an icon. */
   .hex {
     clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%);
@@ -315,6 +436,27 @@
     tab-size: 2;
     color: var(--foreground);
   }
+  /*
+    A box that scrolls sideways shows its scrollbar while it has more to show.
+    Where scrollbars hide until touched (macOS), a line that runs past the edge
+    would otherwise look cut off, with nothing to say the rest is there.
+  */
+  :is(.code-block, .prose pre, .prose .table-scroll)::-webkit-scrollbar {
+    height: 0.6rem;
+  }
+  :is(.code-block, .prose pre, .prose .table-scroll)::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  :is(.code-block, .prose pre, .prose .table-scroll)::-webkit-scrollbar-thumb {
+    border: 0.15rem solid transparent;
+    border-radius: 999px;
+    background: color-mix(in oklab, var(--muted-foreground) 45%, transparent);
+    background-clip: content-box;
+  }
+  :is(.code-block, .prose pre, .prose .table-scroll)::-webkit-scrollbar-thumb:hover {
+    background: color-mix(in oklab, var(--muted-foreground) 75%, transparent);
+    background-clip: content-box;
+  }
   .code-block code,
   .prose pre code {
     display: block;
@@ -330,10 +472,10 @@
     takes the `set` of `hive settings set` and the `test` of `npm test` for
     them, and a coloured word in the middle of a command reads as emphasis.
   */
+  /* Upright: the site carries no italic face, and a comment the browser slants by itself is the harder to read for it. */
   .hljs-comment,
   .hljs-quote {
     color: var(--code-comment);
-    font-style: italic;
   }
   .hljs-string,
   .hljs-regexp,
@@ -518,40 +660,6 @@
     margin: 2.6em 0;
     border-top: 1px solid var(--border);
   }
-  .prose img {
-    max-width: 100%;
-    height: auto;
-    border-radius: 0.6rem;
-  }
-  /* A picture of the docs: framed, and a link to the picture at its own size. */
-  .prose a.shot {
-    display: block;
-    margin: 1.4em 0;
-    border: 1px solid var(--border);
-    border-radius: 0.7rem;
-    overflow: hidden;
-    line-height: 0;
-  }
-  .prose a.shot:hover {
-    border-color: var(--teal);
-  }
-  .prose a.shot img {
-    display: block;
-    width: 100%;
-    border-radius: 0;
-  }
-  /*
-    A diagram drawn in text (lib/diagram.ts): the lines of one row have to meet
-    the lines of the next. Geist Mono's line characters are 1.31 em tall, so at
-    a line height of 1.3 they close up; at the 1.7 of a code block every box
-    would be a stack of dashes. No ligatures, and the font's own width for
-    every character.
-  */
-  .prose pre.diagram {
-    line-height: 1.3;
-    font-variant-ligatures: none;
-    font-feature-settings: "liga" 0, "calt" 0;
-  }
   .prose .table-scroll {
     overflow-x: auto;
     border: 1px solid var(--border);
@@ -625,23 +733,4 @@
 }
 @utility shadow-pop {
   box-shadow: var(--shadow-pop);
-}
-
-/* The mark's brackets draw themselves once when the page opens. */
-@keyframes hive-draw {
-  from {
-    stroke-dashoffset: 1;
-  }
-  to {
-    stroke-dashoffset: 0;
-  }
-}
-@utility hive-draw {
-  stroke-dasharray: 1;
-  stroke-dashoffset: 1;
-  animation: hive-draw 1.4s cubic-bezier(0.22, 1, 0.36, 1) 0.15s both;
-  @media (prefers-reduced-motion: reduce) {
-    animation: none;
-    stroke-dashoffset: 0;
-  }
 }

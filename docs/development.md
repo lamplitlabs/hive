@@ -85,14 +85,22 @@ copies every PNG, WebP, JPEG, GIF and AVIF picture under `docs/` to
 `/docs-media/` and the page shows it from there, sized from the file's own
 header, so a docs page loads nothing from GitHub. An SVG can carry script,
 so the site never serves one from its own address: a page shows it from
-GitHub. A picture no page shows fails a test. The pictures of
-the console (`docs/how-to/images/console-*.webp`) are 1440 by 900, taken
+GitHub. A picture no page shows fails a test. A picture that stands alone
+in its paragraph is shown as wide as the column, with its `alt` text under
+it as the caption, and a click opens the file at its own size, so write the
+`alt` as the sentence a reader should take from the picture. A picture
+narrower than the column is shown at its own size. The pictures of
+the console (`docs/how-to/images/console-*.webp`) are 1440 by 900, or cut
+to the dialog when a dialog is all they show, taken
 in the dark theme from the console's mock (`cd web/hub && npm run build &&
 npm run serve:out`), which serves made-up projects, and saved as WebP.
 They were taken from a copy of the mock's fixtures with three things
 changed, and a new picture should keep to them: the owner has a made-up
 name, the runner is on and a model provider is connected, and the dates
-are recent.
+are recent. The landing page shows parts of five of them, each cut at
+points measured on the picture (`HERO` and `STORY` in
+`web/site/src/app/page.tsx`): after one of those is retaken, measure its
+cut again.
 
 The search box reads `/docs/search.json`, which the build writes: for
 every page its title and headings, and for every section the commands and
@@ -373,11 +381,11 @@ rule (see below). A picture of a screen is a file, and
 how the console's pictures are taken.
 
 **A diagram is drawn in text.** It is a fenced block opened with
-` ```text ` whose lines are drawn with box-drawing characters. GitHub, the
-site and the console all show such a block as it was written, so it needs no
-library and no picture file, and a record in the store can carry one.
-Neither the site nor the console draws Mermaid: a `mermaid` block is shown
-as code.
+` ```text ` whose lines are drawn with box-drawing characters. GitHub and
+the console show such a block as it was written, and the site draws it from
+the same characters, so it needs no library and no picture file, and a
+record in the store can carry one. Neither the site nor the console draws
+Mermaid: a `mermaid` block is shown as code.
 
 ```text
 ┌───────────────────────┐
@@ -418,10 +426,33 @@ names the row and the column of what is badly drawn. The same check runs in
 `hive-records`), which is part of this repository's verify command, so it
 runs where a job's check and the reviewer's check run
 ([The verify command](landing.md#the-verify-command)). It also runs in the
-site's `npm test`, which `npm run check` runs before a deploy. The
-site and the console draw a diagram with its rows closed up (`pre.diagram`
-in each stylesheet), and a screen reader is given the word *Diagram* and the
-words in it, not the line characters.
+site's `npm test`, which `npm run check` runs before a deploy.
+
+The console shows a diagram with its rows closed up (`pre.diagram` in its
+stylesheet). The site draws it: `web/site/src/lib/doc-diagram.ts` reads the
+characters and writes an SVG into the page, with a closed rectangle as a
+box, the lines that join the boxes as strokes, an arrowhead that reaches the
+box or the words it points at, and every word as text a reader can select
+and search. Nothing in it knows any one diagram, so a new one is drawn the
+same way with no further step. Three habits of the drawing are worth
+knowing when you write one:
+
+- A box that holds one run of words is drawn with its name in the middle.
+  Boxes that stand on one another, sharing a side, are the cells of a list
+  and keep the column they were typed on.
+- A label typed in the middle of a line (`── merge ──→`), or over one, stays
+  in the middle of it. Lines of words that start in one column are a
+  paragraph and keep that left edge.
+- The words are set in the site's text font, which is narrower than the
+  cells they were typed into, and a line that runs up to a word is drawn on
+  up to it. A test fails when a run of words would be wider than its cells.
+
+On a screen too narrow for it the drawing first shrinks, down to words 11
+pixels high, and from there scrolls sideways in its own box, with a line
+under it that says so. **Show as text** under every drawing opens the block
+as it was written, for whoever wants to copy it. On both the site and the
+console a screen reader is given the word *Diagram* and the words in it, not
+the line characters.
 
 **A decision record opens with `## At a glance`.** The owner reads it first
 and may decide from it alone: the decision asked for as a yes-or-no

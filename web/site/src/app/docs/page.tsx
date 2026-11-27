@@ -60,7 +60,7 @@ export default function DocsIndex() {
                 Guides
               </h2>
               {hub && (
-                <Link href={hub.path} className="inline-flex items-center gap-1.5 text-sm font-medium text-link hover:underline">
+                <Link href={hub.path} className="inline-flex min-h-8 items-center gap-1.5 text-sm font-medium text-link hover:underline">
                   {hub.label} <ArrowRightIcon className="size-3.5" aria-hidden="true" />
                 </Link>
               )}
@@ -68,7 +68,7 @@ export default function DocsIndex() {
             <p className="mt-2 max-w-2xl text-[15px] leading-relaxed text-muted-foreground">
               Each guide takes one job from start to finish, in the console and in a terminal, and ends with how to tell that it worked.
             </p>
-            <ul className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <ul className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               {guides.map((d) => (
                 <li key={d.path}>
                   <Link href={d.path} className="group flex h-full flex-col rounded-card border border-border bg-card p-5 shadow-card hover:border-teal">
