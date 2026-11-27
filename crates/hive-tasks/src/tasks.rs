@@ -509,15 +509,31 @@ pub fn cancel(s: &hive_store::Store, id: &str, reason: &str, actor: &str) -> Res
     )?;
     let (exact, like) = hive_store::task_source_params(id);
     let clause = hive_store::task_source_clause("source");
+    // A cancelled task has no open jobs (TASK-140): the queued and the
+    // blocked ones end here - a blocked job left behind was once put back
+    // in the queue three days later and ran 100 minutes for nothing - and
+    // the run of a leased one is asked to stop the way the owner's cancel
+    // of a run does (its harness session's cancel request; the runner's
+    // watch also stops a run whose task is cancelled, for a run that has
+    // no session yet).
+    let blocked: i64 = tx.query_row(
+        &format!("SELECT COUNT(*) FROM jobs WHERE {clause} AND status = 'blocked'"),
+        params![exact, like],
+        |r| r.get(0),
+    )?;
     let cancelled = tx.execute(
-        &format!("UPDATE jobs SET status = 'cancelled', finished_at = ?, result = ? WHERE {clause} AND status = 'queued'"),
+        &format!("UPDATE jobs SET status = 'cancelled', finished_at = ?, result = ?, lease_agent = '', lease_until = '' WHERE {clause} AND status IN ('queued', 'blocked')"),
         params![now, format!("task cancelled: {reason}"), exact, like])?;
     let leased: i64 = tx.query_row(
         &format!("SELECT COUNT(*) FROM jobs WHERE {clause} AND status = 'leased'"),
-        [exact, like],
+        params![exact, like],
         |r| r.get(0),
     )?;
-    tx.event(actor, "task.cancelled", id, hive_store::Detail::json(json!({"project": cur.project, "reason": reason, "cancelled_jobs": cancelled, "leased_jobs": leased, "lead": cur.lead}))?)?;
+    let stopped = tx.execute(
+        &format!("UPDATE harness_sessions SET cancel_requested_at = ?, updated_at = ? WHERE status = 'running' AND cancel_requested_at = '' AND id IN (SELECT r.id FROM runs r JOIN jobs j ON j.id = r.job_id WHERE r.status = 'running' AND j.status = 'leased' AND {})", hive_store::task_source_clause("j.source")),
+        params![now, now, exact, like],
+    )?;
+    tx.event(actor, "task.cancelled", id, hive_store::Detail::json(json!({"project": cur.project, "reason": reason, "cancelled_jobs": cancelled, "blocked_jobs": blocked, "leased_jobs": leased, "stopped_runs": stopped, "lead": cur.lead}))?)?;
     tx.commit()?;
     Ok(get(s, id)?.0)
 }

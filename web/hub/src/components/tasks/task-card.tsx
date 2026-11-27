@@ -33,7 +33,7 @@ export function CancelTaskDialog({ t, open, onOpenChange }: { t: Task; open: boo
       description={
         <>
           <span className="block font-medium text-foreground anywhere">{t.title}</span>
-          <span className="mt-2 block">The lead agent stops working on it and any step still waiting to start is withdrawn. A step that is already running finishes first. You can&apos;t undo this; give a new task instead.</span>
+          <span className="mt-2 block">The lead agent stops working on it and any step still waiting to start is withdrawn. A step that is already running is asked to stop. You can&apos;t undo this; give a new task instead.</span>
         </>
       }
       action="Cancel the task"
