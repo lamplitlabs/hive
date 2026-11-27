@@ -154,6 +154,21 @@ mod tests {
         evidence: Evidence,
         work: WorkSnapshot,
     ) {
+        s.event(
+            "daemon",
+            "land.landed",
+            &format!("hive/test/{commit}"),
+            code_delivery_detail(project, commit, evidence, work),
+        )
+        .unwrap();
+    }
+
+    fn code_delivery_detail(
+        project: &str,
+        commit: &str,
+        evidence: Evidence,
+        work: WorkSnapshot,
+    ) -> Value {
         let mut detail = serde_json::Map::new();
         detail.insert("project".into(), Value::String(project.to_string()));
         detail.insert("sha".into(), Value::String(commit.to_string()));
@@ -161,13 +176,7 @@ mod tests {
         if work.job.is_some() || work.worker.is_some() {
             detail.insert("work".into(), go_value(&work));
         }
-        s.event(
-            "daemon",
-            "land.landed",
-            &format!("hive/test/{commit}"),
-            Value::Object(detail),
-        )
-        .unwrap();
+        Value::Object(detail)
     }
 
     fn code_delivery_report(path: &str, s: &hive_store::Store) -> (u16, hive_codedelivery::Report) {
@@ -560,15 +569,25 @@ mod tests {
             code_evidence("demo-sha", &["internal/api.go"]),
             WorkSnapshot::default(),
         );
+        // In one transaction: a commit per event waited on the disk's sync
+        // 5001 times (26 s on a rented Linux machine).
+        let tx = s.begin().unwrap();
         for i in 0..5001 {
-            seed_code_delivery_event(
-                &s,
-                "other",
-                &format!("other-{i}"),
-                code_evidence("other", &["other.go"]),
-                WorkSnapshot::default(),
-            );
+            let commit = format!("other-{i}");
+            tx.event(
+                "daemon",
+                "land.landed",
+                &format!("hive/test/{commit}"),
+                code_delivery_detail(
+                    "other",
+                    &commit,
+                    code_evidence("other", &["other.go"]),
+                    WorkSnapshot::default(),
+                ),
+            )
+            .unwrap();
         }
+        tx.commit().unwrap();
         // The one merge of demo lies behind 5001 of another project's, and
         // is found on the first page all the same: the lookup goes by
         // project, not through a window of the latest events.
@@ -622,8 +641,12 @@ mod tests {
             json!({"project": "demo", "job": "job-old"}),
         )
         .unwrap();
+        // The busy history goes in one transaction: one commit per event
+        // made this test wait on the disk's sync 15000 times (170 s on a
+        // rented Linux machine's network disk, the whole check's longest).
+        let tx = s.begin().unwrap();
         for i in 0..12000 {
-            s.event(
+            tx.event(
                 "daemon",
                 "harness.step",
                 "demo",
@@ -631,6 +654,7 @@ mod tests {
             )
             .unwrap();
         }
+        tx.commit().unwrap();
         s.event(
             "daemon",
             hive_codedelivery::MERGE_EVIDENCE_ACTION,
@@ -640,8 +664,9 @@ mod tests {
                 "work": {"job": {"id": "job-2", "title": "Fix the page", "kind": "task", "status": "done"}}}),
         )
         .unwrap();
+        let tx = s.begin().unwrap();
         for i in 0..3000 {
-            s.event(
+            tx.event(
                 "daemon",
                 "harness.step",
                 "demo",
@@ -649,6 +674,7 @@ mod tests {
             )
             .unwrap();
         }
+        tx.commit().unwrap();
 
         let (status, report) = code_delivery_report("/api/v1/code-deliveries?project=demo", &s);
         assert_eq!(status, 200);
