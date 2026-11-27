@@ -1384,6 +1384,43 @@ fn compute_request_for_any_project_serves_every_project() {
     assert!(request_compute(&s, "nobody", "demo-lead", "Standard_B2ms", 4, "x").is_err());
 }
 
+/// PR 291 review, item 2: a machine for any project is one machine like any other. The caps
+/// count it beside a project's own request for the whole hub, so asking for "Any project" never
+/// buys a machine past `compute.max_vms`, and the request after both waits for the owner.
+#[test]
+fn an_any_project_request_counts_against_max_vms_beside_a_projects() {
+    let _serial = crate::test_helpers::serial();
+    let s = new_store();
+    for (k, v) in [
+        ("compute.auto_approve", "1"),
+        ("compute.max_vms", "2"),
+        ("compute.max_hours_per_day", "24"),
+    ] {
+        s.set_setting("human", k, v).unwrap();
+    }
+    let one = request_compute(&s, "demo", "demo-lead", "", 2, "one build").unwrap();
+    assert_eq!(one.status, "approved", "{one:?}");
+    let any = request_compute(&s, ANY_PROJECT, "demo-lead", "", 2, "a full queue").unwrap();
+    assert_eq!(any.status, "approved", "{any:?}");
+    let caps = get_caps(&s).unwrap();
+    assert_eq!((caps.vms_now, caps.max_vms), (2, 2), "{caps:?}");
+    // Either kind of request past the cap waits for the owner, whichever came first.
+    for project in ["demo", ANY_PROJECT] {
+        let over = request_compute(&s, project, "demo-lead", "", 1, "one more").unwrap();
+        assert_eq!(over.status, "pending", "{project}: {over:?}");
+    }
+    // An any-project request alone at the cap holds a project's back the same way.
+    s.set_setting("human", "compute.max_vms", "1").unwrap();
+    set_compute_status(&s, &one.id, "released", "", "daemon").unwrap();
+    let caps = get_caps(&s).unwrap();
+    assert_eq!(
+        caps.vms_now, 1,
+        "the any-project machine still counts: {caps:?}"
+    );
+    let held = request_compute(&s, "demo", "demo-lead", "", 1, "after it").unwrap();
+    assert_eq!(held.status, "pending", "{held:?}");
+}
+
 #[test]
 fn compute_auto_approve_under_caps_else_proposal() {
     let _serial = crate::test_helpers::serial();

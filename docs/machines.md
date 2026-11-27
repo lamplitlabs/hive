@@ -435,7 +435,24 @@ commands behind one route, `POST /api/v1/compute/executors`, told apart by
   of the dialog's project list, `--project commons` on the command line -
   asks for a machine every project can use. That request is filed on the
   shared board and its machine is paired for `*`, like a machine you add
-  for **Every project**.
+  for **Every project**. The daemon's notices about it (ready, released,
+  failed) are findings on the shared board's `runner/compute` thread; the
+  brain's triage of that board leaves them alone, as they are the
+  daemon's log, not wishes. The hub refuses **Any project** (409, *Any
+  project needs the daemon of this build*) while the daemon's heartbeat
+  names another build than the hub's: the two are separate processes and
+  differ while one of them waits to restart, and a daemon from before this
+  choice would pair the machine for the shared board, which runs no job.
+  Restart Hive, or ask for one project.
+
+  A machine for every project runs every project's jobs as one user, so
+  one project's job can read what another's left there. That includes a
+  job's clone the daemon keeps on the machine when its commits could not
+  be fetched back (`the clone on hands-cr-012 is kept: its commits were
+  not fetched`): it stays under the machine's workdir until the work is
+  recovered, readable by a later job of any project. The same holds for
+  any machine you add for **Every project**; keep a machine to the
+  projects that may read each other's work when that matters.
 
 Each way records what its command would: `executor.add`, `executor.probe`,
 `pair.applied`, `compute.requested`. The request rows `GET /api/v1/compute`

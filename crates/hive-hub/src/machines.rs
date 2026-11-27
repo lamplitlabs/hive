@@ -58,6 +58,43 @@ pub(crate) type Pairer = Arc<
     dyn Fn(&hive_store::Store, &PairMachine, &str) -> anyhow::Result<PairOutcome> + Send + Sync,
 >;
 
+/// Why a machine for any project cannot be asked now: the daemon's last heartbeat names a build
+/// other than this hub's. The hub files the request and the daemon rents and pairs the machine,
+/// and the two are separate processes that run different builds while one of them waits to
+/// restart (a self-update, `binary_changed`). A daemon older than PR 291 reads the request's
+/// project, the shared board, as a slug and pairs the machine for it, which no job is - a
+/// machine bought for nothing and released idle half an hour later. `None` when the builds
+/// match or no daemon has beaten yet (the next one to start is this binary or a newer one).
+/// Builds are compared by revision when both carry one, else by version.
+pub(crate) fn daemon_build_differs(store: &hive_store::Store) -> Option<String> {
+    let (raw, ok) = store.meta("daemon").ok()?;
+    if !ok {
+        return None;
+    }
+    let beat = serde_json::from_str::<Value>(&raw).ok()?;
+    let field = |k: &str| {
+        beat.get(k)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
+    let (daemon_version, daemon_revision) = (field("version"), field("revision"));
+    let (hub_version, hub_revision) = (hive_cli::version(), hive_cli::revision());
+    let same = if !daemon_revision.is_empty() && !hub_revision.is_empty() {
+        daemon_revision == hub_revision
+    } else {
+        daemon_version == hub_version
+    };
+    (!same).then(|| {
+        let shown = |v: &str| if v.is_empty() { "an unstamped build".to_string() } else { v.to_string() };
+        format!(
+            "The daemon runs {} and this hub {}: a daemon of another build may pair the machine for the shared board, which runs no job, instead of for every project.",
+            shown(&daemon_version),
+            shown(&hub_version),
+        )
+    })
+}
+
 pub(crate) fn real_pairer() -> Pairer {
     Arc::new(|s, m, actor| hive_runner::machines::pair_machine(s, &s.now(), m, actor))
 }
@@ -416,6 +453,19 @@ impl Handler {
                 "Invalid project".to_string(),
                 "This hub serves one project.".to_string(),
                 format!("Request the machine for {}.", self.project),
+            );
+            return;
+        }
+        if project == hive_tasks::ANY_PROJECT
+            && let Some(store) = self.store.as_deref()
+            && let Some(why) = daemon_build_differs(store)
+        {
+            write_error(
+                w,
+                409,
+                "Any project needs the daemon of this build".to_string(),
+                why,
+                "Restart Hive (Settings, Restart now) so the daemon runs this build, or ask for the machine for one project.".to_string(),
             );
             return;
         }
@@ -859,6 +909,56 @@ mod tests {
             status == 400 || status == 404,
             "no project: {status} {result:?}"
         );
+    }
+
+    /// PR 291 review, item 3: the hub files the request and the daemon pairs the machine, and
+    /// they can run different builds (one waits to restart after a self-update). A daemon older
+    /// than "Any project" pairs the machine for the shared board, which runs no job, so the
+    /// choice is refused while the daemon's heartbeat names another build; a project's own
+    /// request still goes through.
+    #[test]
+    fn any_project_is_refused_while_the_daemon_runs_another_build() {
+        let _serial = crate::test_helpers::serial();
+        let s = http::additions_store(false);
+        http::additions_project(&s, "one");
+        let h = http::handler(&s);
+        let beat = |version: &str, revision: &str| {
+            s.conn()
+                .unwrap()
+                .execute(
+                    "INSERT INTO meta (key, value) VALUES ('daemon', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    [json!({"pid": 4242, "at": "2026-11-27T07:00:00Z", "version": version, "revision": revision}).to_string()],
+                )
+                .unwrap();
+        };
+        let ask = |h: &Handler, project: &str| {
+            http::additions_request(
+                h.clone(),
+                "POST",
+                "/api/v1/compute/executors",
+                &json!({"mode": "request", "project": project, "size": "small", "hours": 2, "reason": "a full queue", "approve": false}).to_string(),
+            )
+        };
+        beat("v0.0.1-older", "0123456789abcdef0123456789abcdef01234567");
+        let (status, result) = ask(&h, hive_tasks::ANY_PROJECT);
+        assert_eq!(status, 409, "refused: {result:?}");
+        assert_eq!(
+            result["error"],
+            "Any project needs the daemon of this build"
+        );
+        let why = result["why"].as_str().unwrap_or("");
+        assert!(why.contains("The daemon runs v0.0.1-older"), "{why}");
+        assert!(
+            hive_tasks::list_compute(&s, "", "").unwrap().is_empty(),
+            "nothing was filed"
+        );
+        let (status, result) = ask(&h, "one");
+        assert_eq!(status, 201, "a project's own request: {result:?}");
+        // The daemon restarted on the hub's build: the choice is open again.
+        beat(&hive_cli::version(), &hive_cli::revision());
+        assert_eq!(super::daemon_build_differs(&s), None);
+        let (status, result) = ask(&h, hive_tasks::ANY_PROJECT);
+        assert_eq!(status, 201, "same build: {result:?}");
     }
 
     #[test]
