@@ -1230,6 +1230,14 @@ hive-hostkey ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBLOCKBLOCKBLOCKBLOCKBLOCKBLOCK
             "UPDATE executors SET workers = 2 WHERE name = 'hands-cr-001'",
             &[],
         );
+        // The run is of a work job (task): only work runs count for whether a
+        // rented machine's work landed (TASK-156 rule 4).
+        crate::test_helpers_daemon::queued_job(&s, "job-1", "proj", "task", "owner");
+        exec1(
+            &s,
+            "UPDATE jobs SET status = 'leased' WHERE id = 'job-1'",
+            &[],
+        );
         exec1(
             &s,
             "INSERT INTO runs (id, job_id, agent, project, started_at, status, executor) VALUES ('run-1', 'job-1', 'aurora', 'proj', ?, 'running', 'hands-cr-001')",

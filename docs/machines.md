@@ -188,18 +188,30 @@ only for the jobs that machine could take: the waiting work jobs whose needs
 a rented Linux machine of the size's class (`linux/amd64`) meets and whose
 session is not held on this machine. The log and the request count those
 (`1 job(s) a rented linux/amd64 machine could run waited 33 min ... (21
-queued in all)`); a queue of `needs macos` work rents nothing. And once a
-rented machine has run a project's work, the daemon rents no other for that
-project until work a rented machine finished there has landed: `no rented
-machine has landed work for amistio-template yet (79 run(s) on CR-11116,
-CR-11115, CR-11113 and 8 more, none landed), so the daemon rents no other
-...`. The first rental for a project is free, another project still gets
-its machine, and one you ask for by hand is yours to make. Measured before
+queued in all)`); a queue of `needs macos` work rents nothing. The jobs go
+in the order a slot takes them - the owner's work first, then by priority,
+then the oldest - so a low-priority job of another project does not take
+the machine the owner's project waits for. When a job's needs are what
+brought the daemon to rent, it rents only for the projects whose needs no
+paired machine meets, never for another project's plain job. And once a
+rented machine has run a project's work (improve and task runs; a review or
+a lead's sitting lands nothing and counts for nothing), the daemon rents no
+other for that project until work a rented machine finished there has
+landed: `no rented machine has landed work for amistio-template yet (79
+run(s) on CR-11116, CR-11115, CR-11113 and 8 more, none landed), so the
+daemon rents no other ...`. The first rental for a project is free and
+another project still gets its machine. The way out is a machine you ask
+for by hand (`hive compute request --project <slug>`) whose work lands: the
+rule does not hold your request back, and one landing from any rented
+machine frees it. The `hands wanted:` and `machine wanted:` questions say
+this reason, or whichever other one held the rental back, instead of a
+general hint. Measured before
 these rules (26 and 27 November): eight machines in a row were rented for
 the brain while its queued code jobs needed macOS or its check was red on
 Linux, and none of their work landed. A project whose work does not build
 on Linux says so in its `.hive/hive.yaml` (`needs: macos`), as Hive's own
-does.
+does; once it builds there, `needs: []` clears it (a file without the key
+leaves the needs as they are).
 
 **When a rented machine goes.** The daemon releases it when the hours it
 was asked for are up, counted from the moment the provider made it (the

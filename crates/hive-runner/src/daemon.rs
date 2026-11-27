@@ -550,12 +550,22 @@ pub(crate) fn capacity_note(
     meta_upsert(s, "capacity", &note);
 }
 
+/// Tells the owner that the queue starved with every slot busy or held and
+/// the daemon rented no machine for it, with `why` it rented none
+/// (`auto_compute`'s answer). The post used to say "compute.auto_approve
+/// would shorten the queue" whatever held the rental back, so with it on
+/// and renting held until a rented machine's work lands (TASK-156 rule 4)
+/// the owner was sent to a setting already set (review of PR 295, item 2).
+/// The reason is in the body only: the board folds a question onto an open
+/// one by its summary, so a reason that changes asks nothing new.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn hands_wanted(
     s: &hive_store::Store,
     brain: Row,
     queued: i32,
     slots: i32,
     minutes: i32,
+    why: &str,
     now: String,
     actor: String,
 ) -> Row {
@@ -565,12 +575,12 @@ pub(crate) fn hands_wanted(
     let slug = brain.str("slug");
     let summary = crate::util::trunc(
         &format!(
-            "hands wanted: {queued} job(s) waited {minutes} min with every slot busy or held ({slots} slot(s)); pairing another machine (hive pair) or compute.auto_approve would shorten the queue"
+            "hands wanted: {queued} job(s) waited {minutes} min with every slot busy or held ({slots} slot(s)) and the daemon rents no machine for them"
         ),
         230,
     );
     let body = format!(
-        "The daemon on this machine found {queued} queued job(s) waiting for {minutes} minutes while every executor slot ({slots}) was busy or held by this machine's load or disk ({now}). More hands would shorten the queue: pair another machine with `hive pair` (hive record show WF-executors), set `compute.auto_approve` with `compute.max_vms` so the daemon rents one within your caps or a bigger machine (each machine sizes its own slots from its cores and memory, and the fleet adds them up). The human owns machines and money; this post is a measurement, not a request to act.\n"
+        "The daemon on this machine found {queued} queued job(s) waiting for {minutes} minutes while every executor slot ({slots}) was busy or held by this machine's load or disk ({now}). It rents no machine for them: {why}. More hands would shorten the queue: pair another machine with `hive pair` (hive record show WF-executors), or a bigger machine (each machine sizes its own slots from its cores and memory, and the fleet adds them up). The human owns machines and money; this post is a measurement, not a request to act.\n"
     );
     let Ok(Some(post)) = crate::hygiene::post_daemon_owner_question(
         s,
@@ -682,11 +692,14 @@ pub(crate) fn unmet_needs(s: &hive_store::Store, now: &str) -> Vec<UnmetNeeds> {
 /// Tells the owner that queued work needs a kind of machine none of the
 /// paired ones is, once per project and needs while the question is open:
 /// the daemon can rent Linux, not a Mac, and only the owner pairs or labels
-/// a machine. Returns the posts made.
+/// a machine. Each group comes with why the daemon rents no machine for
+/// it - the rented machine's class lacks the need, or `auto_compute`'s
+/// answer - and the post says that, not a general hint (review of PR 295,
+/// item 2). Returns the posts made.
 pub(crate) fn needs_wanted(
     s: &hive_store::Store,
     brain: Row,
-    unmet: &[UnmetNeeds],
+    unmet: &[(UnmetNeeds, String)],
     now: String,
     actor: String,
 ) -> Vec<Row> {
@@ -707,7 +720,7 @@ pub(crate) fn needs_wanted(
         .collect::<Vec<_>>()
         .join("; ");
     let mut posts = Vec::new();
-    for u in unmet {
+    for (u, why) in unmet {
         let summary = crate::util::trunc(
             &format!(
                 "machine wanted: {} job(s) of {} need {}, which no active machine offers",
@@ -716,7 +729,7 @@ pub(crate) fn needs_wanted(
             230,
         );
         let body = format!(
-            "{} queued job(s) of {} need a machine that offers `{}`; none of the machines paired here does, so they wait ({} min so far, {now}). The machines and what they offer: {machines}. A machine that has it can be paired with `hive pair` (a Linux machine) or added by `hive executor add`; a paired machine that does have it can be told so with `hive executor label NAME +word` (this machine: the setting `machine.labels`); or the project's needs can change in its `.hive/hive.yaml` (`needs:`) or with `hive job needs JOB_ID -`. The daemon rents Linux machines only, so a need such as `macos` is the owner's to meet. This post is a measurement, not a request to act.\n",
+            "{} queued job(s) of {} need a machine that offers `{}`; none of the machines paired here does, so they wait ({} min so far, {now}). The machines and what they offer: {machines}. A machine that has it can be paired with `hive pair` (a Linux machine) or added by `hive executor add`; a paired machine that does have it can be told so with `hive executor label NAME +word` (this machine: the setting `machine.labels`); or the project's needs can change in its `.hive/hive.yaml` (`needs:`) or with `hive job needs JOB_ID -`. The daemon rents no machine for them: {why}. This post is a measurement, not a request to act.\n",
             u.jobs, u.project, u.needs, u.minutes
         );
         let Ok(Some(post)) = crate::hygiene::post_daemon_owner_question(
@@ -802,10 +815,14 @@ pub(crate) fn rented_class(caps: &std::collections::BTreeSet<String>) -> String 
 }
 
 /// The queued work jobs that waited since `since` and that a machine offering
-/// `caps` would be given (TASK-156 item 3), oldest first: the job's needs
-/// are met by the machine, and it is not held on this machine - a job whose
-/// session is held here with its clone carries on here, and a hand's slot
-/// passes it (`jobs::lease`), so it is no reason to rent one. A machine
+/// `caps` would be given (TASK-156 item 3), in the order a slot takes them:
+/// the owner's work first, then by priority, then the oldest - so a
+/// low-priority job of another project that waited longer does not take
+/// the machine the owner's project waits for (review of PR 295, item 3).
+/// The job's needs are met by the machine, and it is not held on this
+/// machine - a job whose session is held here with its clone carries on
+/// here, and a hand's slot passes it (`jobs::lease`), so it is no reason to
+/// rent one. A machine
 /// rented for work it cannot take stood drained all night on 27 November
 /// (CR-11114). Nor is a code job of a project whose check an end check
 /// found red on the base on that machine's class (`class_red`, TASK-144):
@@ -826,9 +843,10 @@ pub(crate) fn rentable_jobs(
     crate::util::must_rows(
         conn,
         &format!(
-            "SELECT j.id, j.kind, j.project FROM jobs j JOIN projects p ON p.slug = j.project WHERE j.status = 'queued' AND p.status = 'active' AND j.kind IN ({}) AND j.created_at <= ? AND {fit}{red} AND NOT EXISTS (SELECT 1 FROM harness_sessions h JOIN runs r ON r.id = h.run_id WHERE h.job_id = j.id AND h.status = 'held' AND r.executor = '{}') ORDER BY j.created_at",
+            "SELECT j.id, j.kind, j.project FROM jobs j JOIN projects p ON p.slug = j.project WHERE j.status = 'queued' AND p.status = 'active' AND j.kind IN ({}) AND j.created_at <= ? AND {fit}{red} AND NOT EXISTS (SELECT 1 FROM harness_sessions h JOIN runs r ON r.id = h.run_id WHERE h.job_id = j.id AND h.status = 'held' AND r.executor = '{}') ORDER BY CASE WHEN {} THEN 0 ELSE 1 END, j.priority DESC, j.created_at, j.id",
             crate::jobs::work_kinds_sql(),
-            crate::executor::LOCAL_EXECUTOR
+            crate::executor::LOCAL_EXECUTOR,
+            crate::jobs::OWNER_DRIVEN_SQL
         ),
         &vals,
     )
@@ -869,40 +887,60 @@ pub(crate) fn starved_waiting(
 /// ... landed" and rented all the same. The first rental for a project is
 /// free; after one ran its work, renting waits for a landing. A machine
 /// that ran nothing (it came up without a tool, `rental_repeats_lack`)
-/// says nothing about landing. A machine the owner asks for by hand is the
-/// owner's call and is not held here.
+/// says nothing about landing, and only work runs (improve, task) count: a
+/// review or a lead's sitting there lands nothing and frees nothing. A
+/// machine the owner asks for by hand is the owner's call and is not held
+/// here; it is also the way out - its work landing frees the rule, since a
+/// landing from any rented machine counts.
 pub(crate) fn rented_landed_nothing(
     conn: &(impl crate::util::Querier + ?Sized),
     project: &str,
 ) -> Option<String> {
-    // The finished runs of the project on rented machines, and whether one
-    // landed: it ended `done` with commits (handed to the landing from that
-    // machine) and a landing names its job. A job lost there that landed
-    // after a run on another machine is not the rented machine's landing.
-    let runs = crate::util::must_rows(
+    // The project's finished work runs (improve, task) on rented machines.
+    // The owner's reviews, a lead's sitting or an answer commit nothing to
+    // land, so they neither hold renting back nor free it.
+    let from = format!(
+        "FROM runs r JOIN compute_requests c ON c.executor = r.executor JOIN jobs j ON j.id = r.job_id WHERE c.executor != '' AND r.project = ?1 AND r.status != 'running' AND j.kind IN ({})",
+        crate::jobs::work_kinds_sql()
+    );
+    // One that landed is enough: it ended `done` with commits (handed to
+    // the landing from that machine) and a landing names its job. A job
+    // lost there that landed after a run on another machine is not the
+    // rented machine's landing.
+    let landed = crate::util::must_one(
         conn,
-        "SELECT c.id AS request, r.job_id, r.status = 'done' AND r.commits > 0 AND (EXISTS (SELECT 1 FROM events e WHERE e.action IN ('land.landed', 'land.merged') AND json_valid(e.detail) AND json_extract(e.detail, '$.job') = r.job_id) OR EXISTS (SELECT 1 FROM events e, json_each(CASE WHEN json_valid(e.detail) THEN e.detail ELSE '{}' END, '$.jobs') jj WHERE e.action = 'land.merged' AND json_valid(e.detail) AND json_extract(e.detail, '$.project') = r.project AND jj.value = r.job_id)) AS landed FROM runs r JOIN compute_requests c ON c.executor = r.executor WHERE c.executor != '' AND r.project = ? AND r.status != 'running' ORDER BY c.rowid DESC, r.started_at DESC",
+        &format!(
+            "SELECT r.id {from} AND r.status = 'done' AND r.commits > 0 AND (EXISTS (SELECT 1 FROM events e WHERE e.action IN ('land.landed', 'land.merged') AND json_valid(e.detail) AND json_extract(e.detail, '$.job') = r.job_id) OR EXISTS (SELECT 1 FROM events e, json_each(CASE WHEN json_valid(e.detail) THEN e.detail ELSE '{{}}' END, '$.jobs') jj WHERE e.action = 'land.merged' AND json_valid(e.detail) AND json_extract(e.detail, '$.project') = r.project AND jj.value = r.job_id)) LIMIT 1"
+        ),
         &[&project],
     );
-    if runs.is_empty() || runs.iter().any(|r| r.int("landed") != 0) {
+    if !landed.0.is_empty() {
         return None;
     }
-    let mut ids: Vec<String> = Vec::new();
-    for r in &runs {
-        let id = r.str("request");
-        if !ids.contains(&id) {
-            ids.push(id);
-        }
+    let machines = crate::util::must_rows(
+        conn,
+        &format!(
+            "SELECT c.id AS request, COUNT(*) AS n {from} GROUP BY c.id ORDER BY MAX(c.rowid) DESC"
+        ),
+        &[&project],
+    );
+    if machines.is_empty() {
+        return None;
     }
-    let shown = ids.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
-    let more = if ids.len() > 3 {
-        format!(" and {} more", ids.len() - 3)
+    let runs: i64 = machines.iter().map(|m| m.int("n") as i64).sum();
+    let shown = machines
+        .iter()
+        .take(3)
+        .map(|m| m.str("request"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let more = if machines.len() > 3 {
+        format!(" and {} more", machines.len() - 3)
     } else {
         String::new()
     };
     Some(format!(
-        "no rented machine has landed work for {project} yet ({} run(s) on {shown}{more}, none landed), so the daemon rents no other for {project} until one has; a machine asked for by hand (`hive compute request --project {project}`) is the owner's call",
-        runs.len()
+        "no rented machine has landed work for {project} yet ({runs} run(s) on {shown}{more}, none landed), so the daemon rents no other for {project} until one has; the way out is a machine asked for by hand (`hive compute request --project {project}`) whose work lands"
     ))
 }
 
@@ -1126,6 +1164,24 @@ pub(crate) fn auto_compute(
     now: &str,
     actor: &str,
 ) -> Result<hive_tasks::compute::ComputeRequest, NoAutoCompute> {
+    auto_compute_for(s, waiting, min_wait, now, actor, None)
+}
+
+/// [`auto_compute`] for the work of `only` those projects when given: the
+/// needs path rents for the projects whose needs no paired machine meets,
+/// not for whatever else waits. Before this a project held back (no
+/// rented machine had landed its work) passed its turn to another
+/// project's plain job, and a machine was rented on the strength of the
+/// first project's needs for work this machine could have run (review of
+/// PR 295, item 3).
+pub(crate) fn auto_compute_for(
+    s: &hive_store::Store,
+    waiting: &str,
+    min_wait: i32,
+    now: &str,
+    actor: &str,
+    only: Option<&std::collections::BTreeSet<String>>,
+) -> Result<hive_tasks::compute::ComputeRequest, NoAutoCompute> {
     let why = |w: String| NoAutoCompute::Why(w);
     let caps = hive_tasks::compute::get_caps(s).map_err(|e| why(e.to_string()))?;
     if !caps.auto_approve {
@@ -1165,11 +1221,17 @@ pub(crate) fn auto_compute(
     // base on the class of machine it would rent (class_red.rs): the run
     // there could land nothing (TASK-144). `rentable_jobs` reads both.
     let rented = rented_caps(s);
-    let candidates = rentable_jobs(&conn, &rented, &since, now);
+    let candidates: Vec<Row> = rentable_jobs(&conn, &rented, &since, now)
+        .into_iter()
+        .filter(|c| only.is_none_or(|p| p.contains(&c.str("project"))))
+        .collect();
     let class = crate::class_red::class_of_caps(&rented);
     if candidates.is_empty() {
+        let of = only
+            .map(|p| format!(" of {}", p.iter().cloned().collect::<Vec<_>>().join(", ")))
+            .unwrap_or_default();
         return Err(why(format!(
-            "no improve or task job that a rented Linux machine could run has waited {min_wait} min"
+            "no improve or task job{of} that a rented Linux machine could run has waited {min_wait} min"
         )));
     }
     // The count the request stands on is of the jobs the machine could
@@ -3232,8 +3294,23 @@ pub(crate) fn daemon(
                     let (rentable, owners): (Vec<UnmetNeeds>, Vec<UnmetNeeds>) = unmet
                         .into_iter()
                         .partition(|u| hive_store::needs::met(&u.needs, &rented));
-                    let mut ask = owners;
+                    let class = rented_class(&rented);
+                    let mut ask: Vec<(UnmetNeeds, String)> = owners
+                        .into_iter()
+                        .map(|u| {
+                            let why = format!(
+                                "the machine it rents is {class} and does not offer `{}`; that need is the owner's to meet",
+                                u.needs
+                            );
+                            (u, why)
+                        })
+                        .collect();
                     if !rentable.is_empty() {
+                        // Only the work of the projects whose needs brought
+                        // this path here is rented for: another project's
+                        // job that this machine could run is no reason.
+                        let projects: std::collections::BTreeSet<String> =
+                            rentable.iter().map(|u| u.project.clone()).collect();
                         let waiting = rentable
                             .iter()
                             .map(|u| {
@@ -3244,7 +3321,14 @@ pub(crate) fn daemon(
                             })
                             .collect::<Vec<_>>()
                             .join("; ");
-                        match auto_compute(s, &waiting, NEEDS_WANTED_MINUTES, &now, &actor) {
+                        match auto_compute_for(
+                            s,
+                            &waiting,
+                            NEEDS_WANTED_MINUTES,
+                            &now,
+                            &actor,
+                            Some(&projects),
+                        ) {
                             Ok(req) => say(
                                 &o,
                                 format!(
@@ -3280,7 +3364,8 @@ pub(crate) fn daemon(
                                 ) {
                                     say(&o, line);
                                 }
-                                ask.extend(rentable);
+                                let why = why.to_string();
+                                ask.extend(rentable.into_iter().map(|u| (u, why.clone())));
                             }
                         }
                     }
@@ -3499,6 +3584,7 @@ pub(crate) fn daemon(
                                 queued,
                                 total_slots,
                                 waited,
+                                &why.to_string(),
                                 now.clone(),
                                 actor.clone(),
                             );
@@ -4883,47 +4969,78 @@ mod tests {
     /// of it landed, the daemon rents no other for that project until one
     /// has; another project still gets a machine. Eight machines in a row
     /// were rented for the brain on 26-27 November, each request saying "0
-    /// of the last 20 runs ... landed".
+    /// of the last 20 runs ... landed". The landing that frees it is a real
+    /// one, through the delivery pass (review of PR 295, item 5), and only
+    /// work runs count: a review there neither holds nor frees (item 2).
     #[test]
     fn no_second_rental_for_a_project_until_a_rented_machine_landed_its_work() {
         let _serial = crate::test_helpers::serial();
-        let s = store_with_projects(&["proj", "other"]);
+        let _env = hive_testutil::env_lock();
+        let s = new_store();
+        let (proj, repo) = new_repo(&s);
+        exec1(
+            &s,
+            "INSERT INTO projects (slug, name, path, added_at, added_by) VALUES ('other', 'other', '/tmp/other', '2026-01-01T00:00:00Z', 'owner')",
+            &[],
+        );
+        exec1(
+            &s,
+            "UPDATE projects SET verify_cmd = 'printf verified' WHERE slug = 'proj'",
+            &[],
+        );
         for (k, v) in [
             ("compute.auto_approve", "1"),
             ("compute.max_vms", "1"),
             ("compute.max_hours_per_day", "24"),
+            ("daemon.min_free_mb", "0"),
         ] {
             s.set_setting(hive_store::HUMAN_AGENT, k, v).unwrap();
         }
         const WAITED: &str = "1 job(s) waited 31 min with every slot on this machine busy or held";
+        let waited = crate::util::plus_minutes(TEST_NOW, -31);
         queued_job(&s, "j-proj", "proj", "task", "owner");
-        exec1(
-            &s,
-            "UPDATE jobs SET created_at = ?",
-            &[&crate::util::plus_minutes(TEST_NOW, -31)],
-        );
+        exec1(&s, "UPDATE jobs SET created_at = ?", &[&waited]);
         // The first machine is free to rent.
         let first = auto_compute(&s, WAITED, HANDS_WANTED_MINUTES, TEST_NOW, "daemon")
             .expect("the first rental");
         assert_eq!(first.project, "proj");
-        // It ran two jobs of proj: one failed, one handed its commit to the
-        // landing; the machine went after its hours (long enough ago that
-        // no pause after a release holds).
+        // The machine went after its hours (long enough ago that no pause
+        // after a release holds).
         exec1(
             &s,
             "UPDATE compute_requests SET status = 'released', executor = 'hands-cr-1' WHERE id = ?",
             &[&first.id],
         );
         let ran = crate::util::plus_hours(TEST_NOW, -60.0);
-        for (run, job, status, commits) in
-            [("run-a", "j-a", "failed", 0), ("run-b", "j-b", "done", 1)]
-        {
+        let ran_there = |run: &str, job: &str, status: &str, commits: i32| {
             exec1(
                 &s,
                 "INSERT INTO runs(id, job_id, agent, project, started_at, finished_at, status, commits, executor) VALUES(?, ?, 'hands-1', 'proj', ?, ?, ?, ?, 'hands-cr-1')",
                 &[&run, &job, &ran, &ran, &status, &commits],
             );
-        }
+        };
+        // Only a review ran there: it lands nothing, so it holds nothing.
+        queued_job(&s, "j-review", "proj", "review", "owner");
+        exec1(
+            &s,
+            "UPDATE jobs SET status = 'done' WHERE id = 'j-review'",
+            &[],
+        );
+        ran_there("run-review", "j-review", "done", 0);
+        assert_eq!(rented_landed_nothing(&*s.conn().unwrap(), "proj"), None);
+        // It ran two work jobs of proj: one failed, one finished with a
+        // commit for the landing.
+        queued_job(&s, "j-a", "proj", "task", "owner");
+        exec1(
+            &s,
+            "UPDATE jobs SET status = 'failed' WHERE id = 'j-a'",
+            &[],
+        );
+        ran_there("run-a", "j-a", "failed", 0);
+        let landing =
+            crate::test_helpers_daemon::push_branch(&s, &proj, &repo, "hive/hands-1/landing");
+        let landing_id = landing.str("id");
+        ran_there("run-b", &landing_id, "done", 1);
         let err = auto_compute(&s, WAITED, HANDS_WANTED_MINUTES, TEST_NOW, "daemon")
             .expect_err("no second machine before a landing");
         let NoAutoCompute::Why(why) = &err else {
@@ -4931,6 +5048,10 @@ mod tests {
         };
         assert!(
             why.starts_with("no rented machine has landed work for proj yet (2 run(s) on "),
+            "the review is not counted: {why}"
+        );
+        assert!(
+            why.ends_with("the way out is a machine asked for by hand (`hive compute request --project proj`) whose work lands"),
             "{why}"
         );
         // A job that landed after it failed there and ran on this machine
@@ -4953,7 +5074,7 @@ mod tests {
         exec1(
             &s,
             "UPDATE jobs SET created_at = ? WHERE id = 'j-other'",
-            &[&crate::util::plus_minutes(TEST_NOW, -31)],
+            &[&waited],
         );
         let second = auto_compute(&s, WAITED, HANDS_WANTED_MINUTES, TEST_NOW, "daemon")
             .expect("the other project rents");
@@ -4964,18 +5085,194 @@ mod tests {
             &[&second.id],
         );
         exec1(&s, "DELETE FROM jobs WHERE id = 'j-other'", &[]);
-        // Once the rented machine's own work lands, proj rents again.
-        exec1(
-            &s,
-            "INSERT INTO events(at, actor, action, subject, detail) VALUES(?, 'daemon', 'land.merged', 'proj', ?)",
-            &[
-                &ran,
-                &serde_json::json!({"project": "proj", "kind": "job", "job": "j-b", "jobs": ["j-b"]}).to_string(),
-            ],
+        // The delivery pass lands the rented machine's own work (proj has
+        // no upstream, so it lands locally on main): proj rents again.
+        let proj = crate::board::project_by_slug(&s.conn().unwrap(), proj.str("slug"));
+        crate::forge::forget_sync_memo();
+        let lines = crate::delivery::tend(&s, std::slice::from_ref(&proj), TEST_NOW);
+        assert!(
+            lines.iter().any(|l| l.starts_with("proj: landed")),
+            "{lines:?}"
         );
         let third = auto_compute(&s, WAITED, HANDS_WANTED_MINUTES, TEST_NOW, "daemon")
             .expect("rents once a rented machine's work landed");
         assert_eq!(third.project, "proj");
+    }
+
+    /// Review of PR 295, item 3: the needs path rents only for the projects
+    /// whose needs brought it there - a project held back by rule 4 does not
+    /// hand its turn to another project's plain job - and the machine goes
+    /// to the job a slot would take first: the owner's work, then the
+    /// higher priority, before an older low-priority job of another project.
+    #[test]
+    fn a_rental_goes_to_the_projects_that_asked_and_to_the_job_a_slot_takes_first() {
+        let _serial = crate::test_helpers::serial();
+        let s = store_with_projects(&["proj", "other"]);
+        for (k, v) in [
+            ("compute.auto_approve", "1"),
+            ("compute.max_vms", "1"),
+            ("compute.max_hours_per_day", "24"),
+        ] {
+            s.set_setting(hive_store::HUMAN_AGENT, k, v).unwrap();
+        }
+        const WAITED: &str = "1 job(s) waited 40 min with every slot on this machine busy or held";
+        // other's improve job waited longest, at a low priority; proj's
+        // owner task came later at a high one.
+        queued_job(&s, "j-low", "other", "improve", "evolve");
+        queued_job(&s, "j-owner", "proj", "task", "task:TASK-1");
+        exec1(
+            &s,
+            "UPDATE jobs SET created_at = ?, priority = 10 WHERE id = 'j-low'",
+            &[&crate::util::plus_minutes(TEST_NOW, -60)],
+        );
+        exec1(
+            &s,
+            "UPDATE jobs SET created_at = ?, priority = 80 WHERE id = 'j-owner'",
+            &[&crate::util::plus_minutes(TEST_NOW, -40)],
+        );
+        let rented = rented_caps(&s);
+        let since = crate::util::plus_minutes(TEST_NOW, -HANDS_WANTED_MINUTES);
+        let order: Vec<String> = rentable_jobs(&*s.conn().unwrap(), &rented, &since, TEST_NOW)
+            .iter()
+            .map(|r| r.str("id"))
+            .collect();
+        assert_eq!(order, ["j-owner", "j-low"]);
+        let req = auto_compute(&s, WAITED, HANDS_WANTED_MINUTES, TEST_NOW, "daemon")
+            .expect("the owner's job rents");
+        assert_eq!(req.project, "proj");
+        assert!(
+            req.reason.ends_with("j-owner (task) is first in line"),
+            "{}",
+            req.reason
+        );
+        exec1(
+            &s,
+            "UPDATE compute_requests SET status = 'released', executor = 'hands-cr-1' WHERE id = ?",
+            &[&req.id],
+        );
+        // Between two of the fleet's own jobs the higher priority goes first.
+        queued_job(&s, "j-high", "other", "improve", "evolve");
+        exec1(
+            &s,
+            "UPDATE jobs SET created_at = ?, priority = 50 WHERE id = 'j-high'",
+            &[&crate::util::plus_minutes(TEST_NOW, -35)],
+        );
+        let order: Vec<String> = rentable_jobs(&*s.conn().unwrap(), &rented, &since, TEST_NOW)
+            .iter()
+            .map(|r| r.str("id"))
+            .collect();
+        assert_eq!(order, ["j-owner", "j-high", "j-low"]);
+        // That machine ran proj's work and none of it landed: proj is held.
+        exec1(
+            &s,
+            "INSERT INTO runs(id, job_id, agent, project, started_at, finished_at, status, commits, executor) VALUES('run-1', 'j-ran', 'hands-1', 'proj', ?1, ?1, 'failed', 0, 'hands-cr-1')",
+            &[&crate::util::plus_hours(TEST_NOW, -60.0)],
+        );
+        queued_job(&s, "j-ran", "proj", "task", "owner");
+        exec1(
+            &s,
+            "UPDATE jobs SET status = 'failed' WHERE id = 'j-ran'",
+            &[],
+        );
+        // The needs of proj brought the daemon here: other's plain job does
+        // not get the machine in its place.
+        let only: std::collections::BTreeSet<String> = ["proj".to_string()].into();
+        let err = auto_compute_for(
+            &s,
+            WAITED,
+            HANDS_WANTED_MINUTES,
+            TEST_NOW,
+            "daemon",
+            Some(&only),
+        )
+        .expect_err("proj is held back and nothing else asked");
+        let NoAutoCompute::Why(why) = &err else {
+            panic!("{err}");
+        };
+        assert!(
+            why.starts_with("no rented machine has landed work for proj yet"),
+            "{why}"
+        );
+        // Only other's jobs asked: none of proj's, so it says whose.
+        exec1(
+            &s,
+            "UPDATE jobs SET status = 'done' WHERE project = 'other'",
+            &[],
+        );
+        let only: std::collections::BTreeSet<String> = ["other".to_string()].into();
+        let err = auto_compute_for(
+            &s,
+            WAITED,
+            HANDS_WANTED_MINUTES,
+            TEST_NOW,
+            "daemon",
+            Some(&only),
+        )
+        .expect_err("other has no job left");
+        assert_eq!(
+            err,
+            NoAutoCompute::Why(format!(
+                "no improve or task job of other that a rented Linux machine could run has waited {HANDS_WANTED_MINUTES} min"
+            ))
+        );
+    }
+
+    /// Review of PR 295, item 2: the owner's question says why the daemon
+    /// rented nothing, not a hint to set `compute.auto_approve` (on already)
+    /// or that it "rents Linux only" when the need is Linux and renting was
+    /// held for want of a landing.
+    #[test]
+    fn the_machine_questions_say_why_the_daemon_rents_none() {
+        let _serial = crate::test_helpers::serial();
+        let s = store_with_projects(&["proj"]);
+        exec1(&s, "UPDATE projects SET brain = 1 WHERE slug = 'proj'", &[]);
+        let brain = || crate::board::brain_project(&*s.conn().unwrap());
+        let held = "no rented machine has landed work for proj yet (2 run(s) on CR-1, none landed), so the daemon rents no other for proj until one has";
+        let post = hands_wanted(
+            &s,
+            brain(),
+            3,
+            2,
+            31,
+            held,
+            TEST_NOW.into(),
+            "daemon".into(),
+        );
+        let summary = post.str("summary");
+        assert!(
+            summary.starts_with("hands wanted: 3 job(s) waited 31 min")
+                && summary.ends_with("and the daemon rents no machine for them"),
+            "{summary}"
+        );
+        assert!(
+            post.str("body")
+                .contains(&format!("It rents no machine for them: {held}.")),
+            "{}",
+            post.str("body")
+        );
+        for said in [post.str("summary"), post.str("body")] {
+            assert!(!said.contains("compute.auto_approve"), "{said}");
+        }
+        let u = UnmetNeeds {
+            project: "proj".into(),
+            needs: "linux".into(),
+            jobs: 1,
+            minutes: 12,
+        };
+        let posts = needs_wanted(
+            &s,
+            brain(),
+            &[(u, held.to_string())],
+            TEST_NOW.into(),
+            "daemon".into(),
+        );
+        assert_eq!(posts.len(), 1);
+        let body = posts[0].str("body");
+        assert!(
+            body.contains(&format!("The daemon rents no machine for them: {held}.")),
+            "{body}"
+        );
+        assert!(!body.contains("rents Linux machines only"), "{body}");
     }
 
     /// A hub whose daemon rents on its own from a provider the test fakes,
