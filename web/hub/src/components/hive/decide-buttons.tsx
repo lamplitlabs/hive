@@ -1,12 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef } from "react";
 import { CheckIcon, StarIcon, XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "./confirm";
 import { writes, type AskOption } from "@/lib/api";
 import type { QuestionAnswers } from "@/lib/owner-questions";
 import { cn } from "@/lib/utils";
+import { useAnswerDialog } from "./use-answer-dialog";
+import { focusAnswer, optionAnswer, type YesNoAnswer } from "@/lib/answer-dialog";
 
 export function DecideButtons({
   id,
@@ -28,22 +30,24 @@ export function DecideButtons({
   // In a list row the pair keeps to the row's right edge on a phone too ("w-auto justify-end").
   className?: string;
 }) {
-  const [open, setOpen] = useState<"yes" | "no" | null>(null);
+  // Keyed by each opening (lib/answer-dialog.ts): a note typed under No is
+  // never sent with a Yes.
+  const { answer: open, key, pick, dialog } = useAnswerDialog<YesNoAnswer>();
   if (!canDecide) return <span className="ml-auto text-[13px] text-muted-foreground">To answer, open Hive on the machine that runs it.</span>;
   const yes = open === "yes";
   return (
     <>
       <span className={cn("flex w-full flex-wrap justify-start gap-2 sm:ml-auto sm:w-auto sm:justify-end", className)}>
-        <Button size={size} variant="outline" onClick={() => setOpen("no")} aria-label={noLabel + " to: " + summary}>
+        <Button size={size} variant="outline" onClick={() => pick("no")} aria-label={noLabel + " to: " + summary}>
           <XIcon /> {noLabel}
         </Button>
-        <Button size={size} onClick={() => setOpen("yes")} aria-label={yesLabel + " to: " + summary}>
+        <Button size={size} onClick={() => pick("yes")} aria-label={yesLabel + " to: " + summary}>
           <CheckIcon /> {yesLabel}
         </Button>
       </span>
       <ConfirmDialog
-        open={open !== null}
-        onOpenChange={(o) => !o && setOpen(null)}
+        key={key}
+        {...dialog}
         title={yes ? yesLabel + "?" : noLabel + "?"}
         description={
           <>
@@ -61,12 +65,16 @@ export function DecideButtons({
 }
 
 // One answer to pick: the recommended one filled, starred and marked, the
-// others outlined; `effect` (what picking it does) is its tooltip. Shared by
+// others outlined; `filled` fills a default the agent did not mark (the
+// first answer of a message from an older hub, TASK-149 item 14) without
+// calling it recommended; `effect` (what picking it does) is its tooltip. Shared by
 // the board's questions (AnswerPicker) and a lead's message in a task or
 // chat, so the recommended answer reads the same wherever an agent asks.
 export function AnswerButton({
+  ref,
   label,
   recommended,
+  filled,
   effect,
   about,
   size = "default",
@@ -74,8 +82,10 @@ export function AnswerButton({
   className,
   onClick,
 }: {
+  ref?: React.Ref<HTMLButtonElement>;
   label: string;
   recommended?: boolean;
+  filled?: boolean;
   effect?: string;
   about?: string;
   size?: "xs" | "sm" | "default";
@@ -85,9 +95,10 @@ export function AnswerButton({
 }) {
   return (
     <Button
+      ref={ref}
       type="button"
       size={size}
-      variant={recommended ? "default" : "outline"}
+      variant={recommended || filled ? "default" : "outline"}
       className={className}
       disabled={disabled}
       onClick={onClick}
@@ -116,6 +127,7 @@ export function AnswerPicker({
   canDecide = true,
   size = "default",
   className,
+  focusFirst = false,
 }: {
   id: string;
   summary: string;
@@ -124,8 +136,21 @@ export function AnswerPicker({
   canDecide?: boolean;
   size?: "xs" | "sm" | "default";
   className?: string;
+  // Give the recommended answer the focus (the one ask in front of the owner).
+  focusFirst?: boolean;
 }) {
-  const [picked, setPicked] = useState<AskOption | null>(null);
+  // Keyed by each opening (lib/answer-dialog.ts), by the answer's label: a
+  // note typed under one answer is never sent with another.
+  const { answer: pickedLabel, key, pick, dialog } = useAnswerDialog<string>();
+  const first = useRef<HTMLButtonElement>(null);
+  const focusOn = answers.kind === "pick" ? focusAnswer(answers.options) : null;
+  // The recommended answer - first, filled and starred - takes the focus when
+  // the answers are put in front of the owner, so Enter or Space picks it
+  // (TASK-149 item 22). Only with `focusFirst`: a list of asks would fight
+  // over the focus otherwise.
+  useEffect(() => {
+    if (focusFirst && focusOn) first.current?.focus({ preventScroll: true });
+  }, [focusFirst, focusOn]);
   if (!canDecide) return <span className="ml-auto text-[13px] text-muted-foreground">To answer, open Hive on the machine that runs it.</span>;
   if (answers.kind === "with-lead") {
     return (
@@ -134,17 +159,18 @@ export function AnswerPicker({
       </span>
     );
   }
-  const send = (o: AskOption, words: string) => (answers.byLabel ? writes.decideOption(id, o.label, words) : writes.decide(id, o.answer === "yes" ? "yes" : "no", words));
+  const picked: AskOption | null = answers.options.find((o) => o.label === pickedLabel) ?? null;
+  const spec = picked ? optionAnswer(id, picked, answers.byLabel) : null;
   return (
     <>
       <span className={cn("flex w-full flex-wrap justify-start gap-2 sm:ml-auto sm:w-auto sm:justify-end", className)} data-answers="pick">
         {answers.options.map((o) => (
-          <AnswerButton key={o.label} label={o.label} recommended={o.recommended} effect={o.effect} size={size} about={summary} onClick={() => setPicked(o)} />
+          <AnswerButton key={o.label} ref={o.label === focusOn ? first : undefined} label={o.label} recommended={o.recommended} effect={o.effect} size={size} about={summary} onClick={() => pick(o.label)} />
         ))}
       </span>
       <ConfirmDialog
-        open={picked !== null}
-        onOpenChange={(o) => !o && setPicked(null)}
+        key={key}
+        {...dialog}
         title={(picked?.label ?? "") + "?"}
         description={
           <>
@@ -154,10 +180,10 @@ export function AnswerPicker({
             {stop ? <span className="mt-2 block">{picked?.answer === "yes" ? "Self-improvement carries on past this stop. The change that stopped it is not tried again as written." : "Self-improvement stays paused until you say it may carry on."}</span> : <span className="mt-2 block">Your answer goes on the board, so the agents know what to do next.</span>}
           </>
         }
-        action={picked?.label ?? ""}
-        words={{ label: "A note for the agents (optional)", placeholder: "Because…" }}
-        success={"Answered: " + (picked?.label ?? "") + ". The agents will act on it."}
-        onConfirm={(words) => (picked ? send(picked, words) : Promise.resolve({}))}
+        action={spec?.action ?? ""}
+        words={spec?.words ?? { label: "A note for the agents (optional)" }}
+        success={spec?.success ?? ""}
+        onConfirm={(words) => (spec ? spec.send(writes, words) : Promise.resolve({}))}
       />
     </>
   );
