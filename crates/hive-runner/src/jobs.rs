@@ -297,13 +297,22 @@ pub(crate) fn owner_work_queued_here(s: &hive_store::Store, now: &str) -> bool {
 }
 
 /// [`OWNER_DRIVEN_SQL`] over a job row already in hand (a run in flight).
+/// SQLite's `LIKE` ignores the case of ASCII letters, so the prefixes are
+/// read the same way here: a `TASK:x` source is owner-driven to the lease
+/// and must be to the yield and the kept slot too (review of PR 284,
+/// item a).
 pub(crate) fn is_owner_driven(job: &Row) -> bool {
     let kind = job.str("kind");
     let source = job.str("source");
-    ((kind == "lead" || kind == "answer") && !source.starts_with("lead-role:"))
+    let starts = |prefix: &str| {
+        source
+            .get(..prefix.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+    };
+    ((kind == "lead" || kind == "answer") && !starts("lead-role:"))
         || kind == "review"
-        || source.starts_with("task:")
-        || source.starts_with("security:")
+        || starts("task:")
+        || starts("security:")
 }
 
 /// The `fits` entry that opens a slot to owner-driven jobs alone: the
@@ -952,6 +961,11 @@ mod tests {
             ("improve", "evolve"),
             ("review", "review:proj:7"),
             ("improve", "pr-fix:proj:7"),
+            // SQLite's LIKE ignores the case of ASCII letters: the row
+            // reads these as the SQL does (review of PR 284, item a).
+            ("task", "TASK:TASK-002"),
+            ("task", "Security:proj:lockfile"),
+            ("lead", "LEAD-ROLE:proj:ops:20260906T100000Z"),
         ]
         .map(|(kind, source)| add(kind, source));
         let mut by_sql = crate::util::must_rows(
@@ -973,7 +987,7 @@ mod tests {
             .collect::<Vec<_>>();
         by_row.sort();
         assert_eq!(by_sql, by_row);
-        assert_eq!(by_row.len(), 7, "{by_row:?}");
+        assert_eq!(by_row.len(), 9, "{by_row:?}");
     }
 
     #[test]

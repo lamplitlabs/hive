@@ -77,8 +77,14 @@ the lane is free:
   the fleet: the owner's bound under `verify.lock` (share plus one work jobs
   of the project in flight), or every slot of the fleet. The fleet is full
   when no slot would be offered to the owner's job this tick: no free slot on
-  a paired machine and no room the load governor gives here
-  (`daemon_load::owner_room`). This is not the fleet's nominal total, which
+  a paired machine that could run that job and no room the load governor
+  gives here (`daemon_load::owner_room`). A paired machine's free slot counts
+  only when the machine is active, serves the job's project, offers every
+  word the job needs (`needs`), is not kept for the work that needs it
+  (`reserved`) while the job needs nothing, and is not marked unfit for the
+  project - the checks the lease makes (`yield_lane::Machines`). An idle
+  machine the owner's job cannot use is no room for it, so a fleet run in
+  its way is still asked to hold. This is not the fleet's nominal total, which
   stays the same when the kernel's memory warning halves the cap. The plain
   share is not in the way, since the owner's work leases past it. The
   project's narrowed lanes (fewer than its share) are not in the way either -
@@ -94,6 +100,20 @@ the lane is free:
   (`LeaseOpts::keep_slot`), so the run would lose its step for nothing. A
   paired machine's run, or the owner's first task within its share, is
   still asked.
+- **The machine the run is on.** The lane a run frees is on its own machine,
+  so a run is asked to hold only when that machine could take the owner's
+  job (the same checks as a free slot above). A fleet run on a paired
+  machine that does not serve the project, or lacks what the job needs, is
+  passed over for the next youngest run; when no run would free a lane the
+  job could take, nothing is asked and the reason is printed once.
+- **The owner's next task.** With the cap full of fleet work and two owner
+  tasks queued, the first takes the express slot, one over the cap, and no
+  fleet run is asked for it. The second then waits for a run to end: a
+  local run freeing its slot would leave the machine at its cap with the
+  owner's one run over the line in flight, where the governor starts
+  nothing (`owner_refusal`), so no run is asked to hold for it. One owner
+  run over the line, never two, is meant; before this a fleet run lost its
+  step and the second task waited anyway.
 - **Everywhere.** No console drain is running (a drain starts nothing), and
   neither the bulk volume nor the disk floor would refuse the start.
 - **Local.** The login gate is open, and `daemon_load::owner_refusal` returns

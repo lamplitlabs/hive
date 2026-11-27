@@ -2442,7 +2442,18 @@ pub(crate) fn daemon(
                     update_waits,
                     owner_running_local,
                 );
-                let free_slots = slots.len() - local_offered + local_offered.min(local_room);
+                // Each free slot by its machine: the yield counts one as
+                // room only for an owner job that machine could run (review
+                // of PR 284, item b).
+                let free_slots = slots
+                    .iter()
+                    .filter(|n| *n != crate::executor::LOCAL_EXECUTOR)
+                    .cloned()
+                    .chain(std::iter::repeat_n(
+                        crate::executor::LOCAL_EXECUTOR.to_string(),
+                        local_offered.min(local_room),
+                    ))
+                    .collect::<Vec<_>>();
                 // Whether the slot a local run frees would be the machine's
                 // last free one under the cap, which the dispatch keeps back
                 // from the owner's work past its share (keep_slot below):
@@ -5551,6 +5562,56 @@ mod tests {
                 &TEST_NOW,
             ],
         );
+    }
+
+    #[test]
+    fn daemon_asks_no_fleet_run_to_yield_for_the_owners_second_task_while_its_first_runs_over_the_cap()
+     {
+        // Review of PR 284, item d: the slot kept for the owner's next task
+        // counts as free. The fleet's two runs fill the cap of two and the
+        // owner queues two tasks: the express slot, one over the cap, is
+        // free for the first, so no fleet run is asked to hold for it. Once
+        // the first runs there, a fleet run freeing its slot would leave
+        // the machine at its cap with the owner's one run over the line in
+        // flight, which starts nothing: the second task waits for a run to
+        // end, as meant (one run over the line, never two), and no fleet
+        // run loses its step for it. Before PR 284 a fleet run was asked at
+        // once and the second task still waited.
+        let _serial = crate::test_helpers::serial();
+        let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
+        let _calm = crate::daemon_load::pin_pressure(crate::daemon_load::CALM);
+        let live = LiveGovernor::start_with(reflected_today);
+        let fleet = [live.add("Fleet one", "test"), live.add("Fleet two", "test")];
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            live.wait_for(
+                &|t| fleet.iter().all(|f| t.contains(&format!("leased {f}"))),
+                "the fleet's two runs",
+            );
+            let first = live.add("Owner's task 1", "task:TASK-001");
+            let second = live.add("Owner's task 2", "task:TASK-002");
+            live.wait_for(
+                &|t| t.contains(&format!("leased {first}")),
+                "the owner's first task on the express slot",
+            );
+            let text = live.wait_for(
+                &|t| t.contains(&format!("the owner's {second} waits for a lane")),
+                "the reason the second task waits",
+            );
+            assert!(
+                text.contains(
+                    "no fleet run is asked to hold while the freed lane could not start it"
+                ),
+                "{text}"
+            );
+            // Another tick changes nothing.
+            live.add("Fleet wake", "test");
+            std::thread::sleep(Duration::from_millis(1500));
+            let text = live.out.string();
+            assert_eq!(live.yields(), 0, "no job.yield:\n{text}");
+            assert!(!text.contains("holds after its current step"), "{text}");
+            assert!(!text.contains(&format!("leased {second}")), "{text}");
+        }));
+        live.finish(result);
     }
 
     #[test]
