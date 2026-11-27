@@ -2025,6 +2025,10 @@ pub(crate) fn daemon(
         // Whether the one slot left open is the owner's express slot: the
         // fleet's queued work could not have had it.
         let mut express_slot = false;
+        // Whether that express slot is under the cap (a soft hold with
+        // room below it): it is then the machine's last free slot, and kept
+        // back from the owner's work past its share like any other.
+        let mut express_under_cap = false;
         // While owner-driven work is queued and the cap has room, the one
         // local slot reserved for it (docs/owner-reservation.md); and
         // whether that slot leased nothing this tick, so the fleet's queue
@@ -2495,6 +2499,27 @@ pub(crate) fn daemon(
                     owner_running_local,
                 );
                 let free_slots = slots.len() - local_offered + local_offered.min(local_room);
+                // Whether the slot a local run frees would be the machine's
+                // last free one under the cap, which the dispatch keeps back
+                // from the owner's work past its share (keep_slot below):
+                // the yield asks no local run to hold for such a job, since
+                // the freed slot would refuse it (review of PR 276, item B).
+                let after = running_local.saturating_sub(1);
+                let local_kept = crate::daemon_load::owner_room(
+                    &limits,
+                    &pressure,
+                    after,
+                    measuring,
+                    update_waits,
+                    owner_running_local,
+                ) <= 1
+                    && crate::daemon_load::under_cap(
+                        &limits,
+                        &pressure,
+                        after,
+                        measuring,
+                        update_waits,
+                    );
                 let pass = crate::yield_lane::yield_lanes_if_admitted(
                     s,
                     &now,
@@ -2503,6 +2528,7 @@ pub(crate) fn daemon(
                         everywhere,
                         local,
                         free_slots: Some(free_slots),
+                        local_kept,
                     },
                 );
                 for line in pass.asked {
@@ -2617,12 +2643,13 @@ pub(crate) fn daemon(
                         .count();
                     let owner_running = owner_running_local;
                     let reserved = usize::from(crate::selfupdate::update_pending());
+                    let measuring_local = crate::daemon_load::measuring(&s.home);
                     work_reserve = (limits.max_jobs.max(0) as usize).div_ceil(2);
                     let verdict = crate::daemon_load::decide(
                         &limits,
                         &pressure,
                         running_local,
-                        crate::daemon_load::measuring(&s.home),
+                        measuring_local,
                         reserved,
                         owner_running,
                     );
@@ -2645,6 +2672,13 @@ pub(crate) fn daemon(
                             // counts as held: an empty lane is not starvation.
                             load_held = crate::daemon_load::trim_local_slots(&mut slots, 1).max(1);
                             express_slot = true;
+                            express_under_cap = crate::daemon_load::under_cap(
+                                &limits,
+                                &pressure,
+                                running_local,
+                                measuring_local,
+                                reserved,
+                            );
                             load_hold = Some(format!(
                                 "{hold}; one express slot stays open for the owner's work"
                             ));
@@ -2750,10 +2784,13 @@ pub(crate) fn daemon(
                         // LeaseOpts::keep_slot): with every slot on the
                         // owner's tasks, the lead's sitting for the owner's
                         // message, an answer or a review would wait for a
-                        // task to end. The express slot is over the cap and
-                        // the owner's already.
+                        // task to end. The express slot over a full cap is
+                        // one past it and the owner's already; under a soft
+                        // hold with room below the cap it is the machine's
+                        // last free slot and kept like any other (review of
+                        // PR 276, item D).
                         let keep_slot = slot == crate::executor::LOCAL_EXECUTOR
-                            && !express_slot
+                            && (!express_slot || express_under_cap)
                             && local_free - local_leased <= 1;
                         let mut held = BTreeMap::new();
                         if slot == crate::executor::LOCAL_EXECUTOR
@@ -5817,6 +5854,75 @@ mod tests {
             assert!(!text.contains(&format!("leased {}", tasks[2])), "{text}");
             assert!(!text.contains(&format!("leased {fleet}")), "{text}");
             assert_eq!(crate::jobs::occupied_work_jobs(&live.s, "proj"), 2);
+        }));
+        live.finish(result);
+    }
+
+    #[test]
+    fn daemon_keeps_the_last_slot_from_the_owners_work_past_its_share_under_a_soft_hold_too() {
+        // Review of PR 276, items D and G: keep_slot at the daemon's level.
+        // Two slots, a share of one: the owner's first task runs, and its
+        // second, past the share, is refused the last free slot, which an
+        // answer to the owner then takes. Under a soft load hold with room
+        // below the cap the one slot left is the express slot; it was
+        // never kept, so the owner's second task took it and the answer
+        // waited.
+        let _serial = crate::test_helpers::serial();
+        let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
+        let calm = crate::daemon_load::pin_pressure(crate::daemon_load::CALM);
+        let live = LiveGovernor::start_with(|s| {
+            crate::capacity::pin_per_project(s, 1);
+            reflected_today(s);
+        });
+        let first = live.add("Owner's task 1", "task:TASK-001");
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            live.wait_for(
+                &|t| t.contains(&format!("leased {first}")),
+                "the owner's first task",
+            );
+            // Calm: the second task is past the share and the free slot is
+            // the last one.
+            let second = live.add("Owner's task 2", "task:TASK-002");
+            std::thread::sleep(Duration::from_millis(1500));
+            let text = live.out.string();
+            assert!(!text.contains(&format!("leased {second}")), "{text}");
+            // A soft hold: load 30 on 12 CPUs, over the line 24 and under
+            // twice it, one run of two in flight. The express slot is the
+            // last one under the cap, and kept the same.
+            drop(calm);
+            let _soft = crate::daemon_load::pin_pressure(crate::daemon_load::Pressure {
+                load1: Some(30.0),
+                ..crate::daemon_load::CALM
+            });
+            live.add("Fleet wake", "test");
+            live.wait_for(
+                &|t| t.contains("one express slot stays open"),
+                "the soft hold's express slot",
+            );
+            std::thread::sleep(Duration::from_millis(1500));
+            let text = live.out.string();
+            assert!(!text.contains(&format!("leased {second}")), "{text}");
+            // The owner's answer is not work past a share: it takes the slot.
+            let answer = crate::jobs::add_job(
+                &live.s,
+                "proj".into(),
+                "answer".into(),
+                "Answer the owner".into(),
+                "fake worker only".into(),
+                0,
+                100,
+                "question:abc".into(),
+                hive_store::HUMAN_AGENT.into(),
+                false,
+            )
+            .unwrap()
+            .0
+            .str("id");
+            let text = live.wait_for(
+                &|t| t.contains(&format!("leased {answer}")),
+                "the owner's answer on the kept slot",
+            );
+            assert!(!text.contains(&format!("leased {second}")), "{text}");
         }));
         live.finish(result);
     }

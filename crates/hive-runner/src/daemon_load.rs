@@ -314,6 +314,39 @@ pub(crate) fn owner_room(
     }
 }
 
+/// Whether the next local run would start under the cap (the cap halved
+/// under the kernel's memory warning) with no hard hold standing: `running`,
+/// `measuring` and `reserved` as in [`decide`]. A slot under the cap, the
+/// express slot under a soft hold among them, is kept back from the owner's
+/// work past its project's share when it is the machine's last free one
+/// (jobs.rs `LeaseOpts::keep_slot`); the express slot over a full cap is one
+/// past it, and nothing is kept there. The slot a waiting self-update keeps
+/// (`reserved`) counts as taken, so with an update waiting two slots stay
+/// out of the owner's work past its share, the update's and the kept one
+/// (docs/owner-reservation.md).
+pub(crate) fn under_cap(
+    limits: &Limits,
+    pressure: &Pressure,
+    running: usize,
+    measuring: usize,
+    reserved: usize,
+) -> bool {
+    let hard = pressure.mem_critical
+        || pressure
+            .free_mem_mb
+            .is_some_and(|free| limits.min_free_mem_mb > 0 && free < limits.min_free_mem_mb)
+        || pressure
+            .load1
+            .is_some_and(|load| load > limits.max_load * EXPRESS_LOAD_FACTOR);
+    let cap = limits.max_jobs.max(0) as usize;
+    let cap = if pressure.mem_warning && !hard {
+        (cap / 2).max(1)
+    } else {
+        cap
+    };
+    !hard && running + measuring + reserved < cap
+}
+
 /// Why the owner's next run could not start on this machine once a fleet
 /// run yielded its lane, or None when it could: the yield (yield_lane.rs)
 /// asks a fleet run to hold only then. It is the governor's own answer for

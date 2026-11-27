@@ -1230,14 +1230,21 @@ tasks, `task:…`, the security updates) takes any free slot, past the narrowed
 count and past the share, with two bounds. The last free local slot of a tick is
 kept back from the owner's work past its project's share, so a lead's sitting
 for the owner's message, an answer, a review or another project's owner task
-does not wait for one of the tasks to end. And while `verify.lock` is on, a
-project runs at most its share plus one work jobs of the owner's: a run's commit
-cap is fixed when it starts, and a later run would queue one more check in front
-of its commit. Each such run's commit cap is widened to cover the checks it shares the lock with -
-`n × the verify median + harness.step_timeout` for `n` work runs in the
-project, never below the configured cap; with the default five-minute step the
-run log says `commit cap widened to 51 min: 2 checks share the verify lock on
-amistio-template (verify ~23 min each)`. The fleet's work keeps the narrowed
+does not wait for one of the tasks to end ("past the share" counts the owner's
+own work jobs in the project, so its first task in a project the fleet fills
+still takes that slot). And while `verify.lock` is on, a project runs at most
+its share plus one work jobs, the owner's past that wait: a run's commit cap is
+fixed when it starts, and a run past the bound would queue one more check in
+front of an earlier run's commit than its cap covers. Every owner work run of
+the project, the first one started alone included, gets a commit cap that
+covers the bound - `(share + 1) × the verify median + harness.step_timeout`,
+never below the configured cap - since the runs that start after it may put
+their checks before its commit; at a share of one with the default five-minute
+step the run log says `commit cap widened to 51 min: up to 2 checks share the
+verify lock on amistio-template (verify ~23 min each)`. The fleet's work runs
+count toward the bound but keep the configured cap, as they stay within the
+narrowed lanes; a lead's commit and the landing's own check take the same lock
+and are not counted, the step's grace covers them. The fleet's work keeps the narrowed
 lanes, and a fleet run in the owner's way is still asked to hold, so the lanes
 return to their count and its own commit is not killed waiting on the owner's
 check. The owner's work fits every restart window too (the window names the
@@ -1406,8 +1413,8 @@ answers keep the plain limit. The project's idle line says so: `2 of 4 work
 lanes open: the check takes ~10 min and 2 in a row fit the 25 min commit cap
 (harness.commit_timeout)`. A quicker check, a longer commit cap, or
 `verify.lock off` opens the lanes again. The lanes are the fleet's: the owner's
-work takes one beyond the count at once, up to the share plus one, with its
-commit cap widened to cover the checks it then shares the lock with - at a
+work takes lanes beyond the count at once, up to the share plus one work jobs,
+each of its runs with a commit cap widened to cover that many checks - at a
 share of one too (see the express lane above).
 
 When the deadline still lands on a worker's `git commit` - the change finished,
