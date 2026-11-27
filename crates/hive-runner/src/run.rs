@@ -1834,6 +1834,72 @@ pub(crate) fn run_job(
             log.put(&summary);
             return Ok(());
         }
+        // Ended from outside (TASK-151 item 3): a SIGTERM or SIGKILL with no
+        // hold, cancel or timeout on record is not the worker's doing, so the
+        // run is not judged. The job goes back to the queue without using an
+        // attempt, the clone stays, the commits are kept on the job's
+        // `-failed` branch and as a patch the next brief starts from, and the
+        // daemon posts one finding for the runs that ended together. A
+        // worker that had already finished the job keeps its finish.
+        if let Some(signal) = crate::signal_stop::outside_signal(out.timeout, out.exit_code)
+            && !finished_by_worker(&c)
+            && !owner_cancelled.load(Ordering::SeqCst)
+            && !cancel.is_cancelled()
+        {
+            let on_record = crate::signal_stop::stop_on_record(s, &job.str("id"), &run_id);
+            let earlier = crate::signal_stop::earlier_requeues(&*c, &job.str("id"));
+            if !on_record.is_empty() {
+                log.add(format!(
+                    "the worker exited {} ({signal}), but {on_record}; judged as it stands",
+                    out.exit_code
+                ));
+            } else if earlier >= crate::signal_stop::SIGNAL_REQUEUE_LIMIT {
+                log.add(format!(
+                    "the worker exited {} ({signal}) from outside, and this job was requeued {earlier} times that way already; judged as it stands",
+                    out.exit_code
+                ));
+            } else {
+                let mut stop = crate::signal_stop::Signalled {
+                    run: run_id.clone(),
+                    job: job.str("id"),
+                    project: project.str("slug"),
+                    agent: agent.to_string(),
+                    executor: ex.name(),
+                    exit: out.exit_code,
+                    signal: signal.into(),
+                    commits: ex.commit_count(&base),
+                    ..Default::default()
+                };
+                if stop.commits > 0 && !root.is_empty() {
+                    let kept_branch = crate::land::failed_work_branch(agent, &job.str("id"));
+                    let kept = crate::land::keep_failed_work(
+                        &root,
+                        |dst| {
+                            matches!(
+                                fetch_run_work(s, &cancel, ex.as_ref(), &job.str("id"), &root, dst, &log),
+                                Ok(o) if o.exit_code == 0
+                            )
+                        },
+                        &base,
+                        &kept_branch,
+                        &home,
+                        &project.str("slug"),
+                    );
+                    if !kept.is_empty() {
+                        stop.branch = kept_branch;
+                        if let Some((_, patch)) = kept.split_once(" and in ") {
+                            stop.patch = patch.trim().to_string();
+                        }
+                    }
+                }
+                commits = stop.commits;
+                status = "held".into();
+                summary = stop.summary();
+                stop.record(s, &s.now(), "runner");
+                log.put(&summary);
+                return Ok(());
+            }
+        }
         parsed = crate::brief::parse_result_text(ex.result_text().map(|t| secret_grant.redact(&t)));
         let current_job = crate::jobs::job_row(&*c, job.str("id"));
         if !is_nil(&current_job)
@@ -6348,6 +6414,125 @@ mod tests {
             s.held_harness_session_for_job(&job.str("id"))
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn run_job_requeues_a_worker_ended_from_outside_without_using_an_attempt() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = hive_testutil::env_lock();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let s = new_store();
+        let (_, root) = new_repo(&s);
+        let job = staged_work_job(&s);
+        let job_id = job.str("id");
+        let attempts = crate::jobs::job_row(&conn(&s), job_id.clone()).int("attempts");
+        assert_eq!(attempts, 1, "the lease took an attempt");
+        // The worker commits, then is killed from outside as a `pkill` did
+        // to every worker on 2026-11-26: SIGTERM, no hold, cancel or timeout.
+        let worker =
+            "echo note > NOTE.md && git add NOTE.md && git commit -q -m note && kill -TERM $$";
+        let r = run_job(
+            &s,
+            job.clone(),
+            "aurora",
+            TEST_NOW,
+            RunOpts {
+                worker_cmd: format!("sh -c {}", crate::util::shell_quote(worker)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(r.int("exit_code"), 143, "run: {r:?}");
+        assert_eq!(r.str("status"), "held", "run: {r:?}");
+        assert!(
+            r.str("summary")
+                .starts_with("ended by an outside SIGTERM (exit 143)"),
+            "run: {r:?}"
+        );
+        let after = crate::jobs::job_row(&conn(&s), job_id.clone());
+        assert_eq!(after.str("status"), "queued", "job: {after:?}");
+        assert_eq!(
+            after.int("attempts"),
+            attempts - 1,
+            "the lease's attempt is given back: {after:?}"
+        );
+        assert_eq!(after.str("lease_agent"), "", "job: {after:?}");
+        // The commit is kept: on the job's -failed branch in the checkout,
+        // and in the clone, which stays for the queued job.
+        let kept = crate::land::failed_work_branch("aurora", &job_id);
+        let log = run(&root, &["git", "log", "--format=%s", "-1", &kept]);
+        assert_eq!(log.trim(), "note", "kept branch {kept}");
+        let clone = crate::test_helpers::work_leftovers(&s.home);
+        assert!(!clone.is_empty(), "the clone is kept");
+        // The event names the run and the branch; the next brief reads it.
+        let ev = crate::util::must_one(
+            &conn(&s),
+            "SELECT detail FROM events WHERE action = 'job.signalled' AND subject = ?",
+            &[&job_id],
+        );
+        let d = crate::util::json_map(&ev.str("detail"));
+        assert_eq!(
+            d.get("run").and_then(|v| v.as_str()),
+            Some(r.str("id").as_str())
+        );
+        assert_eq!(
+            d.get("branch").and_then(|v| v.as_str()),
+            Some(kept.as_str())
+        );
+        let earlier = crate::brief::earlier_attempt(&s, &job_id, "fjord").unwrap();
+        assert!(earlier.why.contains("outside SIGTERM"), "{earlier:?}");
+        assert!(earlier.patch.ends_with(".patch"), "{earlier:?}");
+        // Not judged: no result post, and the job is not counted as failed.
+        assert_eq!(
+            crate::util::must_one(
+                &conn(&s),
+                "SELECT jobs_failed FROM agents WHERE name = 'aurora'",
+                &[]
+            )
+            .int("jobs_failed"),
+            0
+        );
+        // A worker that exits 143 on its own, the same way, past the limit
+        // of such requeues is judged as it stands.
+        for _ in 0..crate::signal_stop::SIGNAL_REQUEUE_LIMIT {
+            crate::util::event_at(
+                &conn(&s),
+                TEST_NOW,
+                "runner",
+                "job.signalled",
+                &job_id,
+                json!({}),
+            );
+        }
+        let job = crate::jobs::lease_job(
+            &s,
+            "aurora".into(),
+            TEST_NOW.into(),
+            crate::jobs::LeaseOpts {
+                job_id: job_id.clone(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let r = run_job(
+            &s,
+            job,
+            "aurora",
+            TEST_NOW,
+            RunOpts {
+                worker_cmd: "sh -c 'exit 143'".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_ne!(r.str("status"), "held", "run: {r:?}");
+        assert_eq!(
+            crate::jobs::job_row(&conn(&s), job_id.clone()).int("attempts"),
+            attempts,
+            "past the limit the attempt is used"
         );
     }
 
