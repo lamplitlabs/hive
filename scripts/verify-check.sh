@@ -50,7 +50,9 @@
 # - No HIVE_JOB, HIVE_AGENT or HIVE_SESSION, as the daemon runs the check
 #   (schedule_script.rs script_env drops them), so a run by hand inside a job
 #   tests the same way. Some tests rely on an earlier test of their process
-#   to clear them, and a chunk has a different earlier test.
+#   to clear them, and a chunk has a different earlier test. No
+#   HIVE_HARNESS_STEPS either: the harness tests would append their own
+#   steps and a `finish` event to the live run's steps file.
 #
 # How many chunks run at once: VERIFY_POOL when it is set (a whole number of
 # at least 1, from the hand's environment), else half the CPUs, at least 2
@@ -334,7 +336,7 @@ if [ "${1:-}" = "--chunk" ]; then
   start=$(date +%s)
   rc=0
   (
-    unset HIVE_JOB HIVE_AGENT HIVE_SESSION
+    unset HIVE_JOB HIVE_AGENT HIVE_SESSION HIVE_HARNESS_STEPS
     cd "$dir" && CARGO_MANIFEST_DIR="$dir" TMPDIR="$tmp" exec "$@" --test-threads=1
   ) < /dev/null > "$log" 2>&1 || rc=$?
   secs=$(($(date +%s) - start))

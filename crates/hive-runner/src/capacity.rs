@@ -11,6 +11,14 @@
 //!
 //! Per project: `ceil(fleet / projects with work)`, never under one, so a
 //! lone busy project can use every slot and several share them fairly.
+//!
+//! Per project on one machine ([`machine_share`]): `ceil(machine slots /
+//! projects with work that machine could take)`. A lease counts a project's
+//! jobs on the machine it leases for against that share (jobs.rs
+//! `lease_job`), as the verify lock is a file on each machine: three of the
+//! brain's runs on the Mac no longer fill the count of an idle 8-core hand,
+//! and a project whose queued job the hand cannot run (it needs macOS, the
+//! hand does not serve it) does not divide the hand's slots (TASK-156).
 
 /// Megabytes of RAM one run is taken to need.
 pub const MB_PER_RUN: i64 = 3072;
@@ -134,6 +142,95 @@ pub fn fleet(s: &hive_store::Store) -> Fleet {
         total,
         busy_projects: busy,
     }
+}
+
+/// The slots of machine `name` (empty or `local` is this one): this
+/// machine's [`local_slots`], a paired machine's `workers` while it is
+/// active, else none.
+pub fn slots_of(s: &hive_store::Store, name: &str) -> i32 {
+    if name.is_empty() || name == crate::executor::LOCAL_EXECUTOR {
+        return local_slots(s);
+    }
+    s.conn()
+        .ok()
+        .and_then(|conn| {
+            conn.query_row(
+                "SELECT workers FROM executors WHERE name = ? AND status = 'active'",
+                [name],
+                |r| r.get::<_, i64>(0),
+            )
+            .ok()
+        })
+        .unwrap_or(0)
+        .clamp(0, i64::from(i32::MAX)) as i32
+}
+
+/// The projects with work machine `name` could take: a queued or leased
+/// job (not an experiment) of a project the machine serves, needing only
+/// what the machine offers - and something, on a machine kept for the work
+/// that needs it - and, on a paired machine, not of a kind that works this
+/// machine's store (jobs.rs `STORE_KINDS`). The same checks the lease makes
+/// of a machine, so a project none of whose jobs could run there does not
+/// divide its slots.
+pub fn busy_projects_on(s: &hive_store::Store, name: &str) -> i32 {
+    let ex = crate::executor::executor_row(s, name);
+    if crate::util::is_nil(&ex) {
+        return 0;
+    }
+    let remote = !(name.is_empty() || name == crate::executor::LOCAL_EXECUTOR);
+    let caps = crate::executor::caps(&ex);
+    let reserved = crate::executor::reserved(&ex);
+    let Ok(conn) = s.conn() else {
+        return 0;
+    };
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT DISTINCT project, kind, needs FROM jobs WHERE kind != 'experiment' AND status IN ('queued', 'leased')",
+    ) else {
+        return 0;
+    };
+    let Ok(rows) = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+        ))
+    }) else {
+        return 0;
+    };
+    let mut busy = std::collections::BTreeSet::new();
+    for (project, kind, needs) in rows.flatten() {
+        if busy.contains(&project)
+            || !crate::executor::executor_allows(&ex, &project)
+            || !hive_store::needs::met(&needs, &caps)
+            || (reserved && needs.trim().is_empty())
+            || (remote && crate::jobs::STORE_KINDS.contains(&kind.as_str()))
+        {
+            continue;
+        }
+        busy.insert(project);
+    }
+    busy.len().min(i32::MAX as usize) as i32
+}
+
+/// A project's share of machine `name`'s slots (empty or `local` is this
+/// one): [`per_project`] over the machine's slots and the projects with
+/// work it could take ([`busy_projects_on`]).
+pub fn machine_share(s: &hive_store::Store, name: &str) -> i32 {
+    #[cfg(test)]
+    if let Ok((n, true)) = s.meta(PIN_KEY)
+        && let Ok(n) = n.parse::<i32>()
+    {
+        return n.max(1);
+    }
+    per_project(slots_of(s, name), busy_projects_on(s, name))
+}
+
+/// The share a lease for machine `name` counts a project's jobs on that
+/// machine against: [`machine_share`], never below the fleet's
+/// [`parallel_per_project`], so counting per machine never leaves a
+/// machine fewer lanes than the fleet-wide count gave it.
+pub fn share_on(s: &hive_store::Store, name: &str) -> i32 {
+    parallel_per_project(s).max(machine_share(s, name))
 }
 
 /// A project's share of the fleet now.
