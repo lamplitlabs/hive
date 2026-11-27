@@ -157,6 +157,7 @@ hive_rc=$?
 rm -f "$hive_lock"
 hive_t1=$(date +%s)
 echo "{RAN_MARKER} $((hive_t1 - hive_t0))s after waiting ${{hive_waited}}s for the lock" >&2
+if [ -n "${{HIVE_VERIFY_RAN_FILE:-}}" ]; then echo "$((hive_t1 - hive_t0))" > "$HIVE_VERIFY_RAN_FILE" 2>/dev/null || true; fi
 exit $hive_rc
 "#
     )

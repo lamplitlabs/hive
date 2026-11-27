@@ -373,8 +373,48 @@ pub(crate) fn is_owner_lane(fits: &[(String, String)]) -> bool {
         .any(|(project, kind)| project == OWNER_LANE.0 && kind == OWNER_LANE.1)
 }
 
-/// How many landings the verify-time median is taken over.
+/// How many checks the verify-time median is taken over.
 const LANE_SAMPLE: usize = 5;
+
+/// How old a check's run time may be and still narrow a project's lanes. The
+/// brain's lanes were narrowed for three weeks by the five landings of 3 and 4
+/// November (a 1216 s median): its work landed through pull requests after
+/// that and wrote no `land.landed`, so a check that had since grown quicker
+/// still had its lanes cut to what a 20-minute check allows (TASK-156).
+pub(crate) const LANE_SAMPLE_MAX_DAYS: i64 = 7;
+
+/// The event a run writes when its own check passed, or its commit hook's
+/// check did, with the check's run time (`verify_seconds`, the lock wait
+/// excluded): work that lands through a pull request runs no landing check,
+/// so without it the lanes rule read only old landings.
+pub(crate) const VERIFY_RAN_EVENT: &str = "verify.ran";
+
+/// Writes down a passed check's run time for the lanes rule
+/// ([`project_lanes`]): `job`'s own check, or the commit hook's check its memo
+/// spared. A run time of zero or none (no lock, so no `verification ran`
+/// marker) writes nothing.
+pub(crate) fn record_check_ran(
+    s: &hive_store::Store,
+    slug: &str,
+    job: &str,
+    seconds: Option<u64>,
+    by: &str,
+) {
+    let Some(seconds) = seconds.filter(|n| *n > 0) else {
+        return;
+    };
+    let Ok(conn) = s.conn() else {
+        return;
+    };
+    crate::util::event_at(
+        &*conn,
+        &s.now(),
+        "daemon",
+        VERIFY_RAN_EVENT,
+        job,
+        serde_json::json!({"project": slug, "verify_seconds": seconds, "by": by}),
+    );
+}
 
 /// How many work jobs one project may run at once, and why when that is fewer
 /// than `parallel_per_project`.
@@ -382,11 +422,15 @@ const LANE_SAMPLE: usize = 5;
 pub(crate) struct Lanes {
     pub lanes: i32,
     pub base: i32,
-    /// The median run time of the project's last landed checks, in seconds,
-    /// when a lock serialises them and one was recorded.
+    /// The median run time of the project's newest checks, in seconds,
+    /// when a lock serialises them and one was recorded inside
+    /// [`LANE_SAMPLE_MAX_DAYS`].
     pub verify_seconds: Option<i64>,
     /// Empty while every lane is open.
     pub reason: String,
+    /// Where the run time comes from, for `hive status`: "median of 3
+    /// checks, the newest at 2026-11-27T04:01:00Z"; empty without one.
+    pub basis: String,
 }
 
 /// With `verify.lock` on, a project's checks take turns on this machine, so N work
@@ -396,10 +440,12 @@ pub(crate) struct Lanes {
 /// gives a `git commit` whose pre-commit hook is the verify gate:
 /// `harness.commit_timeout`, never below `harness.step_timeout`. The lanes that
 /// fit are `cap / verify_seconds` (never below 1, never above
-/// `parallel_per_project`), with the check's own run time from the last landings
-/// (`verify_seconds` on `land.landed`, and on `land.batch`, whose one check of
-/// several branches merged runs as long as any). A project with no lock, no
-/// recorded landing, or a quick check keeps every lane. A share of one lane
+/// `parallel_per_project`), with the check's own run time from the newest
+/// checks of the project: `verify_seconds` on `land.landed`, on `land.batch`
+/// (whose one check of several branches merged runs as long as any) and on
+/// [`VERIFY_RAN_EVENT`] (a run's own check or its commit hook's), none older
+/// than [`LANE_SAMPLE_MAX_DAYS`]. A project with no lock, no recent check, or
+/// a quick check keeps every lane. A share of one lane
 /// has nothing to narrow but still carries the check's run time: the owner's
 /// work runs past the share ([`owner_work_bound`]) and its runs' commit caps
 /// are widened by it ([`owner_commit_cap`]).
@@ -424,6 +470,7 @@ fn lanes_of(s: &hive_store::Store, slug: &str, base: i32) -> Lanes {
         base,
         verify_seconds: None,
         reason: String::new(),
+        basis: String::new(),
     };
     if crate::verify_lock::lock_name(s, slug).is_none() {
         return open;
@@ -442,25 +489,30 @@ fn lanes_of(s: &hive_store::Store, slug: &str, base: i32) -> Lanes {
     let Ok(conn) = s.conn() else {
         return open;
     };
-    let mut secs: Vec<i64> = query_rows_dyn(
+    let since = crate::util::plus_hours(&s.now(), -(LANE_SAMPLE_MAX_DAYS as f64) * 24.0);
+    let rows = query_rows_dyn(
         &conn,
-        "SELECT CAST(json_extract(detail, '$.verify_seconds') AS INTEGER) AS s FROM events WHERE action IN ('land.landed', 'land.batch') AND json_valid(detail) AND json_extract(detail, '$.project') = ? AND json_extract(detail, '$.verify_seconds') IS NOT NULL ORDER BY at DESC, seq DESC LIMIT ?",
-        &[&slug, &(LANE_SAMPLE as i64)],
+        "SELECT at, CAST(json_extract(detail, '$.verify_seconds') AS INTEGER) AS s FROM events WHERE action IN ('land.landed', 'land.batch', ?) AND at >= ? AND json_valid(detail) AND json_extract(detail, '$.project') = ? AND CAST(json_extract(detail, '$.verify_seconds') AS INTEGER) > 0 ORDER BY at DESC, seq DESC LIMIT ?",
+        &[&VERIFY_RAN_EVENT, &since, &slug, &(LANE_SAMPLE as i64)],
     )
-    .unwrap_or_default()
-    .into_iter()
-    .map(|r| i64::from(r.int("s")))
-    .filter(|n| *n > 0)
-    .collect();
+    .unwrap_or_default();
+    let newest = rows.first().map(|r| r.str("at")).unwrap_or_default();
+    let mut secs: Vec<i64> = rows.iter().map(|r| i64::from(r.int("s"))).collect();
     if secs.is_empty() {
         return open;
     }
     secs.sort_unstable();
     let median = secs[secs.len() / 2];
+    let basis = if secs.len() == 1 {
+        format!("one check, at {newest}")
+    } else {
+        format!("median of {} checks, the newest at {newest}", secs.len())
+    };
     let fit = (cap / median).clamp(1, i64::from(base)) as i32;
     if fit >= base {
         return Lanes {
             verify_seconds: Some(median),
+            basis,
             ..open
         };
     }
@@ -488,6 +540,7 @@ fn lanes_of(s: &hive_store::Store, slug: &str, base: i32) -> Lanes {
         base,
         verify_seconds: Some(median),
         reason,
+        basis,
     }
 }
 
@@ -525,6 +578,74 @@ pub(crate) fn narrowed_lanes_on(s: &hive_store::Store, machine: &str) -> Vec<(St
         (lanes.lanes < lanes.base).then_some((slug, lanes))
     })
     .collect()
+}
+
+/// A project whose fleet work waits on its narrowed lanes, not on a slot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LaneWait {
+    pub project: String,
+    pub lanes: Lanes,
+    /// Its work jobs in flight (leased or running), the owner's among them,
+    /// as [`lease_job`] counts them against the lanes.
+    pub busy: i64,
+    /// Its fleet work jobs queued that [`lease_job`] holds back for the
+    /// lanes alone.
+    pub waiting: i64,
+}
+
+/// The projects whose queued fleet work [`lease_job`] holds back because
+/// their narrowed lanes are full: such a job waits on the project's checks
+/// taking turns, and neither a free slot nor a rented machine would start it
+/// (TASK-156: the capacity line said "every slot busy" and asked for hands
+/// while the brain's work waited on one lane of five). The lanes and the
+/// jobs in flight are this machine's, as [`lease_job`] counts them per
+/// machine (`machine_of_sql`): the verify lock is a file on each machine.
+pub(crate) fn lanes_waiting(s: &hive_store::Store) -> Vec<LaneWait> {
+    let local = crate::executor::LOCAL_EXECUTOR;
+    let narrowed = narrowed_lanes_on(s, local);
+    if narrowed.is_empty() {
+        return Vec::new();
+    }
+    let Ok(conn) = s.conn() else {
+        return Vec::new();
+    };
+    let work = work_kinds_sql();
+    let mut out = Vec::new();
+    for (project, lanes) in narrowed {
+        let busy = i64::from(
+            one_dyn(
+                &conn,
+                &format!(
+                    "SELECT COUNT(*) AS n FROM jobs k WHERE k.project = ? AND k.kind IN ({work}) AND {OCCUPIED_JOB_SQL} AND {} = ?",
+                    machine_of_sql("k")
+                ),
+                &[&project, &local],
+            )
+            .int("n"),
+        );
+        if busy < i64::from(lanes.lanes) {
+            continue;
+        }
+        let waiting = i64::from(
+            one_dyn(
+                &conn,
+                &format!(
+                    "SELECT COUNT(*) AS n FROM jobs j JOIN projects p ON p.slug = j.project WHERE j.project = ? AND j.status = 'queued' AND p.status = 'active' AND j.kind IN ({work}) AND NOT {OWNER_DRIVEN_SQL}"
+                ),
+                &[&project],
+            )
+            .int("n"),
+        );
+        if waiting > 0 {
+            out.push(LaneWait {
+                project,
+                lanes,
+                busy,
+                waiting,
+            });
+        }
+    }
+    out
 }
 
 /// How many work jobs ([`WORK_KINDS`]) may be in flight in a project before
@@ -1254,6 +1375,76 @@ mod tests {
         );
     }
 
+    /// TASK-156: work that lands through pull requests writes no
+    /// `land.landed`, so the lanes rule reads the run's own check time
+    /// (`verify.ran`), the newest samples first, and forgets samples past
+    /// [`LANE_SAMPLE_MAX_DAYS`]: the brain's lanes were cut for three weeks by
+    /// the slow landings of early November.
+    #[test]
+    fn project_lanes_read_fresh_check_times_and_forget_old_ones() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        crate::capacity::pin_per_project(&s, 4);
+        s.set_setting(hive_store::HUMAN_AGENT, "harness.step_timeout", "900")
+            .unwrap();
+        s.set_setting(hive_store::HUMAN_AGENT, "harness.commit_timeout", "1500")
+            .unwrap();
+        s.set_setting(
+            hive_store::HUMAN_AGENT,
+            crate::verify_lock::SETTING,
+            crate::verify_lock::PROJECT,
+        )
+        .unwrap();
+        let now = s.now();
+        // Five slow landings, past the age limit: they no longer narrow anything.
+        let old = crate::util::plus_hours(&now, -24.0 * (super::LANE_SAMPLE_MAX_DAYS as f64 + 1.0));
+        for i in 0..5 {
+            record_landing_verify(
+                &s,
+                "proj",
+                &crate::util::plus_hours(&old, f64::from(i)),
+                1600,
+            );
+        }
+        let lanes = super::project_lanes(&s, "proj");
+        assert_eq!((lanes.lanes, lanes.base), (4, 4), "{lanes:?}");
+        assert_eq!(lanes.verify_seconds, None, "{lanes:?}");
+        assert!(lanes.reason.is_empty(), "{lanes:?}");
+        // A run's own passed check counts, written where its work lands.
+        let job = "job-20260906T000000Z-aaaaaa";
+        super::record_check_ran(&s, "proj", job, Some(600), "run");
+        // No run time (the lock was off, no marker) writes nothing.
+        super::record_check_ran(&s, "proj", job, None, "run");
+        super::record_check_ran(&s, "proj", job, Some(0), "hook");
+        let lanes = super::project_lanes(&s, "proj");
+        assert_eq!(
+            (lanes.lanes, lanes.verify_seconds),
+            (2, Some(600)),
+            "{lanes:?}"
+        );
+        assert!(lanes.basis.starts_with("one check, at "), "{lanes:?}");
+        // The newest samples decide: four quick checks after it, the median is quick.
+        for _ in 0..4 {
+            super::record_check_ran(&s, "proj", job, Some(120), "hook");
+        }
+        let lanes = super::project_lanes(&s, "proj");
+        assert_eq!(
+            (lanes.lanes, lanes.verify_seconds),
+            (4, Some(120)),
+            "{lanes:?}"
+        );
+        assert!(
+            lanes
+                .basis
+                .starts_with("median of 5 checks, the newest at "),
+            "{lanes:?}"
+        );
+        // Another project's check never narrows this one.
+        super::record_check_ran(&s, "other", job, Some(1600), "run");
+        assert_eq!(super::project_lanes(&s, "proj").verify_seconds, Some(120));
+    }
+
     #[test]
     fn project_lanes_fit_the_commit_cap_only_while_checks_take_turns() {
         let _serial = crate::test_helpers::serial();
@@ -1665,6 +1856,26 @@ mod tests {
             crate::jobs::job_row(&s.conn().unwrap(), fleet_2).str("status"),
             "queued"
         );
+        // It waits on the lane, not on a slot, and the capacity note says so
+        // (TASK-156): one lane of five, four work runs in flight (the fleet's
+        // one and the owner's three, counted as lease_job counts them), one
+        // fleet job waiting.
+        let waits = super::lanes_waiting(&s);
+        assert_eq!(waits.len(), 1, "{waits:?}");
+        assert_eq!(
+            (
+                waits[0].project.as_str(),
+                waits[0].lanes.lanes,
+                waits[0].lanes.base,
+                waits[0].busy,
+                waits[0].waiting
+            ),
+            ("proj", 1, 5, 4, 1),
+            "{waits:?}"
+        );
+        let note = crate::daemon::lanes_note(&waits);
+        assert_eq!(note[0]["lanes"], 1, "{note}");
+        assert_eq!(note[0]["verify_seconds"], 600, "{note}");
     }
 
     #[test]
@@ -5745,16 +5956,26 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
         verify_cmd: &str,
         check: impl FnOnce(&hive_store::Store, &crate::util::Row, &crate::util::Row, &std::path::Path),
     ) {
-        committing_run_on_a_hand_whose_fetch_fails_worker(
-            refuse,
-            verify_cmd,
-            "sh -c 'echo hi > note.txt && git add note.txt && git commit -q -m note && echo SUMMARY: noted on the machine'",
-            check,
-        );
+        committing_run_on_a_hand(refuse, false, verify_cmd, NOTE_WORKER, check);
     }
+    /// The worker the committing runs on a hand use unless told otherwise:
+    /// one commit, then a summary.
+    const NOTE_WORKER: &str = "sh -c 'echo hi > note.txt && git add note.txt && git commit -q -m note && echo SUMMARY: noted on the machine'";
     /// The same with the worker command `worker` (it must make one commit).
     fn committing_run_on_a_hand_whose_fetch_fails_worker(
         refuse: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        verify_cmd: &str,
+        worker: &str,
+        check: impl FnOnce(&hive_store::Store, &crate::util::Row, &crate::util::Row, &std::path::Path),
+    ) {
+        committing_run_on_a_hand(refuse, false, verify_cmd, worker, check);
+    }
+    /// The same, and with `drop_run` the connection carrying the worker's
+    /// `run` drops as it ends (ssh exit 255, as a machine going away answers):
+    /// the worker committed on the machine, the runner hears nothing back.
+    fn committing_run_on_a_hand(
+        refuse: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        drop_run: bool,
         verify_cmd: &str,
         worker: &str,
         check: impl FnOnce(&hive_store::Store, &crate::util::Row, &crate::util::Row, &std::path::Path),
@@ -5822,6 +6043,10 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             if refuse.load(std::sync::atomic::Ordering::SeqCst) && verb.starts_with("bundle\u{0}") {
                 return Ok((1, String::new(), "bundle: refused".into()));
             }
+            if drop_run && verb.starts_with("run\u{0}") {
+                let _ = runner(c, a, i, t);
+                return Ok((255, String::new(), "ssh exit 255".into()));
+            }
             runner(c, a, i, t)
         });
         crate::executor::add_executor(
@@ -5870,7 +6095,9 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             },
         )
         .unwrap();
-        assert!(reason.is_empty(), "{reason}");
+        if !drop_run {
+            assert!(reason.is_empty(), "{reason}");
+        }
         assert_eq!(run.str("executor"), "hands", "run {run:?}");
         assert_eq!(run.int("commits"), 1, "run {run:?}");
         check(&s, &run, &job, &workdir);
@@ -5997,6 +6224,69 @@ dropin=absent\ndropin_dir=yes\nremotes=0\ngit=present\nmise=missing\ngitconfig=m
             d.get("branch").and_then(|v| v.as_str()),
             Some(kept.as_str())
         );
+    }
+
+    /// TASK-156 item 5: on 2026-11-27 a rented machine whose hours were up
+    /// dropped the connection of a run 3 h 50 min in ("executor
+    /// hands-cr-11113 unreachable after worker start: ssh exit 255"); the
+    /// `clean` that followed answered and removed the clone with the work in
+    /// it. Now the commits are fetched first, onto the failed-work branch, and
+    /// the clone goes only after.
+    #[test]
+    fn a_run_whose_machine_drops_it_has_its_commits_fetched_before_the_clone_goes() {
+        let refuse = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        committing_run_on_a_hand(refuse, true, "", NOTE_WORKER, |s, run, job, workdir| {
+            assert_eq!(run.str("status"), "failed", "run {run:?}");
+            let summary = run.str("summary");
+            let kept = crate::land::failed_work_branch("aurora", &job.str("id"));
+            assert!(
+                summary.contains("unreachable after worker start")
+                    && summary.contains("1 commit(s) fetched before the clone went")
+                    && summary.contains(&kept),
+                "{summary}"
+            );
+            let root = crate::board::project_by_slug(&s.conn().unwrap(), "proj".into()).str("path");
+            let shown = crate::test_helpers::run(
+                std::path::Path::new(&root),
+                &["git", "show", &format!("{kept}:note.txt")],
+            );
+            assert_eq!(shown.trim(), "hi", "the run's commit is not on {kept}");
+            let entries = std::fs::read_dir(workdir.join(job.str("id")))
+                .map(|rd| rd.collect::<Vec<_>>())
+                .unwrap_or_default();
+            assert!(
+                entries.is_empty(),
+                "the fetched clone was not cleaned: {entries:?}"
+            );
+            assert!(crate::executor::kept_clones(s, "hands").is_empty());
+        });
+    }
+
+    /// TASK-156 item 5, when neither the fetch nor the bundle brings the
+    /// commits back: the clone stays on the machine and is written down, so
+    /// the machine is not released idle while it holds them and, when its
+    /// hours are up, the loss is said on the task (`compute::say_lost_work`).
+    #[test]
+    fn a_run_whose_machine_drops_it_keeps_the_clone_when_the_fetch_fails() {
+        let refuse = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        committing_run_on_a_hand(refuse, true, "", NOTE_WORKER, |s, run, job, workdir| {
+            assert_eq!(run.str("status"), "failed", "run {run:?}");
+            let summary = run.str("summary");
+            assert!(
+                summary.contains("its 1 commit(s) could not be fetched, so the clone is kept"),
+                "{summary}"
+            );
+            let clone = workdir.join(job.str("id")).join("clone");
+            assert!(
+                clone.join("note.txt").exists(),
+                "the machine's clone was cleaned: {}",
+                clone.display()
+            );
+            assert!(
+                crate::executor::kept_clones(s, "hands").contains(&job.str("id")),
+                "the kept clone is not written down"
+            );
+        });
     }
 
     /// TASK-133 part 2: a machine whose `git-upload-pack` does not answer
