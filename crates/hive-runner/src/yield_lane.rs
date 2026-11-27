@@ -321,9 +321,14 @@ pub(crate) fn yield_lanes_if_admitted(
         let past_share = owner_held >= crate::jobs::parallel_per_project(s);
         // A lane open here is room for the owner's job only when this
         // machine would admit it: with the load governor refusing it here,
-        // a lane held on a paired machine is still in its way.
+        // a lane held on a paired machine is still in its way. Nor is it
+        // room when this machine could not run the job at all (it lacks a
+        // word the job needs, is kept for other work, or is unfit for the
+        // project): the lane that could start it is held elsewhere
+        // (review of TASK-144, TASK-169 item 1).
         let open_here = !lanes_held(here.iter().filter(|k| is_work(k)).count() as i32)
-            && admission.refusal(local, past_share).is_none();
+            && admission.refusal(local, past_share).is_none()
+            && machines.refuses(local, &owner).is_none();
         if open_here && !fleet_full {
             continue;
         }
@@ -1002,6 +1007,46 @@ mod tests {
                 && pass.refused[0].contains("machine other does not serve proj"),
             "{pass:?}"
         );
+    }
+
+    #[test]
+    fn a_fleet_run_on_another_machine_is_not_asked_to_hold_for_a_lane_open_here() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        one_lane(&s);
+        join(&s, "aurora");
+        paired(&s, "hands-1", "*", "cuda", false);
+        let fleet = queue(&s, "improve", "suggestion:abc");
+        assert_eq!(lease(&s, "aurora", Vec::new()).str("id"), fleet);
+        running_on(&s, &fleet, "aurora", "2026-09-01T01:00:00Z", "hands-1");
+        let task = queue(&s, "task", "task:TASK-001");
+        // The run holds the rented machine's lane, not this one's: the
+        // owner's task starts here without stopping it (TASK-144).
+        let pass = yield_lanes_if_admitted(
+            &s,
+            crate::test_helpers::TEST_NOW,
+            "daemon",
+            &OwnerAdmission::default(),
+        );
+        assert!(pass.asked.is_empty(), "{pass:?}");
+        assert!(!hold_requested(&s, &fleet));
+        // The owner's task needs what only the rented machine offers: the
+        // lane open here could not start it, so the run holding the rented
+        // machine's lane is asked to hold (TASK-169 item 1).
+        s.conn()
+            .unwrap()
+            .execute("UPDATE jobs SET needs = 'cuda' WHERE id = ?", [&task])
+            .unwrap();
+        let pass = yield_lanes_if_admitted(
+            &s,
+            crate::test_helpers::TEST_NOW,
+            "daemon",
+            &OwnerAdmission::default(),
+        );
+        assert_eq!(pass.asked.len(), 1, "{pass:?}");
+        assert!(pass.asked[0].contains(&task), "{pass:?}");
+        assert!(hold_requested(&s, &fleet));
     }
 
     #[test]

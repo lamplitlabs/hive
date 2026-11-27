@@ -5088,6 +5088,34 @@ mod tests {
         assert_eq!(rentable(), vec!["j-kept".to_string()]);
     }
 
+    /// TASK-169 item 9: docs/machines.md shows the request reason the
+    /// daemon writes (`starved_waiting` then `auto_compute`), not the shape
+    /// TASK-156 replaced.
+    #[test]
+    fn the_machines_doc_shows_the_request_reason_the_daemon_writes() {
+        let doc = std::fs::read_to_string(
+            hive_testutil::manifest_dir(env!("CARGO_MANIFEST_DIR")).join("../../docs/machines.md"),
+        )
+        .unwrap();
+        let doc = doc.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            !doc.contains("job(s) waited"),
+            "docs/machines.md shows a reason the daemon no longer writes"
+        );
+        let s = crate::test_helpers::new_store();
+        let waiting = starved_waiting(&s, 4, 31, TEST_NOW);
+        let shape = waiting
+            .split(" 31 min")
+            .next()
+            .unwrap()
+            .trim_start_matches(|c: char| c.is_ascii_digit());
+        let tail = waiting.split(" 31 min").nth(1).unwrap();
+        let tail = tail.split(" (").next().unwrap();
+        let shown = format!("{shape} 31 min{tail}");
+        assert!(doc.contains(&shown), "docs/machines.md lacks {shown:?}");
+        assert!(doc.contains("is first in line"));
+    }
+
     /// TASK-156 item 4: once a rented machine ran a project's work and none
     /// of it landed, the daemon rents no other for that project until one
     /// has; another project still gets a machine. Eight machines in a row
