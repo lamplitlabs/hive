@@ -67,6 +67,13 @@ pub(crate) const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src
 
 impl UiFs for Dist {
     fn read_file(&self, name: &str) -> std::io::Result<Vec<u8>> {
+        // The stamp build.rs leaves in the export is for cargo, not a page.
+        if name.trim_matches('/') == crate::build_stamp::STAMP {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                name.to_string(),
+            ));
+        }
         Dist::get(name)
             .map(|f| f.data.into_owned())
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, name.to_string()))

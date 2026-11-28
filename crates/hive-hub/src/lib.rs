@@ -41,6 +41,11 @@ pub mod additions;
 pub mod ask;
 pub mod automations;
 pub mod board;
+/// The console export's stamp, shared with build.rs; the server reads only
+/// its name.
+#[allow(dead_code)]
+#[path = "../build_stamp.rs"]
+pub(crate) mod build_stamp;
 pub mod chat;
 pub mod chat_tasks;
 pub mod clouds;
