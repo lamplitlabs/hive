@@ -1284,9 +1284,16 @@ covers the bound - `(share + 1) × the verify median + harness.step_timeout`,
 never below the configured cap - since the runs that start after it may put
 their checks before its commit; at a share of one with the default five-minute
 step the run log says `commit cap widened to 51 min: up to 2 checks share the
-verify lock on amistio-template (verify ~23 min each)`. The fleet's work runs
-count toward the bound but keep the configured cap, as they stay within the
-narrowed lanes; a lead's commit and the landing's own check take the same lock
+verify lock on amistio-template (verify ~23 min each)`. The share counts the
+paired machines' slots too, so the checks counted are never more than this
+machine holds runs at once - its slots and the owner's one express slot past
+them: a two-slot machine at a share of four counts three checks, not five.
+The fleet's work runs count toward the bound but keep the configured cap, as
+they stay within the narrowed lanes. At a share of one nothing is narrowed,
+yet a fleet run already in flight keeps the configured cap beside the owner's
+run: its commit may wait out the owner's check and fail at that cap, as before
+the bound (the project's fleet work queued after the owner's waits for it, so
+only a run started earlier is exposed); a lead's commit and the landing's own check take the same lock
 and are not counted, the step's grace covers them. The fleet's work keeps the narrowed
 lanes, and a fleet run in the owner's way is still asked to hold, so the lanes
 return to their count and its own commit is not killed waiting on the owner's

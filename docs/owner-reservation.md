@@ -48,13 +48,21 @@ here, and the local executor must offer what it needs (`jobs.rs`
   share counts the paired machines' slots too, and a share as large as the
   machine kept nothing, so five owner tasks filled a five-slot machine and a
   review waited for one to end (review of TASK-186). Under a soft hold the
-  express slot is kept the same way while it is under the cap (it is then
-  the machine's last free slot); the express slot over a full cap is one
-  past the cap and kept for nothing. A slot kept for a waiting self-update
-  is a reservation of its own: with an update waiting, two local slots stay
-  out of the owner's work past its share, the update's and the kept one
-  (five slots, one update, one kept: one project runs at most three of the
-  owner's tasks).
+  express slot is kept the same way only when it is the last slot under the
+  cap (one more run would fill the cap); with more room below the cap it is
+  not, and the owner's task past its share takes it - the hold offers one
+  slot whatever the room, and kept on every tick it held the owner's second
+  task back with four slots free (review of pull request 289). The express
+  slot over a full cap is one past the cap and kept for nothing. A slot kept
+  for a waiting self-update is a reservation of its own: with an update
+  waiting, two local slots stay out of the owner's work past its share, the
+  update's and the kept one (five slots, one update, one kept: one project
+  runs at most three of the owner's tasks once its share is three or more;
+  under that the share itself, plus the slots that are not the last, bounds
+  it). An owner job the lease would refuse reserves nothing: a task past
+  the verify lock's bound, or past its share when the reserved slot would
+  be the last one, leaves the slot to the fleet, which used to start only
+  when two slots were free.
 - **Over the cap, over `daemon.max_load` at any height, or under
   `daemon.min_free_mb`**, the reservation becomes the owner's one run over the
   line: one restricted slot that only the owner's work can take. Only one
