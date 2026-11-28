@@ -415,6 +415,12 @@ function Serves({ project, className }: { project: string; className?: string })
   );
 }
 
+// A switched-off tool or skill: a dashed edge on a paper-coloured card and a
+// grey tile. Its words keep full strength (TASK-173: the 80% opacity it had
+// put 13 px text at 4.05:1 and the "Off" chip at 3.52:1); the "Off" chip
+// says the state.
+const OFF_CARD = "border-dashed bg-background shadow-none";
+
 // One tool connection as a card (spec "Connections"): its logo, name, state
 // as an icon + word, the projects it serves and how many tools the last
 // check found. Turn off / Edit live in the "…" menu; the card opens its
@@ -426,9 +432,9 @@ function ServerCard({ s, selected, onOpen, onConnect, onEdit, onSignIn }: { s: M
   const signedIn = !!s.sign_in?.signed_in;
   const tools = toolCountText(s.last_check_note);
   return (
-    <ItemCard onOpen={onOpen} active={selected} ariaLabel={"Open " + s.name} className={cn("gap-3 rounded-lg p-4 sm:p-4", !on && "opacity-80")}>
+    <ItemCard onOpen={onOpen} active={selected} ariaLabel={"Open " + s.name} className={cn("gap-3 rounded-lg p-4 sm:p-4", !on && OFF_CARD)}>
       <div className="flex min-w-0 items-start gap-3">
-        <LogoTile name={s.name} size={40} fallback={MCP_40} />
+        <LogoTile name={s.name} size={40} fallback={MCP_40} className={cn(!on && "grayscale")} />
         <div className="min-w-0 flex-1">
           <ItemCardTitle className="text-base font-semibold leading-6 tracking-tight">
             <span title={"Id " + s.id}>{s.name}</span>
@@ -639,9 +645,9 @@ function SkillCard({ k, onView, onEdit }: { k: Skill; onView: (k: Skill) => void
   const by = k.created_by === "human" || k.created_by === "owner" ? "you" : k.created_by;
   const repoPath = skillRepoPath(k);
   return (
-    <ItemCard onOpen={() => onView(k)} ariaLabel={"Read the skill " + k.name} className={cn("gap-3 rounded-lg p-4 sm:p-4", !on && "opacity-80")}>
+    <ItemCard onOpen={() => onView(k)} ariaLabel={"Read the skill " + k.name} className={cn("gap-3 rounded-lg p-4 sm:p-4", !on && OFF_CARD)}>
       <div className="flex min-w-0 items-start gap-3">
-        <KindTile kind="skill" size={40} />
+        <KindTile kind="skill" size={40} className={cn(!on && "grayscale")} />
         <div className="min-w-0 flex-1">
           <ItemCardTitle className="text-base font-semibold leading-6 tracking-tight">
             <span title={"Id " + k.id}>{k.name}</span>

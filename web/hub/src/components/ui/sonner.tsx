@@ -35,6 +35,12 @@ const Toaster = ({ ...props }: ToasterProps) => {
           "--normal-text": "var(--popover-foreground)",
           "--normal-border": "var(--border)",
           "--border-radius": "var(--radius)",
+          // richColors' own light-theme words sit at 3.07 to 4.36:1 on their
+          // tints; the console's status inks clear 5:1 in both themes (TASK-173).
+          "--success-text": "var(--ok)",
+          "--info-text": "var(--info)",
+          "--warning-text": "var(--warn)",
+          "--error-text": "var(--bad)",
         } as React.CSSProperties
       }
       toastOptions={{

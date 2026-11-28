@@ -226,14 +226,19 @@
   --accent: oklch(0.95 0.012 190);
   --accent-foreground: oklch(0.3 0.04 230);
   --border: oklch(0.92 0.004 255);
-  --input: oklch(0.87 0.006 255);
+  /* the edge of a field, an outline button, an off switch and a meter's
+     track: at least 3:1 against card, paper and sidebar (TASK-173; it was
+     0.87, 1.36 to 1.62:1) */
+  --input: oklch(0.6 0.006 255);
 
   /* ink: the primary button */
   --primary: oklch(0.26 0.04 262);
   --primary-strong: oklch(0.2 0.035 262);
   --primary-foreground: oklch(1 0 0);
   /* teal: links, the focus ring, the active nav item, selection, the first chart series */
-  --teal: oklch(0.52 0.095 186);
+  /* 0.49, not 0.52: the "Running" chip on its 10% tint and the active nav
+     item on the sidebar's hover grey stay above 4.5:1 (TASK-173) */
+  --teal: oklch(0.49 0.095 186);
   --link: var(--teal);
   --ring: var(--teal);
 
@@ -347,9 +352,14 @@
   --accent: oklch(0.26 0.01 255);
   --accent-foreground: var(--foreground);
   --border: oklch(0.28 0.01 255);
-  --input: oklch(0.34 0.01 255);
+  /* at least 3:1 against card and paper (TASK-173; it was 0.34, 1.38:1) */
+  --input: oklch(0.54 0.01 255);
 
-  /* ink inverts: a near-white primary button with dark text */
+  /* ink inverts: a near-white primary button with dark text. Kept on
+     purpose (TASK-173 item 7): it is the light theme's ink button turned
+     over, its words read at 13.4:1, and the one filled button on a page is
+     meant to stand out. Teal would make an action look like a link; a grey
+     fill would look disabled. */
   --primary: oklch(0.9 0.01 255);
   --primary-strong: oklch(0.82 0.01 255);
   --primary-foreground: oklch(0.2 0.02 262);
@@ -610,16 +620,20 @@ html[data-awake="holding"] body::before {
     }
   }
 }
-/* The same for a list that scrolls up and down (the sidebar): the top fades
-   once it has scrolled, the bottom while more waits below. Nothing fades
-   when the list fits, or where the browser can't tie the fade to scrolling. */
-@utility scroll-fade-y {
-  @supports (animation-timeline: scroll()) {
-    -webkit-mask-image: linear-gradient(to bottom, transparent, #000 var(--fade-start), #000 calc(100% - var(--fade-end)), transparent);
-    mask-image: linear-gradient(to bottom, transparent, #000 var(--fade-start), #000 calc(100% - var(--fade-end)), transparent);
-    animation: fade-edges linear both;
-    animation-timeline: scroll(self block);
-  }
+/* The same for a list that scrolls up and down (the sidebar): a soft shade
+   at the top once it has scrolled and at the bottom while more waits below.
+   The shade is a background, under the words, never a mask over them
+   (TASK-173: a 2rem fade over the last item read as "disabled"). The two
+   covers move with the content (local) and hide each shade at its end of
+   the list; the shades stay with the box (scroll). --shade-bg is the colour
+   the list stands on. */
+@utility scroll-shade-y {
+  --shade: color-mix(in oklch, var(--foreground) 14%, transparent);
+  background:
+    linear-gradient(var(--shade-bg, var(--sidebar)) 40%, transparent) top / 100% 1.25rem no-repeat local,
+    linear-gradient(transparent, var(--shade-bg, var(--sidebar)) 60%) bottom / 100% 1.25rem no-repeat local,
+    radial-gradient(farthest-side at 50% 0, var(--shade), transparent) top / 100% 0.625rem no-repeat scroll,
+    radial-gradient(farthest-side at 50% 100%, var(--shade), transparent) bottom / 100% 0.625rem no-repeat scroll;
 }
 @utility ring-soft {
   box-shadow: 0 0 0 1px var(--border);
@@ -686,7 +700,7 @@ html[data-awake="holding"] body::before {
     transform: translateX(100%);
   }
 }
-/* Edge fades driven by scrolling (scroll-strip, scroll-fade-y): at the start
+/* Edge fades driven by scrolling (scroll-strip): at the start
    only the far edge fades, at the end only the near one. The lengths are
    registered so they animate; unscrolled or unscrollable, both stay 0. */
 @property --fade-start {

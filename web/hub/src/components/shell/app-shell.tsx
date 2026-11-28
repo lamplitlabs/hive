@@ -612,7 +612,7 @@ function Sidebar({ pathname }: { pathname: string }) {
         </Suspense>
         <SearchRow />
       </div>
-      <div ref={navBox} className="scroll-thin scroll-fade-y flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-3 pt-1 pb-4 collapsed:items-center collapsed:gap-3 collapsed:px-2">
+      <div ref={navBox} className="scroll-thin scroll-shade-y flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-3 pt-1 pb-4 collapsed:items-center collapsed:gap-3 collapsed:px-2">
         <NavGroups
           pathname={pathname}
           projects={
