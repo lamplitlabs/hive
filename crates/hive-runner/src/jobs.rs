@@ -334,7 +334,16 @@ pub(crate) fn owner_driven_sql(alias: &str) -> String {
 /// it after, and a slot kept for it would idle. The load governor
 /// keeps one local slot for it (docs/owner-reservation.md); work only a
 /// paired machine can run reserves nothing here.
-pub(crate) fn owner_work_queued_here(s: &hive_store::Store, now: &str) -> bool {
+///
+/// Nor does a job this tick's lease would refuse (review of pull request
+/// 289, item 1): an owner work job past the verify lock's bound
+/// ([`owner_work_bound`]), and, when the reserved slot would be the last
+/// under the cap (`last`, kept back: [`LeaseOpts::keep_slot`]), one past
+/// its project's kept share ([`kept_share`]). Counted, they reserved a slot
+/// the lease left empty, and the fleet started only with two slots free.
+pub(crate) fn owner_work_queued_here(s: &hive_store::Store, now: &str, last: bool) -> bool {
+    let bound = owner_work_bound(s);
+    let kept = last.then(|| kept_share(s));
     let Ok(conn) = s.conn() else {
         return false;
     };
@@ -346,6 +355,33 @@ pub(crate) fn owner_work_queued_here(s: &hive_store::Store, now: &str) -> bool {
     );
     if crate::executor::reserved(&local) {
         sql.push_str(" AND j.needs != ''");
+    }
+    // The lease's own refusals for the owner's work here (lease_job): the
+    // same counts, of this machine's jobs in flight.
+    let here = crate::executor::LOCAL_EXECUTOR.replace('\'', "''");
+    let work_kinds = work_kinds_sql();
+    let in_flight = |owner_only: bool| {
+        format!(
+            "(SELECT COUNT(*) FROM jobs k WHERE k.project = j.project AND k.kind IN ({work_kinds}){} AND {OCCUPIED_JOB_SQL} AND {} = '{here}')",
+            if owner_only {
+                format!(" AND {}", owner_driven_sql("k"))
+            } else {
+                String::new()
+            },
+            machine_of_sql("k")
+        )
+    };
+    if let Some(bound) = bound {
+        sql.push_str(&format!(
+            " AND NOT (j.kind IN ({work_kinds}) AND {} >= {bound})",
+            in_flight(false)
+        ));
+    }
+    if let Some(kept) = kept {
+        sql.push_str(&format!(
+            " AND NOT (j.kind IN ({work_kinds}) AND {} >= {kept})",
+            in_flight(true)
+        ));
     }
     let vals = words
         .iter()
@@ -693,6 +729,19 @@ pub(crate) fn owner_work_bound_on(s: &hive_store::Store, machine: &str) -> Optio
     Some(crate::capacity::share_on(s, lease_machine(machine)).saturating_add(1))
 }
 
+/// How many checks an owner work run's commit may wait for on this
+/// machine's verify lock: [`owner_work_bound`], never more than the work
+/// runs this machine can hold at once - its slots and the owner's one
+/// express slot past them (docs/owner-reservation.md) - or None while the
+/// checks do not take turns. The bound follows the share, and the share
+/// counts the paired machines' slots too (capacity.rs `share_on`), so on a
+/// small machine beside a large hand it named checks this one never runs.
+pub(crate) fn owner_commit_checks(s: &hive_store::Store) -> Option<i64> {
+    let bound = i64::from(owner_work_bound(s)?);
+    let here = i64::from(crate::capacity::local_slots(s).max(1)) + 1;
+    Some(bound.min(here))
+}
+
 /// How many of `project`'s work jobs ([`WORK_KINDS`]) are leased or running
 /// on this machine: the checks a clone's gated commit in the project may
 /// wait for under the verify lock. The tests count them; the commit cap
@@ -744,8 +793,13 @@ pub(crate) fn occupied_work_jobs_on(s: &hive_store::Store, project: &str, execut
 /// counted in the bound but keep their cap: they stay within the narrowed
 /// lanes. A lead's commit and the landing's own check take the same lock
 /// and are not counted; the step's grace is what covers them.
+///
+/// The bound follows the share, which counts the paired machines' slots
+/// too; no more of the project's checks than this machine holds runs can
+/// take turns on its lock, so the cap covers [`owner_commit_checks`]
+/// (review of pull request 289, item 2).
 pub(crate) fn owner_commit_cap(s: &hive_store::Store, project: &str) -> Option<i64> {
-    let bound = i64::from(owner_work_bound(s)?);
+    let bound = owner_commit_checks(s)?;
     let verify = project_lanes(s, project).verify_seconds?;
     let step = i64::from(crate::util::setting_int(s, "harness.step_timeout"));
     let commit = i64::from(crate::util::setting_int(s, "harness.commit_timeout"));
@@ -2009,6 +2063,8 @@ mod tests {
         let s = crate::test_helpers::new_store();
         crate::test_helpers::new_bare_repo(&s);
         one_narrowed_lane(&s);
+        s.set_setting(hive_store::HUMAN_AGENT, "capacity", "8")
+            .unwrap();
         assert_eq!(super::owner_work_bound(&s), Some(5));
         // Nothing in flight: the bound's five 10-minute checks and a
         // 15-minute step's grace, not the 15-minute cap.
@@ -2051,6 +2107,38 @@ mod tests {
     }
 
     #[test]
+    fn the_commit_cap_counts_the_checks_this_machine_can_hold() {
+        // Review of pull request 289, item 2: the bound follows the share,
+        // which counts the paired machines' slots, and the cap covered the
+        // bound's checks. At a share of four (the hands' slots counted) on a
+        // two-slot machine, five 10-minute checks and the step's grace were
+        // 65 minutes; this machine holds two runs and the owner's express
+        // one past them, so three checks can take turns on its lock.
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        one_narrowed_lane(&s);
+        s.set_setting(hive_store::HUMAN_AGENT, "capacity", "2")
+            .unwrap();
+        assert_eq!(super::owner_work_bound(&s), Some(5));
+        assert_eq!(super::owner_commit_checks(&s), Some(3));
+        assert_eq!(super::owner_commit_cap(&s, "proj"), Some(3 * 600 + 900));
+        // A machine of eight slots holds the whole bound.
+        s.set_setting(hive_store::HUMAN_AGENT, "capacity", "8")
+            .unwrap();
+        assert_eq!(super::owner_commit_checks(&s), Some(5));
+        assert_eq!(super::owner_commit_cap(&s, "proj"), Some(5 * 600 + 900));
+        // Without the lock nothing is counted.
+        s.set_setting(
+            hive_store::HUMAN_AGENT,
+            crate::verify_lock::SETTING,
+            crate::verify_lock::OFF,
+        )
+        .unwrap();
+        assert_eq!(super::owner_commit_checks(&s), None);
+    }
+
+    #[test]
     fn the_owners_work_at_a_share_of_one_widens_its_commit_cap_and_stops_at_the_lock_bound() {
         // Review of PR 276: eight busy projects make the share 1, and the
         // owner's tasks of one project lease past it. With the verify lock
@@ -2079,6 +2167,8 @@ mod tests {
             (1, 1, Some(1380)),
             "{lanes:?}"
         );
+        s.set_setting(hive_store::HUMAN_AGENT, "capacity", "4")
+            .unwrap();
         assert_eq!(super::owner_work_bound(&s), Some(2));
         for name in ["aurora", "borealis", "cinder"] {
             join(&s, name);
@@ -2128,6 +2218,61 @@ mod tests {
         .unwrap();
         assert_eq!(super::owner_work_bound(&s), None);
         assert_eq!(lease("cinder").str("id"), third);
+    }
+
+    #[test]
+    fn owner_work_the_lease_would_refuse_reserves_no_slot() {
+        // Review of pull request 289, item 1: the owner reservation counted
+        // the owner's task past its share on the last slot, and past the
+        // verify lock's bound, though the lease refuses both - the reserved
+        // slot stayed empty and the fleet started only with two slots free.
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        s.set_setting(hive_store::HUMAN_AGENT, "capacity", "4")
+            .unwrap();
+        assert_eq!(super::kept_share(&s), 1);
+        for name in ["aurora", "borealis"] {
+            join(&s, name);
+        }
+        let now = crate::test_helpers::TEST_NOW;
+        let lease = |agent: &str| {
+            super::lease_job(
+                &s,
+                agent.into(),
+                now.into(),
+                super::LeaseOpts {
+                    any_proj: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        assert!(!super::owner_work_queued_here(&s, now, true));
+        let first = queue(&s, "proj", "task", "task:TASK-001", 80);
+        assert!(super::owner_work_queued_here(&s, now, true));
+        assert_eq!(lease("aurora").str("id"), first);
+        // The second task is past the share: the last slot would refuse it,
+        // any other slot takes it.
+        let second = queue(&s, "proj", "task", "task:TASK-002", 80);
+        assert!(!super::owner_work_queued_here(&s, now, true));
+        assert!(super::owner_work_queued_here(&s, now, false));
+        // With the checks taking turns the bound is the share plus one: the
+        // second still fits, a third does not.
+        s.set_setting(
+            hive_store::HUMAN_AGENT,
+            crate::verify_lock::SETTING,
+            crate::verify_lock::PROJECT,
+        )
+        .unwrap();
+        assert_eq!(super::owner_work_bound(&s), Some(2));
+        assert!(super::owner_work_queued_here(&s, now, false));
+        assert_eq!(lease("borealis").str("id"), second);
+        queue(&s, "proj", "task", "task:TASK-003", 80);
+        assert!(!super::owner_work_queued_here(&s, now, false));
+        // The owner's answer is not work past a share or a bound.
+        queue(&s, "proj", "answer", "question:abc", 80);
+        assert!(super::owner_work_queued_here(&s, now, true));
     }
 
     #[test]
@@ -2260,6 +2405,9 @@ mod tests {
         record_landing_verify(&s, "proj", "2026-09-01T00:00:00Z", 1380);
         let lanes = super::project_lanes(&s, "proj");
         assert_eq!((lanes.lanes, lanes.base), (1, 3), "{lanes:?}");
+        // A machine that holds the bound's runs: its commit cap covers them.
+        s.set_setting(hive_store::HUMAN_AGENT, "capacity", "6")
+            .unwrap();
         assert_eq!(super::owner_work_bound(&s), Some(4));
         assert_eq!(super::owner_commit_cap(&s, "proj"), Some(4 * 1380 + 900));
         let agents = ["a1", "a2", "a3", "a4", "a5", "a6"];

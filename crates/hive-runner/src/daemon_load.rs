@@ -347,6 +347,25 @@ pub(crate) fn under_cap(
     !hard && running + measuring + reserved < cap
 }
 
+/// Whether the next local run would take the last slot under the cap: one
+/// more would still start under it ([`under_cap`]) and a second one would
+/// not. Only that slot is kept back from the owner's work past its
+/// project's share (jobs.rs `LeaseOpts::keep_slot`). Under a soft hold the
+/// dispatch offers one express slot whatever the room below the cap, so
+/// [`under_cap`] alone kept it on every tick of the hold: five slots, the
+/// owner's first task running and four free, and its second task waited
+/// for the load to fall (review of pull request 289).
+pub(crate) fn last_under_cap(
+    limits: &Limits,
+    pressure: &Pressure,
+    running: usize,
+    measuring: usize,
+    reserved: usize,
+) -> bool {
+    under_cap(limits, pressure, running, measuring, reserved)
+        && !under_cap(limits, pressure, running + 1, measuring, reserved)
+}
+
 /// Why the owner's next run could not start on this machine once a fleet
 /// run yielded its lane, or None when it could: the yield (yield_lane.rs)
 /// asks a fleet run to hold only then. It is the governor's own answer for
@@ -1226,6 +1245,39 @@ mod tests {
             "branch not landed: measuring main deferred: machine saturated: load 30.0 on 12 CPUs is over the line 12"
         ));
         assert!(!is_hold_note("verify failed: 3 tests"));
+    }
+
+    #[test]
+    fn only_the_last_slot_under_the_cap_is_the_last_under_cap() {
+        // Review of pull request 289: five slots, one run in flight and a
+        // soft hold (load 30 over the line 24, under twice it). The express
+        // slot is under the cap but four slots are free: it is not the last.
+        let l = limits(5, 24.0, 0);
+        let soft = Pressure {
+            load1: Some(30.0),
+            ..calm()
+        };
+        for pressure in [calm(), soft] {
+            assert!(!last_under_cap(&l, &pressure, 1, 0, 0), "{pressure:?}");
+            assert!(!last_under_cap(&l, &pressure, 3, 0, 0), "{pressure:?}");
+            assert!(last_under_cap(&l, &pressure, 4, 0, 0), "{pressure:?}");
+            // A waiting update's slot counts as taken.
+            assert!(last_under_cap(&l, &pressure, 3, 0, 1), "{pressure:?}");
+            // Over the cap nothing is the last under it.
+            assert!(!last_under_cap(&l, &pressure, 5, 0, 0), "{pressure:?}");
+        }
+        // The memory warning halves the cap: the third slot is the last.
+        let warned = Pressure {
+            mem_warning: true,
+            ..calm()
+        };
+        assert!(last_under_cap(&l, &warned, 1, 0, 0));
+        // A hard hold keeps nothing under the cap.
+        let hard = Pressure {
+            load1: Some(60.0),
+            ..calm()
+        };
+        assert!(!last_under_cap(&l, &hard, 4, 0, 0));
     }
 
     #[test]
