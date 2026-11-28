@@ -405,6 +405,50 @@ on another clone's code. The lanes exist for that; a recipe that sets
 Registry and git dependencies, the part of the cache worth
 keeping, are never pruned for idleness; a developer who has not built for a
 day pays one rebuild of the workspace crates, not of the dependencies.
+
+What the sweep removes from a Cargo cache, and when (`crates/hive-runner/src/sweep.rs`):
+
+- **Where it looks.** It prunes every profile folder (one holding `deps/`) of
+  a target: `<target>/debug`, `<target>/release`, and the sub-targets one
+  level down where scripts build with `CARGO_TARGET_DIR=<target>/<name>`.
+  `scripts/verify-check.sh` builds into `verify-check/<profile>`, other
+  scripts into `not-unix`, `crate-panic-sites` and `crate-tests-repeat`, and
+  that is where nearly all of a cache's bytes are. Before 28 November 2026
+  the sweep looked at `<target>/debug` alone and freed a few MB a pass while
+  50 GB sat beside it.
+- **Every pass.** It removes a unit whose dep-info points into a clone that
+  is gone. It also removes, at once, a workspace unit whose crate folder no
+  live tree has: no checkout, clone or worktree of the project holds
+  `crates/<name>` any more (a renamed or deleted crate). A workspace unit
+  of a crate that still exists goes after `hygiene.cargo_target_hours` of
+  idleness.
+- **Under the disk floor** (the reclaim ladder, or `hive sweep --reclaim`):
+  - That idleness drops to one hour (`PRESSURE_CACHE_KEEP`), and a stale
+    incremental cache goes after the same hour.
+  - The largest cache is pruned first.
+  - The pass waits for each project's verify lock as a verification does,
+    up to ten minutes in all for the pass (`PRESSURE_VERIFY_LOCK_WAIT`), so a
+    busy day cannot keep it out. With no floor crossed, it only tries the
+    lock once.
+- **Locks.** Each profile is pruned under its own `.cargo-lock`, and one a
+  build holds is listed as held.
+- **Lanes with a run in flight.** A lane with a run in flight is no longer
+  skipped whole: its profiles whose lock is free are pruned while the
+  project's verify lock is held. `cargo test` lets go of `.cargo-lock`
+  before its test binaries run, and an up-to-date test binary can be older
+  than any idle time. So nothing a check still needs goes:
+  - a test binary a running `verify-check.sh` listed stays (its work folder
+    `/tmp/hive-vc.*` holds `binaries` and a `pid` file);
+  - any program running out of a `deps/` folder stays;
+  - the idle rule is off for those profiles.
+- **What the owner is told.** When the ladder ends still under the floor, it
+  measures Hive's own cargo caches whole: the lanes, the landing and check
+  caches under `~/.hive/cache/cargo-target*`, and a project's verify
+  target. Its "largest" line ranks them with everything else and marks them
+  `(cargo cache)`. The idle line that says why nothing starts ("disk under
+  floor: ...") then names what Hive could still free itself ("Hive's own
+  cargo caches hold 48.0 GB (the largest ... 21.3 GB), rebuilt on demand"),
+  so the owner does not delete by hand what the next pass will prune.
 The same pass drops the per-codegen-unit debug objects rustc leaves in
 `deps/` on macOS (`<crate>-<hash>.<cgu>.rcgu.o`, kept because debuginfo is
 unpacked there) once nothing reads them: every incremental session writes its

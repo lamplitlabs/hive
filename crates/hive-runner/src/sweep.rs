@@ -3117,7 +3117,7 @@ fn expand_home(value: &str) -> String {
     value.to_string()
 }
 
-fn cargo_target_allowed(target: &Path, project: &Path, home: &Path) -> bool {
+pub(crate) fn cargo_target_allowed(target: &Path, project: &Path, home: &Path) -> bool {
     target.is_absolute() && (path_is_under(target, project) || path_is_under(target, home))
 }
 
