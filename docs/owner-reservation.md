@@ -43,7 +43,11 @@ here, and the local executor must offer what it needs (`jobs.rs`
   lead's sitting, an answer, a review or another project's owner task still
   finds a slot. "Past the share" counts the owner's own work jobs in flight
   in the project, not the fleet's: a project whose share the fleet fills
-  still gives the owner's first task the last slot. Under a soft hold the
+  still gives the owner's first task the last slot. The share counted here
+  is never more than this machine's slots less one (`jobs::kept_share`): the
+  share counts the paired machines' slots too, and a share as large as the
+  machine kept nothing, so five owner tasks filled a five-slot machine and a
+  review waited for one to end (review of TASK-186). Under a soft hold the
   express slot is kept the same way while it is under the cap (it is then
   the machine's last free slot); the express slot over a full cap is one
   past the cap and kept for nothing. A slot kept for a waiting self-update

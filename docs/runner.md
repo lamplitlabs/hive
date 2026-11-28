@@ -240,10 +240,20 @@ A review also passes the load line: it is the owner's work
 over a soft hold, or one past a cap full of the fleet's work, may take it, and
 with the order above it takes the review before the owner's task jobs. It
 waited "load 25 > 24" for 24 minutes on pull request 304 because those task
-jobs went first. Critical memory pressure, a free-memory floor breach and a
-load over twice the line still close that slot to every run. The last free
-local slot, kept back from the owner's work past its share (`keep_slot`),
-never refuses a review: it is kept for a lead's sitting, an answer or a review.
+jobs went first. A free-memory floor breach or a load over twice the line
+does not close it either: while an owner-driven job is queued and none of the
+owner's runs is in flight here, the owner reservation (`reserve_for_owner`,
+docs/owner-reservation.md) opens one run over those lines, so a review, whose
+agent runs the whole check, can start under the memory floor. Only the
+kernel's critical memory pressure (the machine swapping) closes that slot to
+every run. The last free local slot, kept back from the owner's work past its
+share (`keep_slot`), never refuses a review: it is kept for a lead's sitting,
+an answer or a review. The share it counts is bound by this machine's slots
+less one (`kept_share`): the share counts the paired machines' slots too, and
+at a share as large as this machine five owner tasks filled a five-slot
+machine, kept nothing, and a review waited for a task to end. One project now
+runs four of the owner's work jobs on a five-slot machine, not five. An
+answer to the owner sorts with the reviews, not behind every queued one.
 
 When one of the owner's jobs (a lead's sitting, an answer, a job planned from
 an owner task, a security update) has waited in the queue for ten minutes
@@ -263,7 +273,8 @@ window, and only the daemon's deduped idle log said so
 (crates/hive-runner/src/owner_wait.rs).
 
 A waiting review also names what went before it: `disk headroom` when a
-local slot waited for disk room, and `leased first: job-a (task), job-b (lead
+local slot waited for disk room, or when the disk headroom kept the review's
+own project off a local slot while it admitted others, and `leased first: job-a (task), job-b (lead
 sitting, kept slot), job-c (improve) and 2 more` for the jobs leased on this
 machine while it waited (a review runs here alone, so a lease on a hand is
 not ahead of it), `kept slot` marking a lease on the last free local slot.
