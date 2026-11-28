@@ -3122,16 +3122,35 @@ fn verify_lock_safe_slug(slug: &str) -> String {
     }
 }
 
+/// Every Cargo profile directory (one that holds `deps/`) of a target: its
+/// own (`<target>/debug`, `<target>/release`) and those of the sub-targets
+/// one level down, where scripts build with `CARGO_TARGET_DIR` set to
+/// `<target>/<name>` (`verify-check`, `not-unix`, `crate-panic-sites`, and
+/// whatever a later script adds) - `scripts/verify-check.sh` builds there,
+/// so that is where nearly all of a shared target's bytes are.
 fn cargo_profile_dirs(target: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(target) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if entry.file_type().is_ok_and(|t| t.is_dir()) && path.join("deps").is_dir() {
-            out.push(path);
+    fn profiles_of(dir: &Path, out: &mut Vec<PathBuf>, subtargets: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            // A link may point anywhere; only real folders are walked.
+            if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+                continue;
+            }
+            let path = entry.path();
+            if path.join("deps").is_dir() {
+                out.push(path);
+            } else {
+                subtargets.push(path);
+            }
         }
+    }
+    let mut out = Vec::new();
+    let mut subtargets = Vec::new();
+    profiles_of(target, &mut out, &mut subtargets);
+    for sub in subtargets {
+        profiles_of(&sub, &mut out, &mut Vec::new());
     }
     out.sort();
     out
@@ -4515,6 +4534,88 @@ mod tests {
             .join("\n");
         assert!(skipped.contains("busy: cargo lock held"), "{skipped}");
         lock.unlock().unwrap();
+    }
+
+    /// A unit in `profile` whose dep-info names a source in a clone that is
+    /// gone: dead to the prune rule on any pass. Returns its rlib.
+    fn dead_clone_unit(profile: &Path, root: &Path, name: &str, hash: &str) -> PathBuf {
+        let gone = root.join(format!("gone-clone-{name}/src/lib.rs"));
+        mkdir_file(
+            profile.join(format!("deps/{name}-{hash}.d")),
+            &format!("out: {}\n", gone.display()),
+        );
+        let rlib = profile.join(format!("deps/lib{name}-{hash}.rlib"));
+        mkdir_file(&rlib, "dead");
+        mkdir_file(
+            profile.join(format!(".fingerprint/{name}-{hash}/stamp")),
+            "dead",
+        );
+        rlib
+    }
+
+    fn point_project_at_target(s: &hive_store::Store, project: &Path, target: &Path) {
+        std::fs::create_dir_all(project).unwrap();
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE projects SET path = ?, verify_cmd = ? WHERE slug = 'proj'",
+                params![
+                    project.display().to_string(),
+                    format!(
+                        "env CARGO_TARGET_DIR={} sh scripts/verify-check.sh",
+                        target.display()
+                    )
+                ],
+            )
+            .unwrap();
+    }
+
+    /// `scripts/verify-check.sh` builds into `$CARGO_TARGET_DIR/verify-check`:
+    /// the sweep walks one level down and prunes the sub-targets' profiles
+    /// too, each under its own `.cargo-lock`.
+    #[test]
+    fn cargo_target_sweep_prunes_the_sub_targets_scripts_build_into() {
+        let _serial = crate::test_helpers::serial();
+        let s = sweep_store();
+        new_bare_repo(&s);
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        let target = project.join("target");
+        point_project_at_target(&s, &project, &target);
+        let own = dead_clone_unit(
+            &target.join("debug"),
+            root.path(),
+            "own",
+            "1111111111111111",
+        );
+        let check = dead_clone_unit(
+            &target.join("verify-check/debug"),
+            root.path(),
+            "check",
+            "2222222222222222",
+        );
+        let not_unix = dead_clone_unit(
+            &target.join("not-unix/debug"),
+            root.path(),
+            "nu",
+            "3333333333333333",
+        );
+        // Two levels down is not a sub-target the scripts make.
+        let deep = dead_clone_unit(
+            &target.join("a/b/debug"),
+            root.path(),
+            "deep",
+            "4444444444444444",
+        );
+        let rep = sweep(&s, project_rows(&s), TEST_NOW.into(), SweepOpts::default()).unwrap();
+        assert!(rep.errors.is_empty(), "{:?}", rep.errors);
+        assert!(!own.exists());
+        assert!(!check.exists(), "verify-check/debug was not pruned");
+        assert!(!not_unix.exists(), "not-unix/debug was not pruned");
+        assert!(deep.exists());
+        let ct = &rep.cargo_target[0];
+        assert!(ct.skipped.is_empty(), "{ct:?}");
+        assert_eq!(ct.units, 3, "{ct:?}");
     }
 
     #[test]
