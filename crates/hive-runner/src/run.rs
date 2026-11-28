@@ -1747,7 +1747,7 @@ pub(crate) fn run_job(
             && let Some(cap) = crate::jobs::owner_commit_cap(s, &job.str("project"))
         {
             let lanes = crate::jobs::project_lanes(s, &job.str("project"));
-            let checks = crate::jobs::owner_work_bound(s).unwrap_or(1);
+            let checks = crate::jobs::owner_commit_checks(s).unwrap_or(1);
             log.add(format!(
                 "commit cap widened to {} min: up to {checks} checks share the verify lock on {} (verify ~{} min each)",
                 crate::jobs::minutes_up(cap),
