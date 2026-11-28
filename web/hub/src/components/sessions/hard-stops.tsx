@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowRightIcon, CheckIcon, ClockIcon, ShieldAlertIcon, XIcon } from "lucide-react";
+import { ArrowRightIcon, CheckIcon, ChevronDownIcon, ClockIcon, ShieldAlertIcon, XIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/hive/confirm";
@@ -13,7 +13,6 @@ import { computeAnswer, proposalAnswer, type ComputeAnswer, type YesNoAnswer } f
 import { ErrorNotice, SkeletonRows } from "@/components/hive/panel";
 import { KindTile } from "@/components/hive/kind-tile";
 import { ListItem, ListRow, ListRows } from "@/components/hive/list-row";
-import { SectionHeading } from "@/components/hive/section-heading";
 import { SidePanel, useOpenItem } from "@/components/hive/side-panel";
 import { Markdown } from "@/components/hive/markdown";
 import { When } from "@/components/hive/who";
@@ -35,7 +34,9 @@ import { isGoalProposal } from "@/components/project/goal-proposal-state";
 // The hard-stop strip on Sessions (TASK-129): For you is gone, and only the
 // asks the hard stops keep for the owner - money, what can't be undone,
 // credentials, publication, the project goal - still wait on a person.
-// Everything else is the project lead's to decide. One compact list over the session landing; a
+// Everything else is the project lead's to decide. One line under the
+// new-session box ("7 decisions only you can make", Review) that unfolds to a
+// compact list; a
 // question shows one button per answer, the Recommended one first (nothing
 // is typed); absent when nothing waits. A
 // decision row opens the record in a side panel with its three answers; Y
@@ -68,19 +69,44 @@ export function HardStops() {
   const open = openId ? rows.find((r) => r.key === openId) || null : null;
   const openDecision = open && open.section === "decisions" ? inbox.decisions.find((r) => "decision:" + r.id === open.key) || null : null;
   const close = useCallback(() => setOpenId(null), [setOpenId]);
+  // The strip starts folded to one line - how many wait, and a Review
+  // button - so the landing leads with the new-session box, not a wall of
+  // buttons. A link that points into it (#hard-stops, a notification's
+  // ?answer=, an open decision) unfolds it.
+  const [shown, setShown] = useState(false);
+  const [linked, setLinked] = useState(false);
+  useEffect(() => {
+    const read = () => setLinked(window.location.hash === "#hard-stops");
+    read();
+    window.addEventListener("hashchange", read);
+    return () => window.removeEventListener("hashchange", read);
+  }, []);
+  const unfolded = shown || linked || !!answerKey || !!openDecision;
 
   if (!inbox.ready || rows.length === 0) return null;
   return (
-    <section id="hard-stops" aria-labelledby="hard-stops-title" className="min-w-0 rounded-lg border border-you/40 bg-you/5 p-3 sm:p-4">
-      <SectionHeading id="hard-stops-title" icon={ShieldAlertIcon} count={rows.length} countTone="you" note="Money, what can't be undone, credentials, publication and the project goal wait for you; the leads decide the rest." className="mb-3">
-        {hardStopWords(rows.length)}
-      </SectionHeading>
+    <section id="hard-stops" aria-labelledby="hard-stops-title" className="min-w-0 rounded-xl border border-you/40 bg-you/5 p-3 sm:p-4">
+      <div className={cn("flex min-w-0 items-center gap-3", unfolded && "mb-3")}>
+        <span aria-hidden className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-you/20 text-you-ink">
+          <ShieldAlertIcon className="size-[18px]" strokeWidth={1.75} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <h2 id="hard-stops-title" className="text-[15px] font-semibold leading-tight text-foreground">
+            {hardStopWords(rows.length)}
+          </h2>
+          <p className="mt-0.5 text-[13px] leading-snug text-muted-foreground">Money, credentials and anything that can&apos;t be undone. Your agents decide the rest.</p>
+        </div>
+        <Button type="button" size="sm" variant={unfolded ? "ghost" : "default"} aria-expanded={unfolded} aria-controls="hard-stops-list" onClick={() => { setShown(!unfolded); setLinked(false); }}>
+          {unfolded ? "Hide" : "Review"}
+          <ChevronDownIcon aria-hidden className={cn("transition-transform motion-reduce:transition-none", unfolded ? "rotate-180" : "")} />
+        </Button>
+      </div>
       {/* The list and the decision record's panel share a row (SidePanel's
           layout): on a wide screen the panel docks to the right of the
           list, not under it (TASK-149 item 19); below 1024 px it is a sheet. */}
-      <div className="flex min-w-0 items-start gap-0" data-hard-stops-layout>
+      <div id="hard-stops-list" className={cn("min-w-0 items-start gap-0", unfolded ? "flex" : "hidden")} data-hard-stops-layout>
         <div className="min-w-0 flex-1">
-          <ListRows ariaLabel="Decisions only you can make">
+          <ListRows ariaLabel="Decisions only you can make" fit>
             {rows.map((r) => (
               <Row key={r.key} r={r} stop={HARD_STOP_LABEL[r.stopKind]} inbox={inbox} brain={brain} canDecide={canDecide} caps={compute.data?.caps} startOpen={r.key === answerKey} selected={openId === r.key} onOpen={r.section === "decisions" ? () => setOpenId(openId === r.key ? null : r.key) : undefined} projectName={r.projectWord || nameOf(o, r.project)} router={router} />
             ))}
@@ -105,9 +131,10 @@ function nameOf(o: Org | undefined, slug: string): string {
 function Row({ r, stop, inbox, brain, canDecide, caps, startOpen, selected, onOpen, projectName, router }: { r: ForYouRow; stop: string; inbox: ReturnType<typeof useInbox>; brain: string; canDecide: boolean; caps?: { vms_now: number; max_vms: number; hours_today: number; max_hours_per_day: number }; startOpen?: boolean; selected: boolean; onOpen?: () => void; projectName: string; router: ReturnType<typeof useRouter> }) {
   const [yn, setYn] = useState<YesNo | null>(null);
   // A question or a proposal opens in place, under its row: its whole text
-  // and, for a question, why its Recommended answer is the one; a proposed
-  // goal opens from the start. Closed, the row is one line like the rest.
-  const [expanded, setExpanded] = useState(!!startOpen || !!r.card);
+  // and, for a question, why its Recommended answer is the one. Closed (the
+  // way every row starts, a proposed goal too, unless a link opened it),
+  // the row is one line like the rest.
+  const [expanded, setExpanded] = useState(!!startOpen);
   const toggle = useCallback(() => setExpanded((v) => !v), []);
   // A link that opens this row (a notification's ?answer=) brings it into view once.
   const item = useRef<HTMLDivElement>(null);

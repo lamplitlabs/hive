@@ -101,7 +101,7 @@ export function ListRow({
   // card's); the floating actions wear the same colour, so they sit on the
   // row without a seam. The hover tint is opaque (muted mixed into the card).
   const cls = cn(
-    "group/row relative flex min-h-(--row-h) min-w-0 items-center gap-3 bg-[var(--row-bg,transparent)] px-3 py-1.5 text-left outline-none transition-colors duration-120 ease-out-soft motion-reduce:transition-none max-sm:flex-wrap",
+    "group/row relative flex min-h-(--row-h) min-w-0 items-center gap-3 bg-[var(--row-bg,transparent)] px-3 py-1.5 text-left outline-none transition-colors duration-120 ease-out-soft motion-reduce:transition-none max-sm:flex-wrap @max-4xl/rows:flex-wrap",
     interactive &&
       "cursor-pointer hover:[--row-bg:color-mix(in_oklab,var(--muted)_60%,var(--card))] has-[[data-row-open]:focus-visible]:[--row-bg:color-mix(in_oklab,var(--muted)_60%,var(--card))] has-[[data-row-open]:focus-visible]:rounded-[4px] has-[[data-row-open]:focus-visible]:ring-2 has-[[data-row-open]:focus-visible]:ring-inset has-[[data-row-open]:focus-visible]:ring-ring",
     selected && "[--row-bg:var(--accent)] before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:bg-link before:content-['']",
@@ -196,7 +196,7 @@ export function ListRow({
           className={cn(
             "flex shrink-0 items-center gap-1",
             actionsVisible
-              ? "max-sm:basis-full max-sm:justify-end"
+              ? "max-sm:basis-full max-sm:justify-end @max-4xl/rows:basis-full @max-4xl/rows:justify-end"
               : cn("transition-opacity duration-120 motion-reduce:transition-none pointer-coarse:max-sm:basis-full pointer-coarse:max-sm:justify-end", FLOATING),
           )}
           // The space between the row's buttons is theirs: a press there
@@ -247,7 +247,10 @@ function rowStop(row: HTMLElement): HTMLElement {
 // opener's own doing), Esc lets go. Keys typed in a field inside a row are
 // left alone. Each child is one item of the list: a <ListRow>, or a
 // <ListItem> around a row and its details.
-export function ListRows({ children, className, ariaLabel }: { children: React.ReactNode; className?: string; ariaLabel?: string }) {
+// `fit` measures the list's own width rather than the window's: in a narrow
+// column (under 56rem) a row's always-visible buttons drop under its title,
+// as they do on a phone, instead of squeezing the title to a word.
+export function ListRows({ children, className, ariaLabel, fit }: { children: React.ReactNode; className?: string; ariaLabel?: string; fit?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
   const onKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
     const target = e.target as HTMLElement;
@@ -273,7 +276,7 @@ export function ListRows({ children, className, ariaLabel }: { children: React.R
   }, []);
   return (
     <RowPlace.Provider value="list">
-      <div ref={ref} data-rows role="list" aria-label={ariaLabel} className={cn("divide-y divide-border overflow-hidden rounded-lg border bg-card", className)} onKeyDown={onKeyDown}>
+      <div ref={ref} data-rows role="list" aria-label={ariaLabel} className={cn("divide-y divide-border overflow-hidden rounded-lg border bg-card", fit && "@container/rows", className)} onKeyDown={onKeyDown}>
         {children}
       </div>
     </RowPlace.Provider>

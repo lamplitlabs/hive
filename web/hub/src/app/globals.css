@@ -17,15 +17,18 @@
      paths and commands only on demand.
   2. Marigold means you. The one warm colour (--you) marks what waits for
      the owner's answer. Everything the agents do is teal, navy and grey.
-  3. Quiet surfaces. Flat cards on a cool paper background with hairline
-     borders; shadows only on things that float (menus, dialogs, toasts).
+  3. Quiet surfaces. White cards on a softly tinted canvas, a faint line
+     and a soft resting shadow; real shadows only on things that float.
   4. Details on demand. Counts and machine internals fold away.
   5. One question per card, with its answer buttons right under it.
 
-  Palette (console redesign, Nov 2026): a neutral near-white canvas and
-  dark ink text. Ink (the logo's navy) is the primary button; teal is for
-  links, the focus ring, the active nav item, selection and the first chart
-  series; marigold (--you) marks what waits for the owner. Each kind of
+  Palette (simplicity pass, 28 Nov 2026): a canvas with a breath of the
+  logo's sky in it, white cards that rest on a soft shadow instead of a hard
+  line, rounder corners, and dark ink text. The primary button is the
+  logo's ocean teal (--primary), so the one thing to press reads as Hive's
+  own colour; teal also carries links, the focus ring, the active nav item
+  and what agents are doing; marigold (--you) marks what waits for the
+  owner. Each kind of
   object has one tint (--kind-*) and each status one tint (--status-*),
   always with an icon and a word, never colour alone. Every colour is oklch
   so light and dark stay perceptually matched; every tint's text keeps
@@ -175,19 +178,20 @@
   --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
-  /* Three radii: 6px controls and chips (rounded-md), 10px cards and inputs
-     (rounded-lg), 14px dialogs and side panels (rounded-xl). The larger
-     legacy steps collapse onto the panel radius. */
-  --radius-control: 6px;
-  --radius-card: 10px;
-  --radius-panel: 14px;
+  /* Softer corners (28 Nov 2026): 8px controls and chips (rounded-md), 12px
+     inputs and small cards (rounded-lg), 16px cards and panels (rounded-xl),
+     20px for the big surfaces (rounded-2xl: the new-session box, the
+     setup card). */
+  --radius-control: 8px;
+  --radius-card: 12px;
+  --radius-panel: 16px;
   --radius-sm: 6px;
-  --radius-md: 6px;
-  --radius-lg: 10px;
-  --radius-xl: 14px;
-  --radius-2xl: 14px;
-  --radius-3xl: 14px;
-  --radius-4xl: 14px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-2xl: 20px;
+  --radius-3xl: 20px;
+  --radius-4xl: 20px;
   /* Three shadows: none in the page (shadow-card), a small raise on hover (shadow-raise), a large one for what floats (shadow-pop). */
   --shadow-card: var(--sh-card);
   --shadow-raise: var(--sh-raise);
@@ -211,26 +215,27 @@
   --brand-violet: oklch(0.65 0.18 285);
   --gradient-brand: linear-gradient(135deg, var(--brand-mint) 0%, var(--brand-sky) 52%, var(--brand-violet) 100%);
 
-  /* paper, ink and lines: a neutral near-white canvas, a one-step-darker sidebar, white cards */
-  --paper: oklch(0.985 0.002 255);
+  /* paper, ink and lines: a near-white canvas with a breath of the logo's sky, white cards */
+  --paper: oklch(0.982 0.007 220);
   --background: var(--paper);
   --foreground: oklch(0.26 0.04 262);
   --card: oklch(1 0 0);
   --card-foreground: var(--foreground);
   --popover: oklch(1 0 0);
   --popover-foreground: var(--foreground);
-  --muted: oklch(0.96 0.004 255);
-  --muted-foreground: oklch(0.48 0.02 255);
-  --secondary: oklch(0.955 0.004 255);
-  --secondary-foreground: oklch(0.3 0.035 262);
-  --accent: oklch(0.95 0.012 190);
-  --accent-foreground: oklch(0.3 0.04 230);
-  --border: oklch(0.92 0.004 255);
-  --input: oklch(0.87 0.006 255);
+  --muted: oklch(0.96 0.006 220);
+  --muted-foreground: oklch(0.48 0.02 250);
+  --secondary: oklch(0.955 0.008 220);
+  --secondary-foreground: oklch(0.3 0.035 250);
+  --accent: oklch(0.95 0.02 200);
+  --accent-foreground: oklch(0.3 0.05 220);
+  --border: oklch(0.925 0.006 230);
+  --input: oklch(0.87 0.01 230);
 
-  /* ink: the primary button */
-  --primary: oklch(0.26 0.04 262);
-  --primary-strong: oklch(0.2 0.035 262);
+  /* ocean teal: the primary button, Hive's own colour (the logo's sky,
+     deepened until white words on it read at >= 4.8:1) */
+  --primary: oklch(0.49 0.105 215);
+  --primary-strong: oklch(0.43 0.1 218);
   --primary-foreground: oklch(1 0 0);
   /* teal: links, the focus ring, the active nav item, selection, the first chart series */
   --teal: oklch(0.52 0.095 186);
@@ -302,14 +307,14 @@
   --series-8: #e34948;
   --chart-grid: oklch(0.93 0.004 255);
 
-  /* the sidebar: one step darker than the page, a 1px right border */
-  --sidebar: oklch(0.97 0.004 255);
+  /* the sidebar: white like the cards, so the page reads as one calm sheet */
+  --sidebar: oklch(0.995 0.002 220);
   --sidebar-foreground: var(--foreground);
   --sidebar-primary: var(--primary);
   --sidebar-primary-foreground: var(--primary-foreground);
-  --sidebar-accent: oklch(0.935 0.006 255);
+  --sidebar-accent: oklch(0.95 0.02 200);
   --sidebar-accent-foreground: var(--foreground);
-  --sidebar-border: oklch(0.905 0.004 255);
+  --sidebar-border: oklch(0.925 0.006 230);
   --sidebar-ring: var(--ring);
 
   --radius: var(--radius-card);
@@ -321,9 +326,9 @@
   --raised-border: var(--border);
   --raised-highlight: transparent;
 
-  /* shadows: none at rest, a small raise on hover, a real one only on things that float */
-  --sh-card: none;
-  --sh-raise: 0 1px 2px oklch(0.26 0.04 262 / 0.06), 0 4px 12px -6px oklch(0.26 0.04 262 / 0.14);
+  /* shadows: a soft one at rest, a small raise on hover, a real one only on things that float */
+  --sh-card: 0 1px 2px oklch(0.3 0.04 240 / 0.04), 0 4px 14px -8px oklch(0.3 0.04 240 / 0.1);
+  --sh-raise: 0 1px 2px oklch(0.26 0.04 262 / 0.06), 0 6px 18px -8px oklch(0.26 0.04 262 / 0.16);
   --sh-raised: var(--sh-card);
   --sh-raised-hover: var(--sh-raise);
   --sh-pop: 0 16px 40px -16px oklch(0.26 0.04 262 / 0.28), 0 2px 8px -2px oklch(0.26 0.04 262 / 0.1);
@@ -333,10 +338,10 @@
 .dark {
   /* a neutral near-black canvas (the same cool hue as the light paper), cards one
      step lighter, the sidebar one step darker; lines are solid greys, not alpha */
-  --paper: oklch(0.17 0.01 255);
+  --paper: oklch(0.17 0.012 235);
   --background: var(--paper);
   --foreground: oklch(0.94 0.008 240);
-  --card: oklch(0.205 0.01 255);
+  --card: oklch(0.205 0.012 235);
   --card-foreground: var(--foreground);
   --popover: oklch(0.205 0.01 255);
   --popover-foreground: var(--foreground);
@@ -349,10 +354,10 @@
   --border: oklch(0.28 0.01 255);
   --input: oklch(0.34 0.01 255);
 
-  /* ink inverts: a near-white primary button with dark text */
-  --primary: oklch(0.9 0.01 255);
-  --primary-strong: oklch(0.82 0.01 255);
-  --primary-foreground: oklch(0.2 0.02 262);
+  /* ocean teal lifts for dark: a light teal button with dark words */
+  --primary: oklch(0.8 0.1 205);
+  --primary-strong: oklch(0.86 0.09 205);
+  --primary-foreground: oklch(0.2 0.03 230);
   /* teal lifts for dark; --link and --ring follow it from :root */
   --teal: oklch(0.76 0.1 182);
 
@@ -390,11 +395,11 @@
   --series-8: #e66767;
   --chart-grid: oklch(0.26 0.01 255);
 
-  --sidebar: oklch(0.15 0.01 255);
+  --sidebar: oklch(0.155 0.012 235);
   --sidebar-foreground: var(--foreground);
   --sidebar-primary: var(--primary);
   --sidebar-primary-foreground: var(--primary-foreground);
-  --sidebar-accent: oklch(0.21 0.01 255);
+  --sidebar-accent: oklch(0.24 0.025 205);
   --sidebar-accent-foreground: var(--foreground);
   --sidebar-border: oklch(0.24 0.01 255);
   --sidebar-ring: var(--ring);

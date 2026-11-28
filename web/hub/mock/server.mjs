@@ -78,6 +78,10 @@ const state = {
   // and /lockdown), laid over the fixtures when they are served: the hub
   // keeps these on the row; here they live only until the mock restarts.
   chatFlips: {},
+  // Conversations started from the console in this mock run (POST chat), by
+  // id, each held as the whole GET chat/<id> answer; listed ahead of the
+  // fixtures, gone when the mock restarts.
+  chatNew: {},
   // Settings → Secrets (crates/hive-hub/src/secrets_api.rs): names only.
   secrets: [
     { name: "GITHUB_TOKEN", created_by: "human", created_at: "2026-11-08T09:12:00Z", updated_by: "human", updated_at: "2026-11-08T09:12:00Z", sealed_bytes: 56 },
@@ -738,7 +742,41 @@ function evolutionView(slug, d, suggestions = []) {
   return out;
 }
 
+// MOCK_FRESH=1: the console as a brand-new machine shows it - no projects,
+// no sessions, nothing waiting, the model provider signed out - so a first
+// run can be tried (and judged) with `MOCK_FRESH=1 npm run dev:mock`. It
+// filters what GET answers carry; what the owner does in the run (sign in,
+// add a project, start a session) shows up as usual.
+const FRESH = !!process.env.MOCK_FRESH;
+const fresh = { signedIn: false, projects: new Set() };
+const LIST_PATHS = /^(projects|tasks|tasks\/suggested|records|proposals|questions|suggested|compute|goal-proposals|inbox|activity|reports|code-deliveries|votes)$/;
+
+function freshen(path, body) {
+  if (path === "org")
+    return {
+      ...body,
+      projects: (body.projects ?? []).filter((p) => p.kind !== "commons" && fresh.projects.has(p.slug)),
+      commons: null,
+      active_claims: [],
+      proposals: [],
+      questions: [],
+    };
+  if (path.startsWith("harness") && body.provider?.login && !fresh.signedIn)
+    return { ...body, provider: { ...body.provider, login: { ...LOGGED_OUT, detail: "Not signed in yet." } } };
+  if (path === "chat")
+    return { ...body, conversations: Object.values(state.chatNew).map((x) => x.conversation), tasks: [] };
+  if (LIST_PATHS.test(path)) {
+    const out = { ...body };
+    for (const k of Object.keys(out))
+      if (Array.isArray(out[k])) out[k] = k === "projects" ? out[k].filter((p) => fresh.projects.has(p.slug)) : [];
+    return out;
+  }
+  return body;
+}
+
 function send(res, code, body, headers = {}) {
+  if (res.freshPath !== undefined && code === 200 && body && typeof body === "object")
+    body = freshen(res.freshPath, body);
   const text = typeof body === "string" ? body : JSON.stringify(body);
   res.writeHead(code, {
     "content-type": "application/json; charset=utf-8",
@@ -844,6 +882,7 @@ function syncHarnessSetting(name, value) {
 }
 
 function setHarnessLogin(login, name = state.harness.provider.name) {
+  if (login?.logged_in) fresh.signedIn = true;
   providerLogin(name);
   state.providerLogins[name] = login;
   if (name === state.harness.provider.name) state.harness.provider.login = login;
@@ -1325,6 +1364,7 @@ async function handle(req, res) {
     .split("/")
     .filter(Boolean)
     .map(decodeURIComponent);
+  if (FRESH && req.method === "GET") res.freshPath = segs.join("/");
   const q = url.searchParams;
   if (delay) await new Promise((r) => setTimeout(r, delay));
 
@@ -1539,6 +1579,54 @@ async function handle(req, res) {
       const had = state.secrets.some((x) => x.name === segs[1]);
       state.secrets = state.secrets.filter((x) => x.name !== segs[1]);
       return had ? send(res, 200, { removed: segs[1] }) : fail(res, 404, "No secret " + segs[1], "The team vault holds no secret by that name.", "Pick a name from the list.");
+    }
+    // Start a conversation the way the hub's POST /chat does: the first
+    // message becomes the title and the transcript's first line; no agent
+    // runs here, so it waits idle for the next message.
+    if (segs[0] === "chat" && segs.length === 1) {
+      const text = String(body.text ?? "").trim();
+      if (!text)
+        return fail(res, 400, "Empty message", "text must not be empty.", "Say what the agent should do.");
+      const at = now();
+      const id = "chat-" + at.replace(/[-:]/g, "").replace(/Z$/, "") + "-" + Math.random().toString(16).slice(2, 8);
+      const project = String(body.project ?? "").trim();
+      const firstLine = text.split("\n").find((l) => l.trim())?.trim() ?? text;
+      const conversation = {
+        id,
+        title: firstLine.length > 120 ? firstLine.slice(0, 119) + "\u2026" : firstLine,
+        project,
+        cwd: project ? "/home/owner/.hive/work/chat/" + id + "/tree" : "/home/owner/.hive/work/chat/" + id + "/scratch",
+        branch: project ? "hive/chat-" + id.slice(-6) : "",
+        status: "idle",
+        session_id: "",
+        provider: "copilot",
+        model: String(body.model ?? ""),
+        reasoning: String(body.reasoning ?? ""),
+        auto_approve: body.auto_approve !== false,
+        lockdown: body.lockdown === true,
+        created_by: "owner",
+        created_at: at,
+        updated_at: at,
+        last_at: at,
+        turns: 0,
+        cost: 0,
+        note: "",
+        parent: "",
+      };
+      state.chatNew[id] = {
+        conversation,
+        live: { status: "idle", note: "", stream: "", pending: null, queued: [], turn_from: 0, turn_started_at: "", auto_approve: conversation.auto_approve, lockdown: conversation.lockdown, version: 1, session_id: "" },
+        session_id: "",
+        messages: [{ conversation_id: id, n: 1, at, role: "user", content: text, extra: {} }],
+        since: 0,
+        steps: [],
+        after: 0,
+        artifacts: [],
+        changes: null,
+        parent_title: "",
+        children: [],
+      };
+      return send(res, 201, { conversation });
     }
     // The Chat page's two switches on a conversation: Auto (approve tools
     // without asking) and Lockdown (sandbox). The hub flips the row and the
@@ -2652,6 +2740,7 @@ async function handle(req, res) {
         if (body.verify) p.verify_cmd = body.verify;
       }
       emit("human", created ? "project.add" : "project.refresh", p.slug, path);
+      fresh.projects.add(p.slug);
       const job = {
         id: "JOB-" + String(state.seq++).slice(-3),
         project: p.slug,
@@ -3922,7 +4011,7 @@ async function handle(req, res) {
       405,
       "no such write",
       req.method + " " + url.pathname + " is not an owner action",
-      "the writes are tasks, tasks/<id>/amend|cancel|status, messages, decide, settings, compute/<id>/approve|deny, projects, projects/<slug>/goal|needs|remove|restore, compute/executors/<name>/remove, machines/join-codes, machines/devices/<id>/revoke, records/<id>/accept|status|adopt|discard|draft-job, heldout, heldout/fixtures, cred/token|op/vaults|op/items|set|clear|generate, mcp, mcp/<id> (PATCH), mcp/<id>/connect|status|login|logout, skills, skills/<id> (PATCH), skills/<id>/status, automations, automations/check|remove, automations/<id>/pause|resume|end|run, chat/<id>/auto|lockdown, memory, memory/forget, voice/setup|transcribe|unload, voice/model (DELETE)",
+      "the writes are tasks, tasks/<id>/amend|cancel|status, messages, decide, settings, compute/<id>/approve|deny, projects, projects/<slug>/goal|needs|remove|restore, compute/executors/<name>/remove, machines/join-codes, machines/devices/<id>/revoke, records/<id>/accept|status|adopt|discard|draft-job, heldout, heldout/fixtures, cred/token|op/vaults|op/items|set|clear|generate, mcp, mcp/<id> (PATCH), mcp/<id>/connect|status|login|logout, skills, skills/<id> (PATCH), skills/<id>/status, automations, automations/check|remove, automations/<id>/pause|resume|end|run, chat, chat/<id>/auto|lockdown, memory, memory/forget, voice/setup|transcribe|unload, voice/model (DELETE)",
     );
   }
 
@@ -4699,6 +4788,9 @@ async function handle(req, res) {
       }
     }
   }
+  // A conversation started in this mock run answers from memory.
+  if (segs[0] === "chat" && segs.length === 2 && state.chatNew[segs[1]])
+    return send(res, 200, state.chatNew[segs[1]]);
   const d = await fixture(segs.map(encodeURIComponent).join("/"));
   if (d === null)
     return fail(
@@ -4720,7 +4812,10 @@ async function handle(req, res) {
   if (segs[0] === "chat" && segs.length === 1 && Array.isArray(d.conversations))
     return send(res, 200, {
       ...d,
-      conversations: d.conversations.map(chatWithFlips),
+      conversations: [
+        ...Object.values(state.chatNew).map((x) => x.conversation),
+        ...d.conversations.map(chatWithFlips),
+      ],
     });
   if (segs[0] === "chat" && segs.length === 2 && d.conversation) {
     const flips = state.chatFlips[d.conversation.id];
@@ -5834,7 +5929,7 @@ createServer((req, res) => {
   });
 }).listen(port, "127.0.0.1", () =>
   console.log(
-    `hive mock hub on http://127.0.0.1:${port}/api/v1/  (fixtures: ${root})`,
+    `hive mock hub on http://127.0.0.1:${port}/api/v1/  (fixtures: ${root})` + (FRESH ? "  - MOCK_FRESH: a brand-new machine" : ""),
   ),
 );
 

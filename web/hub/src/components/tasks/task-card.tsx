@@ -258,7 +258,8 @@ export function TaskCard({ t, showProject, onOpen, active, compact }: { t: Task;
       {!compact && idle ? (
         <p className="flex min-w-0 items-start gap-2 text-[13px] leading-relaxed text-muted-foreground">
           <CircleDashedIcon className="mt-[3px] size-3.5 shrink-0" aria-hidden />
-          <span className="min-w-0 anywhere">{idle}</span>
+          {/* Two lines at most on a card; the whole reason is in the tooltip and the task. */}
+          <span className="line-clamp-2 min-w-0 anywhere" title={idle}>{idle}</span>
         </p>
       ) : null}
       {review && !compact ? <TaskNeedsYou t={t} /> : null}

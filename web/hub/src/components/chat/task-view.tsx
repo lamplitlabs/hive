@@ -12,6 +12,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ArrowLeftIcon,
   ArrowUpIcon,
   BanIcon,
   CircleCheckIcon,
@@ -19,9 +20,20 @@ import {
   ListChecksIcon,
   LoaderCircleIcon,
   MessageCircleQuestionIcon,
+  MoreHorizontalIcon,
+  PanelRightIcon,
   PencilIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Textarea } from "@/components/ui/textarea";
 import { Canvas, revealCanvas, useCanvas } from "@/components/chat/canvas";
 import { useSeen } from "@/components/chat/chat-pane";
@@ -34,6 +46,7 @@ import {
 } from "@/components/chat/job-evidence-state";
 import { MicButton, useDictation } from "@/components/chat/mic";
 import { BackButton, Pane } from "@/components/chat/split";
+import { useWorkPanel } from "@/components/chat/use-work-panel";
 import {
   TONE_TEXT,
   jobWaitingForPr,
@@ -53,7 +66,7 @@ import {
   SkeletonRows,
 } from "@/components/hive/panel";
 import { Avatar, Mono, ProjectLink, When } from "@/components/hive/who";
-import { LifecyclePanel, PhaseChip, useTaskLifecycle } from "@/components/tasks/lifecycle";
+import { LifecyclePanel } from "@/components/tasks/lifecycle";
 import { TaskActivityPane } from "@/components/tasks/task-activity";
 import {
   CancelTaskDialog,
@@ -87,7 +100,7 @@ import { hrefs } from "@/lib/nav";
 import { isOwner, isReport } from "@/lib/task-message-status";
 import { invalidate, useApi, useNow } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
-import { priorityWord } from "@/lib/words";
+import { agentName, priorityWord } from "@/lib/words";
 
 const isClosed = (t: Task) => t.status === "done" || t.status === "cancelled";
 
@@ -225,18 +238,18 @@ function TaskBody({
   const reportStep = t.status === "done" ? reportJob(d.jobs) : undefined;
   const reportTab = reportStep ? jobEvidenceTab(reportStep) : null;
   const openTab = ctl.openTab;
-  const lifecycle = useTaskLifecycle(t.id);
   const shownReport = useRef("");
   useEffect(() => {
     if (!reportTab || shownReport.current === reportTab.id) return;
     shownReport.current = reportTab.id;
     openTab(reportTab);
   }, [reportTab, openTab]);
-  const leadName = t.lead || "the lead agent";
+  const leadName = leadWords(t.lead, t.project);
   const [amend, setAmend] = useState(false);
   const [cancel, setCancel] = useState(false);
   const [finish, setFinish] = useState(false);
   const [busy, setBusy] = useState("");
+  const [showWork, setShowWork] = useWorkPanel();
   const messages = useMemo(
     () => [...d.messages].sort((a, b) => a.at.localeCompare(b.at)),
     [d.messages],
@@ -297,152 +310,135 @@ function TaskBody({
     }
   };
 
+  // Shown work opens a tab and brings the panel up with it.
+  const openWork = (tab: Parameters<typeof ctl.openTab>[0]) => {
+    setShowWork(true);
+    ctl.openTab(tab);
+  };
+  const details = [
+    t.lead ? "Lead: " + agentName(t.lead, t.project) : closed ? "No lead agent worked on it" : "No lead agent yet",
+    d.jobs.length ? plural(d.jobs.length, "step") : "",
+    t.id,
+  ].filter(Boolean);
   const section = (
     <section className="flex min-h-0 min-w-0 flex-col gap-3 lg:flex-1">
-      <BackButton onBack={onBack} />
-      <header
-        className={cn(
-          "enter grid min-w-0 gap-2 rounded-xl border bg-card px-4 py-3 shadow-card transition-colors",
-          review && "surface-you",
-          working && "border-primary/40",
-        )}
-      >
-        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
-          <HiveMascot
-            mood={mood.pip}
-            size={44}
-            className={cn("shrink-0", working && "float")}
-            title={mood.word}
-          />
-          <div className="grid min-w-[14rem] flex-1 gap-0.5">
-            {closed ? (
-              <span
-                className="truncate text-base font-semibold tracking-tight text-foreground"
-                title={t.title}
-              >
-                {t.title}
-              </span>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setAmend(true)}
-                className="group flex min-w-0 items-center gap-1.5 text-left"
-                title="Edit the task"
-              >
+      {/* The same quiet header as a session: back, Pip, the title, one line
+          of where it stands, the work panel and a menu for the rest. */}
+      <header className="enter flex min-w-0 items-center gap-3">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              className="-ml-1.5 hidden shrink-0 text-muted-foreground hover:text-foreground lg:inline-flex"
+              onClick={onBack}
+              aria-label="All sessions"
+            >
+              <ArrowLeftIcon />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>All sessions</TooltipContent>
+        </Tooltip>
+        <HiveMascot
+          mood={mood.pip}
+          size={36}
+          className={cn("shrink-0 max-sm:hidden", working && "float")}
+          title={mood.word}
+        />
+        <div className="grid min-w-0 flex-1 gap-0.5">
+          <h1
+            className="line-clamp-2 text-base font-semibold leading-6 tracking-tight text-foreground anywhere sm:line-clamp-1 sm:text-lg"
+            title={t.title}
+          >
+            {t.title}
+          </h1>
+          <p className="flex min-w-0 items-center gap-x-2 overflow-hidden text-[13px] text-muted-foreground">
+            <span
+              className={cn(
+                "inline-flex shrink-0 items-center gap-1.5 font-medium",
+                mood.tone === "wait" ? "text-you-ink" : TONE_TEXT[mood.tone],
+              )}
+            >
+              {working ? (
+                <LoaderCircleIcon className="size-3.5 animate-spin" />
+              ) : (
                 <span
-                  className="truncate text-base font-semibold tracking-tight text-foreground"
-                  title={t.title}
-                >
-                  {t.title}
-                </span>
-                <PencilIcon
-                  className="size-3.5 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
+                  className={cn("live-dot size-2 rounded-full", mood.dot)}
                   aria-hidden
                 />
-              </button>
-            )}
-            <p className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
-              <span
-                className={cn(
-                  "inline-flex items-center gap-1 font-medium",
-                  mood.tone === "wait" ? "text-you-ink" : TONE_TEXT[mood.tone],
-                )}
-              >
-                {working ? (
-                  <LoaderCircleIcon className="size-3 animate-spin" />
-                ) : (
-                  <span
-                    className={cn("live-dot size-1.5 rounded-full", mood.dot)}
-                    aria-hidden
-                  />
-                )}
-                {mood.word}
-              </span>
-              <span aria-hidden>·</span>
-              <ProjectLink slug={t.project} />
-              {lifecycle.data ? (
-                <>
-                  <span aria-hidden>·</span>
-                  <button
-                    type="button"
-                    className="min-w-0 hover:text-foreground hover:underline"
-                    onClick={() => ctl.openTab(makeTab("lifecycle"))}
-                  >
-                    <PhaseChip l={lifecycle.data} />
-                  </button>
-                </>
-              ) : null}
-              <span aria-hidden>·</span>
-              {t.lead ? (
-                <span
-                  className="inline-flex min-w-0 items-center gap-1"
-                  title={"Lead agent " + t.lead}
-                >
-                  <Avatar seed={t.lead} size={14} />{" "}
-                  <span className="truncate">{t.lead}</span>
-                </span>
-              ) : (
-                <span title="The runner keeps one lead agent per active project and wakes it for this task.">
-                  {closed ? "no lead agent worked on it" : "no lead agent yet"}
-                </span>
               )}
-              {d.jobs.length ? (
-                <>
-                  <span aria-hidden>·</span>
-                  <span>{plural(d.jobs.length, "step")}</span>
-                </>
-              ) : null}
-              {t.priority >= 30 ? (
-                <>
-                  <span aria-hidden>·</span>
-                  <span
-                    className={cn(
-                      "font-medium",
-                      t.priority >= 50 && "text-bad",
-                    )}
-                  >
-                    {priorityWord(t.priority).toLowerCase() + " priority"}
-                  </span>
-                </>
-              ) : null}
-              <span aria-hidden>·</span>
-              <span
-                className="font-mono text-xs"
-                title={t.job_id ? "Planning job " + t.job_id : undefined}
-              >
-                {t.id}
-              </span>
-            </p>
-          </div>
-          {!closed ? (
-            <>
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                className="h-7 shrink-0 rounded-full"
-                onClick={() => setFinish(true)}
-                disabled={!!busy}
-                title="Mark this task done; the lead agent stops working on it"
-              >
-                <CircleCheckIcon />
-                <span className="sr-only sm:not-sr-only">Finish</span>
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                className="h-7 shrink-0 rounded-full text-bad hover:bg-bad/10 hover:text-bad"
-                onClick={() => setCancel(true)}
-                disabled={!!busy}
-                title="Cancel this task"
-              >
-                <BanIcon />
-                <span className="sr-only sm:not-sr-only">Cancel</span>
-              </Button>
-            </>
-          ) : null}
+              {mood.word}
+            </span>
+            <span aria-hidden>·</span>
+            <span className="min-w-0 truncate">
+              <ProjectLink slug={t.project} />
+            </span>
+            {t.priority >= 30 ? (
+              <>
+                <span aria-hidden>·</span>
+                <span
+                  className={cn(
+                    "shrink-0 font-medium",
+                    t.priority >= 50 && "text-bad",
+                  )}
+                >
+                  {priorityWord(t.priority).toLowerCase() + " priority"}
+                </span>
+              </>
+            ) : null}
+          </p>
         </div>
+        <Button
+          type="button"
+          size="sm"
+          variant={showWork ? "secondary" : "outline"}
+          className="shrink-0"
+          aria-pressed={showWork}
+          onClick={() => setShowWork(!showWork)}
+          title={showWork ? "Hide the steps, brief and files" : "Show the steps, brief and files"}
+        >
+          <PanelRightIcon />
+          {showWork ? "Hide work" : "Show work"}
+        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              type="button"
+              size="icon-sm"
+              variant="ghost"
+              className="shrink-0 text-muted-foreground hover:text-foreground"
+              aria-label="More for this task"
+              disabled={!!busy}
+            >
+              <MoreHorizontalIcon />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-64 p-1.5">
+            <DropdownMenuLabel className="grid gap-0.5 text-xs font-normal text-muted-foreground">
+              {details.map((x) => (
+                <span key={x} className="truncate" title={x === t.id && t.job_id ? "Planning job " + t.job_id : undefined}>
+                  {x}
+                </span>
+              ))}
+            </DropdownMenuLabel>
+            {!closed ? (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={() => setAmend(true)}>
+                  <PencilIcon /> Edit the task
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => setFinish(true)}>
+                  <CircleCheckIcon /> Finish
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem variant="destructive" onSelect={() => setCancel(true)}>
+                  <BanIcon /> Cancel the task
+                </DropdownMenuItem>
+              </>
+            ) : null}
+          </DropdownMenuContent>
+        </DropdownMenu>
       </header>
       {error ? (
         <Notice tone="warn">{"Live updates paused: " + error}</Notice>
@@ -478,7 +474,7 @@ function TaskBody({
                 type="button"
                 className="font-medium text-link underline-offset-2 hover:underline"
                 onClick={() => {
-                  ctl.openTab(reportTab);
+                  openWork(reportTab);
                   revealCanvas();
                 }}
                 data-report-link
@@ -508,7 +504,7 @@ function TaskBody({
             pick,
             busy: !!busy,
             newBefore,
-            onEvidence: (j) => ctl.openTab(jobEvidenceTab(j)),
+            onEvidence: (j) => openWork(jobEvidenceTab(j)),
           }}
           className="max-h-[calc(100dvh-24rem)] min-h-[20rem] lg:max-h-none lg:min-h-0"
           jumpOn={jump}
@@ -614,7 +610,9 @@ function TaskBody({
     />
   );
 
-  return <Pane main={section} wide={ctl.wide} panel={canvas} />;
+  return (
+    <Pane main={section} wide={ctl.wide} panel={showWork ? canvas : undefined} />
+  );
 }
 
 // The job that ran last among those with a run: by when it finished or
@@ -703,7 +701,7 @@ function TaskComposer({
   const [busy, setBusy] = useState(false);
   const textarea = useRef<HTMLTextAreaElement | null>(null);
   const insertSpokenText = useDictation(textarea, text, setText);
-  const leadName = t.lead || "the lead agent";
+  const leadName = leadWords(t.lead, t.project);
   const canSend = !!text.trim() && !busy && !closed;
   const send = async () => {
     if (!canSend) return;
@@ -760,19 +758,19 @@ function TaskComposer({
         />
         <div className="flex min-w-0 items-center gap-1.5">
           <MicButton disabled={closed || busy} onText={insertSpokenText} />
-          <span className="min-w-0 flex-1 truncate px-2 text-xs text-muted-foreground">
-            {closed
-              ? ""
-              : t.lead
-                ? "To " + t.lead + ", the lead agent of this task"
-                : "To the lead agent, once one is woken for this task"}
-          </span>
+          <span className="min-w-0 flex-1" />
           <Button
             type="submit"
             size="icon"
             disabled={!canSend}
             aria-label="Send"
             className="shrink-0 rounded-xl"
+            title={
+              (t.lead
+                ? "To " + t.lead + ", the lead agent of this task"
+                : "To the lead agent, once one is woken for this task") +
+              ". Enter sends, Shift+Enter for a new line; the lead agent reads it on its next turn."
+            }
           >
             {busy ? (
               <LoaderCircleIcon className="animate-spin" />
@@ -782,11 +780,6 @@ function TaskComposer({
           </Button>
         </div>
       </div>
-      <p className="px-2 text-xs text-muted-foreground">
-        {closed
-          ? "A finished task takes no more messages."
-          : "Enter sends, Shift+Enter for a new line. Press the microphone to dictate. Your message is about this task; the lead agent reads it on its next turn."}
-      </p>
     </form>
   );
 }
@@ -1132,4 +1125,15 @@ function StepList({
       )}
     </section>
   );
+}
+
+// The lead as a sentence says it: "the project lead" (agentName's role
+// word, lowered after "the"), another agent by its name, and "the lead
+// agent" before one is woken. sentence() capitalises it to open a line.
+function leadWords(lead: string, project: string): string {
+  if (!lead) return "the lead agent";
+  const name = agentName(lead, project);
+  return name.endsWith(" lead")
+    ? "the " + name.charAt(0).toLowerCase() + name.slice(1)
+    : name;
 }

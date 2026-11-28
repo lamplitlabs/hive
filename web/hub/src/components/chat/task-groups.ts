@@ -63,12 +63,13 @@ export const NEEDS_REVIEW: Mood = { word: "Needs your review", tone: "wait", pip
 // Work done but without a pull request yet: a finished step whose branch is
 // still on it, a conversation whose branch holds commits main lacks. The
 // daemon opens the pull request on its next pass, so nobody is asked.
-export const WAITING_FOR_PR: Mood = { word: "Waiting for its pull request", tone: "neutral", pip: "waiting", dot: "bg-muted-foreground/40" };
+export const WAITING_FOR_PR: Mood = { word: "Opening a pull request", tone: "neutral", pip: "waiting", dot: "bg-muted-foreground/40" };
 
 // The pull request could not be opened and the runner will not try again
 // until the work changes: the owner decides (resolve the conflict, or say
 // what to do on the task's thread).
-export const PR_HELD_FOR_OWNER: Mood = { word: "Pull request held for you", tone: "wait", pip: "worried", dot: "bg-warn" };
+// Said as what it is (2026-11-28, plain words): the work does not merge.
+export const PR_HELD_FOR_OWNER: Mood = { word: "Merge conflict", tone: "wait", pip: "worried", dot: "bg-warn" };
 
 // The pull request's word, the same for a step, a task and a conversation,
 // so a section reads as one thing; null once it is merged or closed, and
@@ -80,13 +81,13 @@ export function prMood(state: string | undefined | null): Mood | null {
     case "review_failed":
       return { word: "Review failed", tone: "wait", pip: "worried", dot: "bg-warn" };
     case "pr_open":
-      return { word: "Pull request open", tone: "neutral", pip: "waiting", dot: "bg-primary/50" };
+      return { word: "Waiting for review", tone: "neutral", pip: "waiting", dot: "bg-primary/50" };
     case "in_review":
-      return { word: "In review", tone: "run", pip: "busy", dot: "bg-primary" };
+      return { word: "Being reviewed", tone: "run", pip: "busy", dot: "bg-primary" };
     case "merge_asked":
       return { word: "Merging", tone: "run", pip: "busy", dot: "bg-primary" };
     case "merge_waiting":
-      return { word: "Approved, merge waits", tone: "neutral", pip: "waiting", dot: "bg-primary/50" };
+      return { word: "Approved, merging soon", tone: "neutral", pip: "waiting", dot: "bg-primary/50" };
     case "changes_requested":
       return { word: "Changes requested", tone: "neutral", pip: "curious", dot: "bg-primary/50" };
     case "held_for_owner":
@@ -158,7 +159,7 @@ export function taskMoodOf(t: TaskState): Mood {
   if (t.working) return { word: "Working", tone: "run", pip: "busy", dot: "bg-primary" };
   if (pr) return pr;
   if (t.waiting_for_pr) return WAITING_FOR_PR;
-  if (t.status === "open") return { word: t.lead ? "Lead agent starting" : "New", tone: "ok", pip: "curious", dot: "bg-ok" };
+  if (t.status === "open") return { word: t.lead ? "Starting" : "New", tone: "ok", pip: "curious", dot: "bg-ok" };
   if (t.status === "planned") return { word: "Planned", tone: "ok", pip: "curious", dot: "bg-ok" };
   return { word: "In progress", tone: "ok", pip: "happy", dot: "bg-ok" };
 }

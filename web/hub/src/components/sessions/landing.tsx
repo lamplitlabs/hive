@@ -1,41 +1,63 @@
 "use client";
 
 import { AttentionStrip, retryInputs } from "@/components/sessions/attention-strip";
-import { HardStops } from "@/components/sessions/hard-stops";
 import { SetupCard } from "@/components/sessions/setup-card";
 import { attentionRows, isFirstRun, type AttentionDaemon, type SetupSnapshot } from "@/components/sessions/sessions-state";
-import { WorkingNow } from "@/components/sessions/working-now";
+import { HiveMascot } from "@/components/hive/mascots";
 import { useInbox } from "@/components/hive/inbox";
 import { registeredProjects, type HarnessStatus, type Org, type ServicePayload, type TasksPayload } from "@/lib/api";
 import { hrefs } from "@/lib/nav";
 import { useApi } from "@/lib/use-api";
 
 // What Sessions shows besides the conversations, now that the console opens
-// on it (TASK-129: Home and For you went). Above the page, only when there
-// is something: the broken-strip (the runner is not running, no model
-// provider, an input that did not load) and the strip of asks only the owner
-// may answer (money, what can't be undone, credentials, publication), with
-// the card that sets Hive up between them on a new machine. Each is absent
-// when nothing is wrong, nothing is left to set up or nothing waits.
+// on it (TASK-129: Home and For you went). Over the new-session box, only
+// when there is something: the broken-strip (the runner is not running, no
+// model provider, an input that did not load) and, on a new machine, the
+// card that sets Hive up. Each is absent when nothing is wrong or nothing is
+// left to set up.
 export function SessionsAlerts() {
   const { attention, service, setup, firstRun, harness, daemon } = useSessionsState();
   return (
     <>
       <AttentionStrip rows={attention} service={service} onRetry={retryInputs} />
       {firstRun ? <SetupCard snapshot={setup} harness={harness.data} service={service} daemon={daemon} /> : null}
-      <HardStops />
     </>
   );
 }
 
-// Under the new-session box on the landing: the agents at work (only while
-// one runs).
-export function SessionsLanding() {
-  const { org, tasks } = useSessionsState();
-  const o = org.data;
-  if (!o) return null;
-  const names = new Map(registeredProjects(o).map((p) => [p.slug, p.name || p.slug]));
-  return <WorkingNow claims={o.active_claims} tasks={tasks.data?.tasks ?? []} names={names} />;
+// The landing's title: Pip and one friendly line. A new machine is welcomed
+// to Hive and pointed at the setup steps; an owner coming back is greeted by
+// name. The page's one h1 (the top bar's crumb still says Sessions).
+export function SessionsGreeting() {
+  const { org, firstRun } = useSessionsState();
+  const name = (org.data?.owner_name || "").trim();
+  const title = !org.data ? "Sessions" : firstRun ? "Welcome to Hive" : name ? "Welcome back, " + name : "Welcome back";
+  const sub = firstRun
+    ? "Finish the steps below, then tell an agent what you need."
+    : "Tell an agent what you need. It works on its own branch and reports back here.";
+  return (
+    <header className="flex min-w-0 items-center gap-4 pt-6 pb-1 sm:pt-8">
+      <HiveMascot mood="happy" size={56} decorative className="float shrink-0" />
+      <div className="min-w-0">
+        <h1 className="truncate text-2xl font-semibold leading-8 tracking-tight sm:text-[28px] sm:leading-9">{title}</h1>
+        <p className="mt-0.5 text-sm leading-5 text-muted-foreground sm:text-[15px]">{sub}</p>
+      </div>
+    </header>
+  );
+}
+
+// Why the new-session box can't start anything yet, or "" when it can: with
+// no model provider signed in, an agent has nothing to think with, so the
+// box says so and points at the step that fixes it instead of letting a new
+// owner press Start into an error. Unknown (the harness still loading, or a
+// hub that can't say) never blocks.
+export function useStartBlock(): string {
+  const { setup } = useSessionsState();
+  const p = setup.provider;
+  if (!p) return "";
+  if (p.expired) return p.label + " sign-in expired. Sign in again above, then start.";
+  if (!p.loggedIn) return "Connect a model provider first (step 1 above): agents need one to think with.";
+  return "";
 }
 
 // The page's model, read through useApi's shared cache: two callers on one

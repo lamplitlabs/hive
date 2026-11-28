@@ -26,7 +26,7 @@ clean-up pass or a reflection instead.
 
 ## 2. Add a standing job
 
-In the console, open **Automations** (under **System** in the sidebar) and
+In the console, open **Automations** (under **More** in the sidebar) and
 choose **New automation**. Fill in the form:
 
 - **Project**: `my-app`. **What it does**: **Task**.
