@@ -1283,8 +1283,8 @@ pub(crate) fn caps_allow(
     String::new()
 }
 /// The rental limit a request passes when the worker is about to provision it (TASK-165): none
-/// for the owner's own call - asked or approved by the owner - which no limit refuses; for an
-/// agent's or the daemon's, `compute.max_vms` and `compute.max_hours_per_day` with the request
+/// for the owner's own call - one the owner approved (`hive_tasks::owners_call`; who filed it
+/// does not count) - which no limit refuses; for an agent's or the daemon's, `compute.max_vms` and `compute.max_hours_per_day` with the request
 /// already counted in both (`hive_tasks::compute::hours_today` holds every open request's
 /// unrun hours, this one's included).
 pub(crate) fn caps_hit(

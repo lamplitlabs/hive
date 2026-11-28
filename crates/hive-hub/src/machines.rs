@@ -113,7 +113,7 @@ fn payload_int(payload: &JsonMap, key: &str, fallback: i64) -> Option<i64> {
     }
 }
 
-fn payload_bool(payload: &JsonMap, key: &str, fallback: bool) -> Option<bool> {
+pub(crate) fn payload_bool(payload: &JsonMap, key: &str, fallback: bool) -> Option<bool> {
     match payload.get(key) {
         None | Some(Value::Null) => Some(fallback),
         Some(Value::Bool(b)) => Some(*b),
@@ -492,21 +492,23 @@ impl Handler {
         let Some(store) = self.store.as_deref() else {
             return;
         };
-        // "Rent it and raise the limit to N" (TASK-165 item 1): the owner's request is filed
-        // whatever the limits say; with `raise` the limit it passes is set to let it through.
+        // "Rent it and raise the limit to N" (TASK-165 item 1): with `raise` the limit the
+        // owner's request passes is set to let it through. The front lets only the owner's
+        // passkey send it (`remote::owner_route`), and the limit is written only once the request
+        // was filed (PR 314 review): a refused request - too many hours, no such project - leaves
+        // it as it was. The limit is read before filing: `limit_hit` adds this request itself.
         let Some(raise) = payload_bool(payload, "raise", false) else {
             invalid(w, "raise", "true or false");
             return;
         };
         let _lock = ADDITION_WRITES.lock().unwrap_or_else(|e| e.into_inner());
-        if raise
-            && let Ok(caps) = hive_tasks::get_caps(store)
-            && let Some(hit) = caps.limit_hit(hours as i32)
-            && let Err(e) = hive_tasks::raise_limit(store, &hit, hive_store::HUMAN_AGENT)
-        {
-            addition_failure(w, e.to_string());
-            return;
-        }
+        let hit = match hive_tasks::get_caps(store) {
+            Ok(caps) => caps.limit_hit(hours as i32),
+            Err(e) => {
+                addition_failure(w, e.to_string());
+                return;
+            }
+        };
         let req = match hive_tasks::request_compute(
             store,
             &project,
@@ -521,6 +523,17 @@ impl Handler {
                 return;
             }
         };
+        if raise
+            && let Some(hit) = &hit
+            && let Err(e) = hive_tasks::raise_limit(store, hit, hive_store::HUMAN_AGENT)
+        {
+            addition_failure(w, e.to_string());
+            return;
+        }
+        // The on-the-spot approval is the owner's, and the owner's approval lifts the limits; a
+        // member who is not the owner, through the front, gets it only under them - over one the
+        // request waits for the owner (PR 314 review).
+        let approve = approve && (self.owners_write(r) || hit.is_none());
         if approve
             && req.status == "pending"
             && let Err(e) = hive_tasks::approve(
@@ -1012,6 +1025,50 @@ mod tests {
         assert_eq!(status, 201, "{result:?}");
         assert_eq!(result["request"]["status"], "approved");
         assert_eq!(s.store.setting("compute.max_hours_per_day", ""), "6");
+    }
+
+    /// PR 314 review item 1d: the owner's request from the console over a limit, answered
+    /// "Rent it anyway" (no raise), is approved by the owner on the spot - the owner's call, which
+    /// the worker rents past the limits - and the limit stays as it was. Item 2: a request the
+    /// route refuses with `raise` (more hours than one request may ask) leaves the limit as it
+    /// was; before, the limit was raised to the request's hours first.
+    #[test]
+    fn the_owners_console_rental_over_a_limit_is_the_owners_call_and_a_refusal_raises_nothing() {
+        let _serial = crate::test_helpers::serial();
+        let s = http::additions_store(false);
+        http::additions_project(&s, "one");
+        for (k, v) in [
+            ("compute.auto_approve", "1"),
+            ("compute.max_vms", "0"),
+            ("compute.max_hours_per_day", "4"),
+        ] {
+            s.store.set_setting("human", k, v).unwrap();
+        }
+        let h = http::handler(&s);
+        let (status, result) = http::additions_request(
+            h.clone(),
+            "POST",
+            "/api/v1/compute/executors",
+            r#"{"mode":"request","project":"one","size":"small","hours":6,"reason":"mine"}"#,
+        );
+        assert_eq!(status, 201, "{result:?}");
+        assert_eq!(result["request"]["status"], "approved");
+        assert_eq!(result["request"]["decided_by"], "human");
+        let id = result["request"]["id"].as_str().unwrap();
+        assert!(hive_tasks::owners_call(
+            &hive_tasks::get_compute(&s.store, id).unwrap()
+        ));
+        assert_eq!(s.store.setting("compute.max_hours_per_day", ""), "4");
+        assert_eq!(s.store.setting("compute.max_vms", ""), "0");
+        let (status, result) = http::additions_request(
+            h.clone(),
+            "POST",
+            "/api/v1/compute/executors",
+            r#"{"mode":"request","project":"one","size":"small","hours":30,"reason":"too long","raise":true}"#,
+        );
+        assert_ne!(status, 201, "{result:?}");
+        assert_eq!(s.store.setting("compute.max_hours_per_day", ""), "4");
+        assert_eq!(s.store.setting("compute.max_vms", ""), "0");
     }
 
     /// TASK-165 items 1, 2 and 4: a request a limit refused is listed with the limit it hit and
