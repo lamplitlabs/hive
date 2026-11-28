@@ -99,8 +99,20 @@ fn add_reason(out: &mut Vec<String>, r: String) {
 pub(crate) struct Ahead {
     /// The local leases of the tick, in lease order.
     pub(crate) leased: Vec<Leased>,
-    /// A local slot waited for disk headroom this tick.
+    /// A local slot waited for disk headroom this tick: no project fit.
     pub(crate) disk: bool,
+    /// The projects the disk headroom kept off a local slot this tick while
+    /// it admitted others (diskroom.rs `Admission::offer`): a review of one
+    /// of them waited for disk room too, though other projects' jobs leased
+    /// (review of TASK-186, item b).
+    pub(crate) disk_held: std::collections::BTreeSet<String>,
+}
+
+impl Ahead {
+    /// Whether the disk headroom closed a local slot to `project` this tick.
+    fn disk_for(&self, project: &str) -> bool {
+        self.disk || self.disk_held.contains(project)
+    }
 }
 
 /// One local lease of a tick, as a waiting review's reason names it.
@@ -229,7 +241,7 @@ impl OwnerWaits {
                 }
             }
             if job.str("kind") == crate::review::KIND {
-                if ahead.disk {
+                if ahead.disk_for(&job.str("project")) {
                     add_reason(&mut seen.reasons, DISK_HEADROOM.into());
                 }
                 for leased in &ahead.leased {
@@ -508,7 +520,7 @@ mod tests {
                 leased("job-w1", "task", false),
                 leased("job-lead", crate::lead::LEAD_KIND, true),
             ],
-            disk: false,
+            ..Ahead::default()
         };
         assert!(
             waits
@@ -524,6 +536,7 @@ mod tests {
                 leased(&review, "review", false),
             ],
             disk: true,
+            ..Ahead::default()
         };
         let lines = waits.tend_with(&s, &[], &second, &at(11.0), "daemon");
         assert_eq!(lines.len(), 2, "{lines:?}");
@@ -552,6 +565,65 @@ mod tests {
                 .any(|l| l.contains(&review)
                     && l.contains("disk headroom, leased first: job-w1 (task)")),
             "{lines:?}"
+        );
+    }
+
+    /// Review of TASK-186, item b: the disk headroom kept one project off
+    /// the local slots while it admitted another. The review of the held
+    /// project names the disk headroom beside the leases that went first;
+    /// the review of the admitted project names the leases alone.
+    #[test]
+    fn a_review_of_a_project_the_disk_holds_names_the_disk_headroom() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        new_bare_repo(&s);
+        crate::util::exec1(
+            &s.conn().unwrap(),
+            "INSERT INTO projects (slug, name, path, remote, brain, verify_cmd, default_branch, status, added_at, added_by, last_seen) VALUES ('big', 'big', '/nowhere', '', 0, '', 'main', 'active', ?1, 'human', ?1)",
+            &[&crate::test_helpers::TEST_NOW],
+        );
+        for (id, project) in [("job-review-big", "big"), ("job-review-proj", "proj")] {
+            crate::util::exec1(
+                &s.conn().unwrap(),
+                "INSERT INTO jobs (id, project, kind, title, source, status, created_at) VALUES (?, ?, 'review', 'Review', ?, 'queued', ?)",
+                &[
+                    &id,
+                    &project,
+                    &format!("review:{project}:1"),
+                    &crate::test_helpers::TEST_NOW,
+                ],
+            );
+        }
+        let ahead = Ahead {
+            leased: vec![Leased {
+                job: "job-w1".into(),
+                kind: "task".into(),
+                kept_slot: false,
+            }],
+            disk: false,
+            disk_held: ["big".to_string()].into_iter().collect(),
+        };
+        let mut waits = OwnerWaits::default();
+        let lines = waits.tend_with(&s, &[], &ahead, &at(11.0), "daemon");
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        let reasons_of = |job: &str| {
+            let row = crate::util::query_one(
+                &s.conn().unwrap(),
+                "SELECT detail FROM events WHERE action = 'job.owner-wait' AND subject = ?",
+                &[&job],
+            )
+            .unwrap()
+            .expect("one job.owner-wait event");
+            let d: serde_json::Value = serde_json::from_str(&row.str("detail")).unwrap();
+            d["reasons"].clone()
+        };
+        assert_eq!(
+            reasons_of("job-review-big"),
+            json!(["disk headroom", "leased first: job-w1 (task)"])
+        );
+        assert_eq!(
+            reasons_of("job-review-proj"),
+            json!(["leased first: job-w1 (task)"])
         );
     }
 }
