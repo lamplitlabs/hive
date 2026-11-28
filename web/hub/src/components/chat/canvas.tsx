@@ -356,7 +356,7 @@ export function Canvas({
       aria-label={label}
       data-canvas
     >
-      <div className="flex min-w-0 items-center gap-1 border-b px-1.5">
+      <div className="relative flex min-w-0 items-center gap-1 border-b px-1.5">
         <div
           ref={strip}
           className="scroll-strip flex min-w-0 flex-1 items-center gap-0.5"

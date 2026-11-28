@@ -33,7 +33,7 @@ import {
   reportJob,
 } from "@/components/chat/job-evidence-state";
 import { MicButton, useDictation } from "@/components/chat/mic";
-import { BackButton, Pane } from "@/components/chat/split";
+import { BackButton, Pane, PHONE_DOCK } from "@/components/chat/split";
 import {
   TONE_TEXT,
   jobWaitingForPr,
@@ -303,7 +303,7 @@ function TaskBody({
       <BackButton onBack={onBack} />
       <header
         className={cn(
-          "enter grid min-w-0 gap-2 rounded-xl border bg-card px-4 py-3 shadow-card transition-colors",
+          "@container/head enter grid min-w-0 gap-2 rounded-xl border bg-card px-4 py-3 shadow-card transition-colors",
           review && "surface-you",
           working && "border-primary/40",
         )}
@@ -427,7 +427,7 @@ function TaskBody({
                 title="Mark this task done; the lead agent stops working on it"
               >
                 <CircleCheckIcon />
-                <span className="sr-only sm:not-sr-only">Finish</span>
+                <span className="sr-only @2xl/head:not-sr-only">Finish</span>
               </Button>
               <Button
                 type="button"
@@ -439,7 +439,7 @@ function TaskBody({
                 title="Cancel this task"
               >
                 <BanIcon />
-                <span className="sr-only sm:not-sr-only">Cancel</span>
+                <span className="sr-only @2xl/head:not-sr-only">Cancel</span>
               </Button>
             </>
           ) : null}
@@ -721,7 +721,7 @@ function TaskComposer({
   };
   return (
     <form
-      className="grid min-w-0 shrink-0 gap-1.5"
+      className={cn("grid min-w-0 shrink-0 gap-1.5", PHONE_DOCK)}
       onSubmit={(e) => {
         e.preventDefault();
         void send();
@@ -783,7 +783,7 @@ function TaskComposer({
           </Button>
         </div>
       </div>
-      <p className="px-2 text-xs text-muted-foreground">
+      <p className={cn("px-2 text-xs text-muted-foreground", !closed && "max-sm:hidden")}>
         {closed
           ? "A finished task takes no more messages."
           : "Enter sends, Shift+Enter for a new line. Press the microphone to dictate. Your message is about this task; the lead agent reads it on its next turn."}
