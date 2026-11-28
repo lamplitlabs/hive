@@ -2807,6 +2807,8 @@ pub(crate) fn daemon(
                 // from the owner's work past its share (keep_slot below):
                 // the yield asks no local run to hold for such a job, since
                 // the freed slot would refuse it (review of PR 276, item B).
+                // The share is bound by this machine's slots less one
+                // (jobs.rs kept_share), the same in the yield and the lease.
                 let after = running_local.saturating_sub(1);
                 let local_kept = crate::daemon_load::owner_room(
                     &limits,
@@ -3100,7 +3102,10 @@ pub(crate) fn daemon(
                             && let Some(adm) = admission.as_ref()
                         {
                             match adm.offer() {
-                                Some(h) => held = h,
+                                Some(h) => {
+                                    review_ahead.disk_held.extend(h.keys().cloned());
+                                    held = h;
+                                }
                                 None => {
                                     disk_trimmed += 1;
                                     review_ahead.disk = true;
@@ -6739,8 +6744,12 @@ mod tests {
         let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
         let _calm = crate::daemon_load::pin_pressure(crate::daemon_load::CALM);
         let live = LiveGovernor::start();
-        // The owner's first task and the fleet's run fill both slots.
-        let owners = live.add("Owner's task", "task:TASK-001");
+        // A review of the owner's and the fleet's run fill both slots. The
+        // owner's run is a review, not a task: on two slots the keep clause
+        // lets one of the owner's work jobs run here (jobs.rs kept_share),
+        // and the next task below must be within it for the freed lane to
+        // start it.
+        let owners = add_kind(&live.s, crate::review::KIND, "Review PR 1", "review:proj:1");
         let fleet = live.add("Fleet one", "test");
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             live.wait_for(
@@ -7185,6 +7194,330 @@ mod tests {
             "the idle reason names the held project: {out}"
         );
         assert!(!out.contains("hands wanted"), "{out}");
+    }
+
+    /// A job of `proj` of the given kind, queued by the owner, for a
+    /// [`LiveGovernor`] test.
+    fn add_kind(s: &hive_store::Store, kind: &str, title: &str, source: &str) -> String {
+        crate::test_helpers::task_for_source(s, "proj", source);
+        crate::jobs::add_job(
+            s,
+            "proj".into(),
+            kind.into(),
+            title.into(),
+            "fake worker only".into(),
+            0,
+            50,
+            source.into(),
+            hive_store::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap()
+        .0
+        .str("id")
+    }
+
+    /// Where `job`'s "leased" line is in the daemon's output, if anywhere.
+    fn leased_at(text: &str, job: &str) -> Option<usize> {
+        text.find(&format!("leased {job} "))
+    }
+
+    /// Review of TASK-186, items a and e, under the real dispatch loop: a
+    /// five-slot machine, a share of five (the hands' slots counted) and
+    /// five of the owner's tasks. Four start; the fifth is refused the last
+    /// free slot, which the keep clause now binds to the machine's slots
+    /// less one; a review queued after them takes that slot at once.
+    /// Before, the five tasks filled the machine and the review waited for
+    /// one of them to end.
+    #[test]
+    fn daemon_keeps_a_slot_for_a_review_while_four_owner_tasks_run() {
+        let _serial = crate::test_helpers::serial();
+        let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
+        let _calm = crate::daemon_load::pin_pressure(crate::daemon_load::CALM);
+        let live = LiveGovernor::start_with(|s| {
+            s.set_setting(hive_store::HUMAN_AGENT, "capacity", "5")
+                .unwrap();
+            for name in ["ember", "frost"] {
+                join(s, name);
+            }
+            crate::capacity::pin_per_project(s, 5);
+            reflected_today(s);
+        });
+        assert_eq!(crate::jobs::kept_share(&live.s), 4);
+        let tasks = (1..=5)
+            .map(|n| live.add(&format!("Owner's task {n}"), &format!("task:TASK-00{n}")))
+            .collect::<Vec<_>>();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            live.wait_for(
+                &|t| {
+                    tasks[..4]
+                        .iter()
+                        .all(|j| t.contains(&format!("leased {j}")))
+                },
+                "the owner's first four tasks",
+            );
+            // Another tick: the fifth task stays queued beside the free slot.
+            live.add("Fleet wake", "test");
+            std::thread::sleep(Duration::from_millis(1500));
+            let text = live.out.string();
+            assert!(!text.contains(&format!("leased {}", tasks[4])), "{text}");
+            let review = add_kind(
+                &live.s,
+                crate::review::KIND,
+                "Review PR 311",
+                "review:proj:311",
+            );
+            let text = live.wait_for(
+                &|t| t.contains(&format!("leased {review}")),
+                "the review on the kept slot",
+            );
+            assert!(!text.contains(&format!("leased {}", tasks[4])), "{text}");
+        }));
+        live.finish(result);
+    }
+
+    /// Review of TASK-186, item e: with one tick's slots for a lead's
+    /// sitting, a review and the owner's tasks, the lead's sitting leases
+    /// first and the review next, both before the owner's tasks; under a
+    /// soft load hold the one express slot takes the review before the
+    /// owner's task (docs/runner.md).
+    #[test]
+    fn daemon_leases_the_lead_then_the_review_before_the_owners_tasks() {
+        let _serial = crate::test_helpers::serial();
+        let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
+        let _calm = crate::daemon_load::pin_pressure(crate::daemon_load::CALM);
+        let live = LiveGovernor::start_with(|s| {
+            s.set_setting(hive_store::HUMAN_AGENT, "capacity", "3")
+                .unwrap();
+            crate::lead::ensure_lead(s, "proj".into()).unwrap();
+            reflected_today(s);
+            // Queued before the first tick, the tasks first and at a
+            // higher priority: the order alone puts the others ahead.
+            for n in 1..=2 {
+                let source = format!("task:TASK-00{n}");
+                crate::test_helpers::task_for_source(s, "proj", &source);
+                crate::jobs::add_job(
+                    s,
+                    "proj".into(),
+                    "task".into(),
+                    format!("Owner's task {n}"),
+                    "fake worker only".into(),
+                    0,
+                    100,
+                    source,
+                    hive_store::HUMAN_AGENT.into(),
+                    false,
+                )
+                .unwrap();
+            }
+            add_kind(s, crate::review::KIND, "Review PR 312", "review:proj:312");
+            crate::jobs::add_job(
+                s,
+                "proj".into(),
+                crate::lead::LEAD_KIND.into(),
+                "Lead: the owner's message".into(),
+                "fake worker only".into(),
+                0,
+                10,
+                "lead:proj:1".into(),
+                "daemon".into(),
+                false,
+            )
+            .unwrap();
+        });
+        let id_of = |kind: &str| {
+            crate::util::must_one(
+                &*live.s.conn().unwrap(),
+                "SELECT id FROM jobs WHERE kind = ? ORDER BY created_at, id LIMIT 1",
+                &[&kind],
+            )
+            .str("id")
+        };
+        let (review, lead) = (id_of(crate::review::KIND), id_of(crate::lead::LEAD_KIND));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let text = live.wait_for(
+                &|t| t.matches("leased job-").count() >= 3,
+                "the first tick's three leases",
+            );
+            let lead_at = leased_at(&text, &lead).expect("the lead's sitting leased");
+            let review_at = leased_at(&text, &review).expect("the review leased");
+            assert!(lead_at < review_at, "the lead's sitting first:\n{text}");
+            for line in text.lines().filter(|l| l.contains("leased job-")) {
+                let id = line.split_whitespace().nth(1).unwrap_or_default();
+                if id != lead && id != review {
+                    assert!(
+                        leased_at(&text, id) > Some(review_at),
+                        "{id} leased before the review:\n{text}"
+                    );
+                }
+            }
+        }));
+        live.finish(result);
+    }
+
+    /// Review of TASK-186, item e: the one express slot a soft load hold
+    /// keeps open takes the review before the owner's task.
+    #[test]
+    fn daemon_express_slot_takes_the_review_before_the_owners_task() {
+        let _serial = crate::test_helpers::serial();
+        let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
+        // Load 30 over the line of 24 (12 CPUs), under twice it: a soft hold.
+        let _soft = crate::daemon_load::pin_pressure(crate::daemon_load::Pressure {
+            load1: Some(30.0),
+            ..crate::daemon_load::CALM
+        });
+        let live = LiveGovernor::start_with(|s| {
+            reflected_today(s);
+            let source = "task:TASK-001".to_string();
+            crate::test_helpers::task_for_source(s, "proj", &source);
+            crate::jobs::add_job(
+                s,
+                "proj".into(),
+                "task".into(),
+                "Owner's task".into(),
+                "fake worker only".into(),
+                0,
+                100,
+                source,
+                hive_store::HUMAN_AGENT.into(),
+                false,
+            )
+            .unwrap();
+            add_kind(s, crate::review::KIND, "Review PR 304", "review:proj:304");
+        });
+        let id_of = |kind: &str| {
+            crate::util::must_one(
+                &*live.s.conn().unwrap(),
+                "SELECT id FROM jobs WHERE kind = ? ORDER BY created_at, id LIMIT 1",
+                &[&kind],
+            )
+            .str("id")
+        };
+        let (review, task) = (id_of(crate::review::KIND), id_of("task"));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let text = live.wait_for(
+                &|t| t.contains(&format!("leased {review}")),
+                "the review on the express slot",
+            );
+            assert!(
+                text.contains("one express slot stays open"),
+                "the soft hold's express slot:\n{text}"
+            );
+            if let Some(task_at) = leased_at(&text, &task) {
+                assert!(
+                    leased_at(&text, &review) < Some(task_at),
+                    "the owner's task went before the review:\n{text}"
+                );
+            }
+        }));
+        live.finish(result);
+    }
+
+    /// Review of TASK-186, items b and e, at the daemon's level: the disk
+    /// headroom admits the small project and holds `proj`, whose review has
+    /// waited past the owner-wait line. The tick fills `Ahead` with its
+    /// local lease and the held project, and the review's wait event names
+    /// both: "disk headroom" and "leased first: <the small task> (task)".
+    /// Before, the disk reason was given only when no project fit.
+    #[test]
+    fn daemon_names_the_disk_headroom_and_the_leases_ahead_of_a_held_projects_review() {
+        let _serial = crate::test_helpers::serial();
+        let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
+        let _free = crate::executor::pin_free_mb(5000);
+        let s = new_store();
+        new_bare_repo(&s);
+        let small = std::path::Path::new(&s.home).join("small");
+        crate::test_helpers_selfupdate::copy_dir(std::path::Path::new(&template_repo()), &small);
+        crate::board::add_project(
+            &s,
+            small.display().to_string(),
+            "Small".into(),
+            String::new(),
+            false,
+            String::new(),
+            hive_store::HUMAN_AGENT.into(),
+            "small".into(),
+        )
+        .unwrap();
+        join(&s, "aurora");
+        join(&s, "borealis");
+        // The review was queued eleven minutes ago: past the owner-wait
+        // line of ten (no job.add event, so its wait runs from created_at).
+        let review = "job-review-proj".to_string();
+        exec1(
+            &s,
+            "INSERT INTO jobs (id, project, kind, title, source, priority, status, created_at, created_by) VALUES (?, 'proj', 'review', 'Review PR 7', 'review:proj:7', 50, 'queued', ?, 'daemon')",
+            &[&review, &crate::util::plus_minutes(TEST_NOW, -11)],
+        );
+        let small_task = crate::jobs::add_job(
+            &s,
+            "small".into(),
+            "task".into(),
+            "Small setup".into(),
+            "fake worker only".into(),
+            0,
+            100,
+            "test".into(),
+            hive_store::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap()
+        .0
+        .str("id");
+        let yesterday = crate::util::plus_hours(TEST_NOW, -24.0);
+        for (id, slug, mb) in [("r-large", "proj", 2_000_000_000), ("r-small", "small", 1)] {
+            exec1(
+                &s,
+                "INSERT INTO runs (id, job_id, agent, project, started_at, finished_at, status, executor, work_mb)
+                 VALUES (?, 'j-old', 'aurora', ?, ?, ?, 'done', 'local', ?)",
+                &[&id, &slug, &yesterday, &yesterday, &mb],
+            );
+            exec1(
+                &s,
+                "INSERT INTO briefs (run_id, job_id, agent, text, at) VALUES (?, 'j-old', 'aurora', 'b', ?)",
+                &[&id, &yesterday],
+            );
+        }
+        for (k, v) in [
+            ("capacity", "2"),
+            ("daemon.min_free_mb", "0"),
+            ("daemon.setup_mb", "1"),
+        ] {
+            s.set_setting(hive_store::HUMAN_AGENT, k, v).unwrap();
+        }
+        let out = once_daemon(
+            &s,
+            DaemonOpts {
+                worker_cmd: "sh -c 'echo SUMMARY: ok'".into(),
+                ..Default::default()
+            },
+        );
+        assert!(out.contains(&format!("leased {small_task}")), "{out}");
+        let row = crate::util::query_one(
+            &*s.conn().unwrap(),
+            "SELECT detail FROM events WHERE action = ? AND subject = ?",
+            &[&hive_tasks::OWNER_WAIT_EVENT, &review],
+        )
+        .unwrap()
+        .unwrap_or_else(|| panic!("no owner-wait event for the review: {out}"));
+        let detail: serde_json::Value = serde_json::from_str(&row.str("detail")).unwrap();
+        let reasons = detail["reasons"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .map(|r| r.as_str().unwrap_or_default().to_string())
+            .collect::<Vec<_>>();
+        assert!(
+            reasons.iter().any(|r| r == "disk headroom"),
+            "{reasons:?}\n{out}"
+        );
+        assert!(
+            reasons
+                .iter()
+                .any(|r| r == &format!("leased first: {small_task} (task)")),
+            "{reasons:?}\n{out}"
+        );
     }
 
     struct SignalWriter {
