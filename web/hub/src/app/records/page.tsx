@@ -135,7 +135,9 @@ function RecordsScreen() {
           <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
           <Input type="search" aria-label="Search records" placeholder="Search records" value={text} onChange={(e) => setText(e.target.value)} className="h-8 pl-8" />
         </div>
-        <div ref={chipsRef} role="group" aria-label="Kind of record" className="scroll-strip -mx-1 flex min-w-0 flex-1 flex-nowrap items-center gap-1.5 px-1 py-0.5 max-sm:order-last max-sm:basis-full">
+        {/* The chips take a row of their own under the search: on a phone they scroll sideways (the strip fades at the edge
+            that has more); from sm up they wrap, so every chip is in sight whole, even with a record open beside the list. */}
+        <div ref={chipsRef} role="group" aria-label="Kind of record" className="scroll-strip -mx-1 order-last flex min-w-0 basis-full flex-nowrap items-center gap-1.5 px-1 py-0.5 sm:flex-wrap sm:overflow-x-visible sm:[-webkit-mask-image:none] sm:[mask-image:none]">
           <FilterChip active={!kind && !showFramework} count={q.data ? base.length : undefined} onClick={() => setParams({ kind: null, fw: null })}>
             All
           </FilterChip>

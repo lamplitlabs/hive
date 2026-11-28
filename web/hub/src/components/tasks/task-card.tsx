@@ -245,7 +245,9 @@ export function TaskCard({ t, showProject, onOpen, active, compact }: { t: Task;
         {t.priority >= 30 || t.priority < 10 ? <PriorityMark p={t.priority} className="text-xs" /> : null}
       </div>
       <ItemCardTitle chevron className="text-sm font-medium leading-5">
-        {t.title}
+        <span className="line-clamp-3" title={t.title}>
+          {t.title}
+        </span>
       </ItemCardTitle>
       <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-[13px] text-muted-foreground">
         <StatusBadge status={t.status} size="sm" />

@@ -2,6 +2,7 @@
 
 import * as React from "react"
 import { cn } from "@/lib/utils"
+import { clippedTitle } from "@/lib/clip"
 import { Select as SelectPrimitive } from "radix-ui"
 import { ChevronDownIcon, CheckIcon, ChevronUpIcon } from "lucide-react"
 
@@ -30,10 +31,24 @@ function SelectValue({
   return <SelectPrimitive.Value data-slot="select-value" {...props} />
 }
 
+// A chosen value wider than its box ends with an ellipsis (never cut
+// mid-word) and the trigger's tooltip gives it back whole, set when the
+// pointer or focus arrives so it always matches what is shown now.
+function showClipped(trigger: HTMLElement) {
+  if (trigger.dataset.ownTitle === "1") return
+  const value = trigger.querySelector<HTMLElement>("[data-slot=select-value]")
+  const full = value ? clippedTitle(value.textContent, value.scrollWidth, value.clientWidth) : undefined
+  if (full) trigger.title = full
+  else trigger.removeAttribute("title")
+}
+
 function SelectTrigger({
   className,
   size = "default",
   children,
+  title,
+  onPointerEnter,
+  onFocus,
   ...props
 }: React.ComponentProps<typeof SelectPrimitive.Trigger> & {
   size?: "sm" | "default"
@@ -42,8 +57,18 @@ function SelectTrigger({
     <SelectPrimitive.Trigger
       data-slot="select-trigger"
       data-size={size}
+      title={title}
+      data-own-title={title ? "1" : undefined}
+      onPointerEnter={(e) => {
+        showClipped(e.currentTarget)
+        onPointerEnter?.(e)
+      }}
+      onFocus={(e) => {
+        showClipped(e.currentTarget)
+        onFocus?.(e)
+      }}
       className={cn(
-        "flex w-fit items-center justify-between gap-2 rounded-lg border border-input bg-card py-2 pr-2.5 pl-3 text-sm whitespace-nowrap transition-[color,background-color,border-color,box-shadow] duration-150 ease-out-soft outline-none select-none enabled:hover:border-[color-mix(in_oklch,var(--foreground)_22%,var(--input))] focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/25 disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 data-placeholder:text-muted-foreground data-[size=default]:h-9 data-[size=sm]:h-8 data-[size=sm]:rounded-md *:data-[slot=select-value]:line-clamp-1 *:data-[slot=select-value]:flex *:data-[slot=select-value]:items-center *:data-[slot=select-value]:gap-1.5 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+        "flex w-fit items-center justify-between gap-2 rounded-lg border border-input bg-card py-2 pr-2.5 pl-3 text-sm whitespace-nowrap transition-[color,background-color,border-color,box-shadow] duration-150 ease-out-soft outline-none select-none enabled:hover:border-[color-mix(in_oklch,var(--foreground)_22%,var(--input))] focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/25 disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 data-placeholder:text-muted-foreground data-[size=default]:h-9 data-[size=sm]:h-8 data-[size=sm]:rounded-md *:data-[slot=select-value]:block *:data-[slot=select-value]:min-w-0 *:data-[slot=select-value]:truncate [&_[data-slot=select-value]>*]:align-middle [&_[data-slot=select-value]>*:not(:last-child)]:mr-1.5 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
         className
       )}
       {...props}
