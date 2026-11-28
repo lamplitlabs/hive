@@ -96,15 +96,12 @@ export function deliveryView(d: DeliveryInput | null | undefined): DeliveryView 
       return view("Held" + note, null, "", "warn");
     // Nobody is woken to change the work: the owner's turn.
     case "held_for_owner":
-      // Said as what it is, without the job ids the hub's note carries
-      // ("job job-2026…-87e2d1 already rebased…" reads "Hive already rebased…").
-      return view("Merge conflict" + (d.note ? ": " + sentence(d.note.replace(/\bjob job-[\w-]+/g, "Hive")) : ".") + " Hive tries again once the work changes.", null, "", "warn");
+      return view("Held for you" + (d.note ? ": " + sentence(d.note) : ".") + " The runner tries again once the work changes.", null, "", "warn");
     // Older work, from before each task had its own pull request.
     case "waiting":
       return view(d.waiting === 1 ? "One finished step waits for its pull request." : (d.waiting || 0) + " finished steps wait for their pull request.", null, "", "neutral");
-    // Done and safe on this machine: a note, not a warning (nothing failed).
     case "landed":
-      return view("Merged on this machine" + sha + ", not on GitHub yet." + (d.note ? " " + d.note : ""), null, "", "neutral");
+      return view("Merged on this machine" + sha + ", not on GitHub yet." + (d.note ? " " + d.note : ""), null, "", "warn");
     case "asked":
       return view("A pull request was asked for.", null, "", "neutral");
     case "pushed":

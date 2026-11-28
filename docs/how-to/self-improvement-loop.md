@@ -144,7 +144,7 @@ The limits and the switch below are yours by rule, not by lock: an agent's
 hive settings set evolve.loop 1
 ```
 
-In the console it is **Settings**, **Advanced**, **Self-improvement**, the switch **Run
+In the console it is **Settings**, **Self-improvement**, the switch **Run
 experiments continuously**. There is one switch for all your projects: it
 turns the loop on for every project whose gates are open.
 

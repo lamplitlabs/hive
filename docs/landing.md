@@ -839,11 +839,10 @@ and the daemon merges as you on its next pass - the same as `hive review
 merge <n> --by owner`), *Changes requested on PR #n: <note>. Follow-up <job>
 is queued.*, *Merging PR #n…*, *The review of PR #n failed* (with the button
 too) and *Merged*. A finished step whose branch still waits for the task's
-pull request reads *Opening a pull request*. The Sessions page's list
-puts a pull request handed to you under **Needs you**, with its **Merge**
-button, and the rest under **Your sessions** with the pull request's word on
-the row (*Waiting for review*, *Being reviewed*, *Merging*)
-([Sessions](console.md#sessions)). The old *Waiting to
+pull request reads *Waiting for its pull request*. The Sessions page's list
+groups the rows the same way: **Needs your review** at the top, then
+**Working**, then **In review** for work that has a pull request and nobody
+waiting on you, then the rest ([Sessions](console.md#sessions)). The old *Waiting to
 land* and *Reviewing* groups are gone with the local landing they described.
 
 ## By hand
@@ -892,7 +891,7 @@ land* and *Reviewing* groups are gone with the local landing they described.
 Nothing needs doing: on its first pass under this flow the daemon delivers
 every branch that was waiting to land - each finished job's branch of a task
 as that task's pull request, each other finished branch as its own - and the
-hub's *Waiting to land* rows become pull requests (*Waiting for review*). A branch the old flow had
+hub's *Waiting to land* rows become *In review*. A branch the old flow had
 held (an owner-only path, a lockfile too young, a verify that failed on the
 merged result) is a pull request now too, and the reviewer's complexity rule
 hands the ones that need a person to you ([The complexity

@@ -18,7 +18,6 @@ import {
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   ArchiveIcon,
-  ArrowLeftIcon,
   ArrowUpIcon,
   BotIcon,
   BrainIcon,
@@ -47,8 +46,6 @@ import {
   LockOpenIcon,
   MessageSquareIcon,
   MessageSquarePlusIcon,
-  MoreHorizontalIcon,
-  PanelRightIcon,
   PaperclipIcon,
   PencilIcon,
   RefreshCwIcon,
@@ -56,7 +53,6 @@ import {
   SearchIcon,
   ShieldCheckIcon,
   ShieldQuestionIcon,
-  SlidersHorizontalIcon,
   SparklesIcon,
   SquareDashedMousePointerIcon,
   StarIcon,
@@ -77,14 +73,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -119,9 +107,11 @@ import {
   Notice,
   SkeletonRows,
 } from "@/components/hive/panel";
+import { PageHeader } from "@/components/hive/page-header";
 import { Avatar, ProjectLink, When } from "@/components/hive/who";
 import { ProjectAvatar } from "@/components/hive/avatar";
 import { BrandLogo } from "@/components/hive/logo";
+import { SectionHeading } from "@/components/hive/section-heading";
 import { StatusIcon } from "@/components/hive/status-badge";
 import {
   Tooltip,
@@ -131,7 +121,7 @@ import {
 import { logoFor } from "@/lib/logos";
 import { pendingChoices } from "@/lib/pending-question";
 import { BackButton, Pane, Split } from "@/components/chat/split";
-import { useWorkPanel } from "@/components/chat/use-work-panel";
+import { CommandPalette } from "@/components/shell/command-palette";
 import { MicButton, useDictation } from "@/components/chat/mic";
 import { TaskView } from "@/components/chat/task-view";
 import {
@@ -227,20 +217,24 @@ import {
 } from "@/lib/sent-messages";
 import { hrefs } from "@/lib/nav";
 import {
+  GROUP_ORDER,
   PR_NEEDS_OWNER,
   TONE_TEXT,
   WAITING_FOR_PR,
   entryGroup,
+  foldedEntries,
   listEntries,
   prMood,
   prWaitLine,
   relShort,
   reportVerb,
+  sessionWords,
   taskFinished,
   taskMood,
   taskOwnerTurn,
+  taskPrState,
   taskTitleOf,
-  type ListEntry,
+  type ListGroup,
   type Mood,
   type Tone,
 } from "@/components/chat/task-groups";
@@ -263,8 +257,7 @@ import {
 import type { ActionItem } from "@/lib/transcript";
 import { invalidate, useApi, useNow } from "@/lib/use-api";
 import { ReferencePicker } from "@/components/reference-picker";
-import { HardStops } from "@/components/sessions/hard-stops";
-import { SessionsAlerts, SessionsGreeting, useStartBlock } from "@/components/sessions/landing";
+import { SessionsAlerts, SessionsLanding } from "@/components/sessions/landing";
 import { cn } from "@/lib/utils";
 
 // ----- words ----------------------------------------------------------------
@@ -328,6 +321,19 @@ function moodOf(c: Conversation, live?: ConversationLive | null): Mood {
   };
 }
 
+// The list's sections (task-groups.ts): needs your review, working, in
+// review, open, finished, archived. Every entry is a conversation - a plain
+// one, one with sub-conversations under it, or a task with its steps under
+// it - in the section of its most pressing member.
+const GROUP_TITLES: Record<ListGroup, string> = {
+  needs_review: "Needs your review",
+  working: "Working",
+  review: "In review",
+  open: "Open",
+  finished: "Finished",
+  archived: "Archived",
+};
+
 // The state a list row leads with (spec "Sessions"): the spinner while it
 // works, a marigold dot when it asks you, a tick when it is done, and the
 // quiet speech bubble otherwise. The word rides in the icon's label.
@@ -378,6 +384,77 @@ function taskState(t: ChatTask): SessionState {
   if (m.tone === "run" || t.sessions.some((s) => s.status === "running"))
     return "working";
   return "open";
+}
+
+// One row of the list: 44 px (36 compact), the state icon, the project's
+// avatar, the title and the age at the right; a teal bar marks the open one.
+// The column is narrow, so a long title takes a second line rather than
+// ending after a few words. Tasks and conversations share it.
+function SessionRow({
+  state,
+  project,
+  title,
+  age,
+  active,
+  marks,
+  onOpen,
+  titleAttr,
+  framed,
+  sealed,
+}: {
+  state: SessionState;
+  project: string;
+  title: string;
+  age: string;
+  active: boolean;
+  marks?: ReactNode;
+  onOpen: () => void;
+  titleAttr?: string;
+  framed?: boolean;
+  sealed?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      aria-current={active ? "page" : undefined}
+      title={titleAttr}
+      className={cn(
+        "relative flex min-h-(--row-h) w-full min-w-0 items-center gap-2.5 px-3 py-1.5 text-left transition-colors duration-120 ease-out-soft motion-reduce:transition-none",
+        active
+          ? "bg-accent before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:bg-link before:content-['']"
+          : framed
+            ? "bg-accent/50 hover:bg-muted/60"
+            : "hover:bg-muted/60",
+        sealed && "lockdown-surface",
+      )}
+      data-lockdown={sealed || undefined}
+    >
+      <SessionStateIcon state={state} />
+      {project ? (
+        <ProjectAvatar slug={project} name={project} size={20} />
+      ) : (
+        <span
+          className="inline-flex size-5 shrink-0 items-center justify-center rounded-[5px] border border-dashed border-border text-muted-foreground"
+          role="img"
+          aria-label="No project yet"
+          title="No project yet"
+        >
+          <SparklesIcon className="size-3" aria-hidden />
+        </span>
+      )}
+      <span
+        className="line-clamp-2 min-w-0 flex-1 text-sm font-medium leading-5 text-foreground anywhere"
+        title={title}
+      >
+        {title}
+      </span>
+      {marks}
+      <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+        {age}
+      </span>
+    </button>
+  );
 }
 
 const LET_AGENT_DECIDE = "__decide__";
@@ -555,40 +632,11 @@ function NoteFold({ items }: { items: ActionItem[] }) {
   );
 }
 
-// A run of tool calls. Once it is over it folds to one line - "Worked ·
-// 3 edits, 2 commands" - so a finished turn reads as what the agent said,
-// with its work one click away; while it runs it stays open, newest rows
-// in view.
+// A run of tool calls, newest rows always in view: a long run folds its
+// earlier rows under one line rather than filling the screen. Inside, two
+// or more plain tool calls in a row fold under one "N tool calls · Xs"
+// row (groupToolCalls); the run's tail stays open while it is running.
 function ActionRun({
-  items,
-  running,
-}: {
-  items: ActionItem[];
-  running: boolean;
-}) {
-  if (running) return <ActionRunRows items={items} running />;
-  return (
-    <details className="group/work min-w-0">
-      <summary className="flex w-fit min-h-8 max-w-full cursor-pointer list-none items-center gap-2 rounded-full border border-border/70 bg-muted/40 px-3 text-[13px] leading-snug text-muted-foreground select-none hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
-        <WrenchIcon className="size-3.5 shrink-0" aria-hidden />
-        <span className="min-w-0 truncate">Worked · {countWords(items)}</span>
-        <ChevronRightIcon
-          className="size-3.5 shrink-0 transition-transform duration-150 group-open/work:rotate-90 motion-reduce:transition-none"
-          aria-hidden
-        />
-      </summary>
-      <div className="mt-1.5 min-w-0 border-l border-border/70 pl-2">
-        <ActionRunRows items={items} running={false} />
-      </div>
-    </details>
-  );
-}
-
-// The rows of a run: a long run folds its earlier rows under one line
-// rather than filling the screen. Inside, two or more plain tool calls in
-// a row fold under one "N tool calls · Xs" row (groupToolCalls); the run's
-// tail stays open while it is running.
-function ActionRunRows({
   items,
   running,
 }: {
@@ -1342,400 +1390,258 @@ export function ChatPageClient() {
     !list.data &&
     /not available yet|not found|HTTP 404|HTTP 503/i.test(list.error);
 
+  const listNode = (
+    <ConversationList
+      rows={rows}
+      tasks={tasks}
+      loading={list.loading && !list.data}
+      current={id}
+      currentTask={task}
+      onOpen={open}
+      onOpenTask={openTask}
+      onNew={() => open(null)}
+      showArchived={showArchived}
+      onToggleArchived={() => setShowArchived((v) => !v)}
+    />
+  );
   const opened = !!(id || task);
-  const notices = unavailable ? (
-    <Notice tone="warn">
-      Conversations need a hub built with this feature. Update Hive (
-      <code>hive update</code>) and restart the hub.
-    </Notice>
-  ) : list.error && !list.data ? (
-    <ErrorNotice error={list.error} onRetry={() => void list.reload()}>
-      The session list did not load.
-    </ErrorNotice>
-  ) : null;
 
-  // An open conversation or task takes the whole page: no list column
-  // beside it ("All sessions" goes back), the transcript at a reading width
-  // and its work panel only when shown. The window's height is its own, so
-  // the composer stays on screen.
-  if (opened)
-    return (
-      <div className="grid min-w-0 gap-4 pt-3 lg:flex lg:h-[calc(100dvh-3rem)] lg:min-h-[34rem] lg:flex-col">
-        {notices}
-        <Split list={null} fill>
-          {task ? (
-            <TaskView
-              key={task}
-              id={task}
-              onBack={() => openTask(null)}
-              onGone={() => openTask(null)}
-            />
-          ) : (
-            <ConversationView
-              key={id}
-              id={id}
-              seed={current}
-              projects={projects.data}
-              onBack={() => open(null)}
-              onGone={() => open(null)}
-            />
-          )}
-        </Split>
-      </div>
-    );
-
-  // The console opens here ("/" forwards to /chat/, TASK-129): one column,
-  // read top to bottom. What is broken (and, on a new machine, the setup
-  // steps), the new-session box, then the sessions themselves - what waits
-  // on you first (the decisions only you can make fold to a line there),
-  // what is in progress, and what is done folded away.
+  // One Split for the page, whatever is open: the list inside it stays
+  // mounted across conversations, so opening one leaves the list where it
+  // was - scrolled, folded, unmoved - instead of drawing it anew. With
+  // nothing open the page reads like every other one: the shell gives chat
+  // a wider column with 24 px gutters, so the landing caps itself at the
+  // other pages' 1240 px (less two 24 px gutters) and pads 16 px more, to
+  // start on their 40 px edge.
   return (
-    <div className="mx-auto grid w-full min-w-0 max-w-[48rem] gap-6 pb-12">
-      <SessionsGreeting />
-      {notices}
-      <SessionsAlerts />
-      <NewConversation
-        projects={projects.data}
-        onCreated={(c) => open(c.id)}
-        onTaskCreated={(t) => openTask(t)}
-        busyElsewhere={
-          rows.filter((c) => (c.live?.status || c.status) === "running").length
+    <div
+      className={cn(
+        "grid min-w-0 gap-4",
+        opened
+          ? "lg:flex lg:h-[calc(100dvh-1rem)] lg:min-h-[34rem] lg:flex-col"
+          : "lg:mx-auto lg:w-full lg:max-w-[1192px] lg:px-4 lg:pb-10",
+      )}
+    >
+      <PageHeader
+        title="Sessions"
+        className={opened ? "mb-0 pt-4 sm:pt-5" : "mb-2"}
+        subtitle={
+          opened ? undefined : "Ask an agent to do something and follow every step"
+        }
+        action={
+          // On a phone the list is off-screen while a conversation is open,
+          // so the header carries the button; on wide screens the list's
+          // own button is always in view.
+          opened ? (
+            <Button
+              type="button"
+              size="sm"
+              className="lg:hidden"
+              onClick={() => open(null)}
+            >
+              <MessageSquarePlusIcon /> New session
+            </Button>
+          ) : undefined
         }
       />
-      <SessionInbox
-        rows={rows}
-        tasks={tasks}
-        loading={list.loading && !list.data}
-        onOpen={open}
-        onOpenTask={openTask}
-        showArchived={showArchived}
-        onToggleArchived={() => setShowArchived((v) => !v)}
-        decisions={<HardStops />}
-      />
-      {/* The explainer is for a new owner: it goes once there is a session. */}
-      {list.data && !rows.length && !tasks.length ? <NewSessionTip /> : null}
+      {unavailable ? (
+        <Notice tone="warn">
+          Conversations need a hub built with this feature. Update Hive (
+          <code>hive update</code>) and restart the hub.
+        </Notice>
+      ) : list.error && !list.data ? (
+        <ErrorNotice error={list.error} onRetry={() => void list.reload()}>
+          The session list did not load.
+        </ErrorNotice>
+      ) : null}
+      {/* The console opens here ("/" forwards to /chat/, TASK-129): what is
+          broken and what only the owner may decide sit over the page, each
+          only when there is any. */}
+      {opened ? null : <SessionsAlerts />}
+      <Split list={listNode} listOnMobile={!opened} fill={opened}>
+        {task ? (
+          <TaskView
+            key={task}
+            id={task}
+            onBack={() => openTask(null)}
+            onGone={() => openTask(null)}
+          />
+        ) : id ? (
+          <ConversationView
+            key={id}
+            id={id}
+            seed={current}
+            projects={projects.data}
+            onBack={() => open(null)}
+            onGone={() => open(null)}
+          />
+        ) : (
+          <Pane
+            main={
+              <div className="grid min-w-0 gap-8">
+                <NewConversation
+                  projects={projects.data}
+                  onCreated={(c) => open(c.id)}
+                  onTaskCreated={(t) => openTask(t)}
+                  busyElsewhere={
+                    rows.filter((c) => (c.live?.status || c.status) === "running")
+                      .length
+                  }
+                />
+                <SessionsLanding />
+              </div>
+            }
+          />
+        )}
+      </Split>
     </div>
   );
 }
 
 // ----- the list -------------------------------------------------------------
 
-// The landing's sessions in three plain sections: what waits on you (the
-// decisions only you can make sit at its top, folded to one line), what is
-// in progress, and what is done (folded until asked). Tasks and
-// conversations share one row - the state, the title, where it runs and
-// how far along, and its word - and open full-page. A task's steps and a
-// session's sub-sessions show inside it, not here.
-type Bucket = "you" | "active" | "done";
-
-function bucketOf(e: ListEntry<Conversation>): Bucket {
-  const g = entryGroup(e);
-  if (g === "needs_review") return "you";
-  if (e.kind === "task") {
-    if (taskState(e.task) === "asks") return "you";
-  } else if (
-    [e.family.c, ...e.family.children].some((k) => {
-      const st = sessionState(k);
-      return st === "asks" || st === "stopped";
-    })
-  )
-    return "you";
-  if (g === "finished" || g === "archived") return "done";
-  return "active";
-}
-
-const DONE_SHOWN = 5;
-const ACTIVE_SHOWN = 8;
-// A search box joins the list once it is long enough to need one.
-const SEARCH_FROM = 10;
-
-function entryText(e: ListEntry<Conversation>): string {
-  return e.kind === "task"
-    ? [e.task.title, e.task.id, e.task.project].join(" ")
-    : [e.family.c.title, e.family.c.project, ...e.family.children.map((k) => k.title)].join(" ");
-}
-
-function SessionInbox({
+function ConversationList({
   rows,
   tasks,
   loading,
+  current,
+  currentTask,
   onOpen,
   onOpenTask,
+  onNew,
   showArchived,
   onToggleArchived,
-  decisions,
 }: {
   rows: Conversation[];
   tasks: ChatTask[];
   loading: boolean;
+  current: string;
+  currentTask: string;
   onOpen: (id: string) => void;
   onOpenTask: (id: string) => void;
+  onNew: () => void;
   showArchived: boolean;
   onToggleArchived: () => void;
-  /** The hard-stop strip: it renders nothing when nothing waits. */
-  decisions: ReactNode;
 }) {
   const now = useNow(15000);
-  const [showDone, setShowDone] = useState(false);
-  const [allDone, setAllDone] = useState(false);
-  const [allActive, setAllActive] = useState(false);
-  const [query, setQuery] = useState("");
+  // Finished conversations start hidden: they pile up and crowd out what is
+  // still moving. The section header keeps the count and a Show/Hide.
+  const [showFinished, setShowFinished] = useState(false);
+  // One list: tasks and conversations together, by what moved last, in the
+  // section of their state - the same words for both.
   const entries = useMemo(() => listEntries(rows, tasks), [rows, tasks]);
-  // A search looks through every section, done ones too, and shows every match.
-  const q = query.trim().toLowerCase();
-  const found = q ? entries.filter((e) => entryText(e).toLowerCase().includes(q)) : entries;
-  const by = (k: Bucket) => found.filter((e) => bucketOf(e) === k);
-  const you = by("you");
-  const active = by("active");
-  const done = by("done");
-  const doneOpen = showDone || (!!q && done.length > 0);
-  const activeShown = allActive || q ? active : active.slice(0, ACTIVE_SHOWN);
-  const row = (e: ListEntry<Conversation>) => (
-    <InboxRow
-      key={e.kind === "task" ? "t:" + e.task.id : "c:" + e.family.c.id}
-      e={e}
-      now={now}
-      onOpen={onOpen}
-      onOpenTask={onOpenTask}
-    />
-  );
+  const groups = GROUP_ORDER.map((g) => ({
+    g,
+    entries: entries.filter((e) => entryGroup(e) === g),
+  })).filter((x) => x.entries.length);
+  const composing = !current && !currentTask;
   return (
-    <div className="grid min-w-0 gap-6">
-      <section className="grid min-w-0 gap-2.5" aria-labelledby="inbox-you">
-        {/* No count here: the sidebar's number is the decisions card's,
-            and the rows under it count themselves. Two numbers for "what
-            waits for you" read as a contradiction. */}
-        {you.length ? (
-          <InboxHeading id="inbox-you">Needs you</InboxHeading>
-        ) : (
-          <h2 id="inbox-you" className="sr-only">
-            Needs you
-          </h2>
-        )}
-        {decisions}
-        {you.length ? <InboxList>{you.map(row)}</InboxList> : null}
-      </section>
-      <section className="grid min-w-0 gap-2.5" aria-labelledby="inbox-active">
-        <div className="flex min-w-0 items-center gap-3">
-          <InboxHeading id="inbox-active" count={active.length || undefined}>
-            Your sessions
-          </InboxHeading>
-          {entries.length >= SEARCH_FROM ? (
-            <div className="relative ml-auto w-full max-w-56">
-              <SearchIcon
-                className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground"
-                aria-hidden
-              />
-              <Input
-                type="search"
-                value={query}
-                onChange={(ev) => setQuery(ev.target.value)}
-                onKeyDown={(ev) => {
-                  if (ev.key === "Escape") setQuery("");
-                }}
-                placeholder="Find a session"
-                aria-label="Find a session or task"
-                className="h-8 rounded-full bg-card pl-8 text-sm"
-              />
-            </div>
-          ) : null}
-        </div>
-        {loading ? (
-          <SkeletonRows n={4} />
-        ) : active.length ? (
-          <>
-            <InboxList>{activeShown.map(row)}</InboxList>
-            {activeShown.length < active.length ? (
-              <button
-                type="button"
-                className="justify-self-start text-xs text-link underline-offset-4 hover:underline"
-                onClick={() => setAllActive(true)}
-              >
-                Show {active.length - activeShown.length} more
-              </button>
-            ) : null}
-          </>
-        ) : q ? (
-          <p className="rounded-xl border border-dashed px-4 py-5 text-center text-sm text-muted-foreground">
-            {you.length || done.length
-              ? "Nothing in progress matches; see above and under Done."
-              : "No session or task matches \u201c" + query.trim() + "\u201d."}
-          </p>
-        ) : (
-          <p className="rounded-xl border border-dashed px-4 py-5 text-center text-sm text-muted-foreground">
-            {entries.length
-              ? "Nothing in progress. Start something above."
-              : "No sessions yet. What you start above shows up here."}
-          </p>
-        )}
-      </section>
-      {!loading && (done.length || showArchived) ? (
-        <section className="grid min-w-0 gap-2.5" aria-labelledby="inbox-done">
-          <div className="flex min-w-0 items-center gap-3">
-            <button
-              type="button"
-              id="inbox-done"
-              aria-expanded={doneOpen}
-              onClick={() => setShowDone(!doneOpen)}
-              className="inline-flex items-center gap-1.5 rounded-md text-sm font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    <div className="grid min-w-0 gap-3">
+      <div className="flex items-center gap-2">
+        <Button
+          type="button"
+          variant={composing ? "secondary" : "default"}
+          className="min-w-0 flex-1 justify-start gap-2"
+          onClick={onNew}
+          aria-current={composing ? "page" : undefined}
+        >
+          <MessageSquarePlusIcon className="size-4" />
+          New session
+        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <CommandPalette
+              variant="icon"
+              className="size-9 shrink-0 rounded-md border bg-card"
+            />
+          </TooltipTrigger>
+          <TooltipContent>Find a session (⌘K)</TooltipContent>
+        </Tooltip>
+      </div>
+      {loading ? (
+        <SkeletonRows n={4} />
+      ) : entries.length === 0 ? (
+        <EmptyState
+          icon={<HiveMascot mood="happy" size={56} decorative />}
+          hint="Start one on the right. What an agent hands on - a sub-session, a task's steps - is listed under it."
+        >
+          No sessions yet.
+        </EmptyState>
+      ) : (
+        groups.map(({ g, entries: all }) => {
+          const foldable = g === "finished";
+          const folded = foldable && !showFinished;
+          const shown = foldedEntries(all, g, folded, currentTask || current);
+          return (
+            <section
+              key={g}
+              className="grid min-w-0 gap-1.5"
+              aria-label={GROUP_TITLES[g]}
             >
-              <ChevronRightIcon
-                aria-hidden
-                className={cn(
-                  "size-4 transition-transform motion-reduce:transition-none",
-                  doneOpen && "rotate-90",
-                )}
-              />
-              Done
-              <span className="tnum text-xs">{done.length}</span>
-            </button>
-            {doneOpen ? (
-              <button
-                type="button"
-                className="ml-auto text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
-                onClick={onToggleArchived}
+              <SectionHeading
+                // The groups stand right under the page's title, so they are its second level.
+                as="h2"
+                count={all.length}
+                className="mb-0 px-1 [&_h2]:text-sm"
+                action={
+                  foldable ? (
+                    <button
+                      type="button"
+                      className="text-xs text-link underline-offset-4 hover:underline"
+                      aria-expanded={!folded}
+                      onClick={() => setShowFinished((v) => !v)}
+                    >
+                      {folded ? "Show" : "Hide"}
+                    </button>
+                  ) : undefined
+                }
               >
-                {showArchived ? "Hide archived" : "Show archived"}
-              </button>
-            ) : null}
-          </div>
-          {doneOpen && done.length ? (
-            <>
-              <InboxList>
-                {(allDone || q ? done : done.slice(0, DONE_SHOWN)).map(row)}
-              </InboxList>
-              {!allDone && !q && done.length > DONE_SHOWN ? (
-                <button
-                  type="button"
-                  className="justify-self-start text-xs text-link underline-offset-4 hover:underline"
-                  onClick={() => setAllDone(true)}
+                {GROUP_TITLES[g]}
+              </SectionHeading>
+              {shown.length ? (
+                <ul
+                  className="grid min-w-0 divide-y divide-border overflow-hidden rounded-lg border bg-card"
+                  role="list"
                 >
-                  Show {done.length - DONE_SHOWN} more
-                </button>
+                  {shown.map((e, i) =>
+                    e.kind === "task" ? (
+                      <TaskItem
+                        key={e.task.id}
+                        t={e.task}
+                        index={i}
+                        active={e.task.id === currentTask}
+                        now={now}
+                        onOpen={onOpenTask}
+                      />
+                    ) : (
+                      <ConversationItem
+                        key={e.family.c.id}
+                        c={e.family.c}
+                        subs={e.family.children}
+                        index={i}
+                        active={e.family.c.id === current}
+                        current={current}
+                        now={now}
+                        onOpen={onOpen}
+                      />
+                    ),
+                  )}
+                </ul>
               ) : null}
-            </>
-          ) : null}
-        </section>
+            </section>
+          );
+        })
+      )}
+      {!loading ? (
+        <button
+          type="button"
+          className="justify-self-start px-1 pt-1 text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+          onClick={onToggleArchived}
+        >
+          {showArchived ? "Hide archived" : "Show archived"}
+        </button>
       ) : null}
     </div>
-  );
-}
-
-function InboxHeading({
-  id,
-  count,
-  children,
-}: {
-  id: string;
-  count?: number;
-  children: ReactNode;
-}) {
-  return (
-    <h2
-      id={id}
-      className="flex items-center gap-2 text-[15px] font-semibold tracking-tight text-foreground"
-    >
-      {children}
-      {count ? (
-        <span className="tnum inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-muted px-1.5 text-xs font-semibold text-muted-foreground">
-          {count}
-        </span>
-      ) : null}
-    </h2>
-  );
-}
-
-function InboxList({ children }: { children: ReactNode }) {
-  return (
-    <ul
-      className="grid min-w-0 divide-y divide-border overflow-hidden rounded-xl border bg-card shadow-card"
-      role="list"
-    >
-      {children}
-    </ul>
-  );
-}
-
-const CHIP: Record<Tone, string> = {
-  wait: "bg-you/20 text-you-ink",
-  run: "bg-primary/10 text-primary",
-  bad: "bg-bad/10 text-bad",
-  ok: "bg-muted text-muted-foreground",
-  neutral: "bg-muted text-muted-foreground",
-};
-
-// One session or task: its state icon, the title, one quiet line saying
-// where it runs and what it holds, its word as a chip, and when it moved.
-// A pull request the owner has to merge keeps its Merge row under it.
-function InboxRow({
-  e,
-  now,
-  onOpen,
-  onOpenTask,
-}: {
-  e: ListEntry<Conversation>;
-  now: number;
-  onOpen: (id: string) => void;
-  onOpenTask: (id: string) => void;
-}) {
-  const task = e.kind === "task" ? e.task : null;
-  const c = e.kind === "conversation" ? e.family.c : null;
-  const subs = e.kind === "conversation" ? e.family.children : [];
-  const m = task ? taskMood(task) : moodOf(c!);
-  const state = task ? taskState(task) : sessionState(c!);
-  const project = task ? task.project : c!.project;
-  const title = (task ? task.title || task.id : c!.title) || "Untitled";
-  const at = task ? task.last_at || task.created_at : c!.last_at || c!.created_at;
-  const sealed = c ? lockdownOf(c, c.live) : false;
-  const pr = task ? task.pr : c!.pr;
-  const meta = [
-    project || "No project yet",
-    task ? (task.sessions.length ? plural(task.sessions.length, "step") + " with the team" : "With the team") : "",
-    subs.length ? plural(subs.length, "sub-session") : "",
-    pr ? "PR #" + pr.number : "",
-  ].filter(Boolean);
-  return (
-    <li className="min-w-0">
-      <button
-        type="button"
-        onClick={() => (task ? onOpenTask(task.id) : onOpen(c!.id))}
-        className={cn(
-          "group flex w-full min-w-0 items-center gap-3 px-4 py-3 text-left transition-colors duration-120 ease-out-soft hover:bg-muted/50 focus-visible:bg-muted/50 focus-visible:outline-none motion-reduce:transition-none",
-          sealed && "lockdown-surface",
-        )}
-        data-lockdown={sealed || undefined}
-      >
-        <SessionStateIcon state={state} className="size-[18px]" />
-        <span className="grid min-w-0 flex-1 gap-0.5">
-          <span className="truncate text-[15px] font-medium leading-5 text-foreground" title={title}>
-            {title}
-          </span>
-          <span className="flex min-w-0 items-center gap-1.5 text-[13px] leading-5 text-muted-foreground">
-            {project ? <ProjectAvatar slug={project} name={project} size={20} /> : null}
-            <span className="truncate">{meta.join(" · ")}</span>
-            {sealed ? (
-              <LockIcon className="lockdown-mark size-3.5 shrink-0 text-lock" aria-label={LOCKDOWN_BADGE} />
-            ) : null}
-          </span>
-        </span>
-        <span
-          className={cn(
-            "hidden shrink-0 rounded-full px-2 py-0.5 text-xs font-medium sm:inline-flex",
-            CHIP[m.tone],
-          )}
-        >
-          {m.word}
-        </span>
-        <span className="w-8 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
-          {relShort(at, now)}
-        </span>
-        <ChevronRightIcon
-          aria-hidden
-          className="size-4 shrink-0 text-muted-foreground/60 transition-transform group-hover:translate-x-0.5 group-hover:text-foreground motion-reduce:transition-none"
-        />
-      </button>
-      {pr && PR_NEEDS_OWNER.has(pr.state) ? <PrRow pr={pr} project={project} /> : null}
-    </li>
   );
 }
 
@@ -1819,29 +1725,269 @@ function PrRow({ pr, project }: { pr: PrState; project: string }) {
   );
 }
 
+// A task in the list, the same card as a conversation: the row is the
+// owner's conversation with the lead agent (the team icon is the one mark
+// of a task), and under it one line per step the lead cut - the agent on
+// it and its state - the way a conversation lists its sub-conversations. A
+// finished task keeps its steps folded until asked.
+function TaskItem({
+  t,
+  index,
+  active,
+  now,
+  onOpen,
+}: {
+  t: ChatTask;
+  index: number;
+  active: boolean;
+  now: number;
+  onOpen: (id: string) => void;
+}) {
+  const m = taskMood(t);
+  const [unfolded, setUnfolded] = useState(false);
+  const steps = t.sessions;
+  const showSteps =
+    steps.length > 0 && (!taskFinished(t) || unfolded || active);
+  return (
+    <li
+      className="enter min-w-0"
+      style={{ animationDelay: Math.min(index, 8) * 30 + "ms" }}
+    >
+      <div className="grid min-w-0 gap-0">
+        <SessionRow
+          state={taskState(t)}
+          project={t.project}
+          title={t.title || t.id}
+          age={relShort(t.last_at || t.created_at, now)}
+          active={active}
+          onOpen={() => onOpen(t.id)}
+          titleAttr={
+            (t.lead
+              ? `With ${t.lead}, the lead agent of ${t.project}`
+              : `A task for the ${t.project} team`) +
+            " · " +
+            m.word
+          }
+          marks={
+            <UsersIcon
+              className="size-3.5 shrink-0 text-muted-foreground"
+              aria-label="with the project's team"
+            />
+          }
+        />
+        {showSteps ? (
+          <ul
+            className="grid min-w-0 gap-px border-t bg-muted/20 py-1"
+            role="list"
+            aria-label={`Steps of ${t.title || t.id}`}
+          >
+            {steps.map((s) => {
+              const w = sessionWords(s, taskPrState(t));
+              const body = (
+                <>
+                  <span
+                    className="w-3.5 shrink-0 border-l border-b border-border/70 self-stretch rounded-bl"
+                    aria-hidden
+                  />
+                  {s.agent ? (
+                    <Avatar seed={s.agent} size={16} />
+                  ) : (
+                    <CircleDashedIcon
+                      className="size-4 shrink-0 text-muted-foreground"
+                      aria-hidden
+                    />
+                  )}
+                  {/* The step's title, then its state under it: side by side, a long state ("Waiting for its pull request") left the title a couple of letters. */}
+                  <span className="grid min-w-0 flex-1">
+                    <span className="truncate text-foreground">
+                      {s.title || s.kind}
+                    </span>
+                    <span
+                      className={cn("truncate font-medium", TONE_TEXT[w.tone])}
+                    >
+                      {w.word}
+                    </span>
+                  </span>
+                  <span className="shrink-0 self-start tnum text-muted-foreground">
+                    {relShort(s.updated_at || s.started_at, now)}
+                  </span>
+                </>
+              );
+              const cls =
+                "flex w-full min-w-0 items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors hover:bg-muted/50";
+              return (
+                <li key={s.job} className="min-w-0">
+                  {s.session ? (
+                    <Link
+                      href={hrefs.harness({ id: s.session })}
+                      className={cls}
+                      title={`${s.agent || "an agent"} on this step: open its run`}
+                    >
+                      {body}
+                    </Link>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => onOpen(t.id)}
+                      className={cls}
+                      title="No agent has taken this step yet"
+                    >
+                      {body}
+                    </button>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        ) : steps.length ? (
+          <button
+            type="button"
+            onClick={() => setUnfolded(true)}
+            className="border-t bg-muted/20 px-3 py-1 text-left text-xs text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+          >
+            {plural(steps.length, "step")} · show
+          </button>
+        ) : null}
+        {t.pr ? <PrRow pr={t.pr} project={t.project} /> : null}
+      </div>
+    </li>
+  );
+}
+
+// A conversation in the list, with its sub-conversations (the ones its
+// agent started, or the owner from its page) as lines under it, each
+// opening on its own: the family reads like a task and its steps.
+function ConversationItem({
+  c,
+  subs = [],
+  index,
+  active,
+  current = "",
+  now,
+  onOpen,
+}: {
+  c: Conversation;
+  subs?: Conversation[];
+  index: number;
+  active: boolean;
+  current?: string;
+  now: number;
+  onOpen: (id: string) => void;
+}) {
+  const m = moodOf(c);
+  const sealed = lockdownOf(c, c.live);
+  const childActive = subs.some((k) => k.id === current);
+  return (
+    <li
+      className="enter min-w-0"
+      style={{ animationDelay: Math.min(index, 8) * 30 + "ms" }}
+    >
+      <div className="grid min-w-0 gap-0">
+        <SessionRow
+          state={sessionState(c)}
+          project={c.project}
+          title={c.title || "Untitled"}
+          age={relShort(c.last_at || c.created_at, now)}
+          active={active}
+          framed={childActive}
+          sealed={sealed}
+          onOpen={() => onOpen(c.id)}
+          titleAttr={
+            m.word +
+            " · " +
+            (c.status === "closed" && c.note
+              ? c.note
+              : c.project || "no project yet")
+          }
+          marks={
+            sealed ? (
+              <span className="lockdown-badge" title={LOCKDOWN_BADGE}>
+                <LockIcon className="size-3" aria-hidden />
+                <span className="sr-only">{LOCKDOWN_BADGE}</span>
+                <span aria-hidden>Lockdown</span>
+              </span>
+            ) : undefined
+          }
+        />
+        {subs.length ? (
+          <ul
+            className="grid min-w-0 gap-px border-t bg-muted/20 py-1"
+            role="list"
+            aria-label={`Sub-sessions of ${c.title || c.id}`}
+          >
+            {subs.map((k) => {
+              const km = moodOf(k);
+              const ks = sessionState(k);
+              const kActive = k.id === current;
+              return (
+                <li key={k.id} className="min-w-0">
+                  <button
+                    type="button"
+                    onClick={() => onOpen(k.id)}
+                    aria-current={kActive ? "page" : undefined}
+                    className={cn(
+                      "relative flex min-h-8 w-full min-w-0 items-center gap-2 px-3 py-1 text-left text-xs transition-colors hover:bg-muted/50",
+                      kActive &&
+                        "bg-accent before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:bg-link before:content-['']",
+                    )}
+                    title={`${k.title || k.id}: open the sub-session · ${km.word}`}
+                  >
+                    <span
+                      className="w-3.5 shrink-0 border-l border-b border-border/70 self-stretch rounded-bl"
+                      aria-hidden
+                    />
+                    <SessionStateIcon
+                      state={sessionState(k)}
+                      className="size-3.5"
+                    />
+                    <span className="min-w-0 flex-1 truncate text-foreground">
+                      {k.title || "Untitled"}
+                    </span>
+                    {lockdownOf(k, k.live) ? (
+                      <LockIcon
+                        className="lockdown-mark size-3.5 shrink-0 text-lock"
+                        aria-label={LOCKDOWN_BADGE}
+                      />
+                    ) : null}
+                    {/* Which sub-session is still at it, or stopped: the
+                        word beside the icon, so the family reads at a glance. */}
+                    {ks === "working" || ks === "asks" || ks === "stopped" ? (
+                      <span
+                        className={cn("shrink-0 font-medium", TONE_TEXT[km.tone])}
+                        aria-hidden
+                      >
+                        {ks === "stopped" ? "Stopped" : km.word}
+                      </span>
+                    ) : null}
+                    <span className="shrink-0 tabular-nums text-muted-foreground">
+                      {relShort(k.last_at || k.created_at, now)}
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        ) : null}
+        {c.pr ? <PrRow pr={c.pr} project={c.project} /> : null}
+      </div>
+    </li>
+  );
+}
+
 // ----- new conversation -----------------------------------------------------
 
-// Short starters under the box: the chip shows a few words, a click puts
-// the whole request in the box to edit or send.
-const STARTERS: { icon: LucideIcon; label: string; text: string }[] = [
+const STARTERS: { icon: LucideIcon; text: string }[] = [
   {
     icon: SearchIcon,
-    label: "Pick the next task",
     text: "Look through the open tasks and pick the most useful one to do next.",
   },
-  {
-    icon: BugIcon,
-    label: "Fix a failing check",
-    text: "Read the latest failing check and fix it.",
-  },
+  { icon: BugIcon, text: "Read the latest failing check and fix it." },
   {
     icon: FileTextIcon,
-    label: "Write a contributor guide",
     text: "Write a short guide for a new contributor and put it in docs/.",
   },
   {
     icon: SparklesIcon,
-    label: "Review this week",
     text: "Review what landed this week and tell me what looks risky.",
   },
 ];
@@ -1883,7 +2029,7 @@ function dismissTipHere() {
   for (const cb of tipListeners) cb();
 }
 
-export function NewSessionTip() {
+function NewSessionTip() {
   const dismissed = useSyncExternalStore(
     subscribeTip,
     () => tipDismissed(),
@@ -1950,7 +2096,6 @@ function NewConversation({
   const [auto, setAuto] = useState(true);
   const [lockdown, setLockdown] = useState(false);
   const [references, setReferences] = useState<string[]>([]);
-  const [options, setOptions] = useState(false);
   const [busy, setBusy] = useState(false);
   const textarea = useRef<HTMLTextAreaElement | null>(null);
   const insertSpokenText = useDictation(textarea, text, setText);
@@ -1963,8 +2108,7 @@ function NewConversation({
   const team = who === "team";
   // A task belongs to a project from the start: the lead is the project's.
   const needsProject = team && project === LET_AGENT_DECIDE;
-  const blocked = useStartBlock();
-  const canStart = !!text.trim() && !busy && !needsProject && !blocked;
+  const canStart = !!text.trim() && !busy && !needsProject;
 
   const start = async () => {
     const t = text.trim();
@@ -2019,109 +2163,62 @@ function NewConversation({
     }
   };
 
-  // Everything past the request and its project folds under Options; the
-  // button says how many of those differ from the defaults, so nothing
-  // changed stays out of sight unnoticed.
-  const changed = [
-    team,
-    !!model,
-    !!reasoning,
-    !auto,
-    lockdown,
-    references.length > 0,
-  ].filter(Boolean).length;
-
   return (
-    <div className="enter grid min-w-0 gap-3">
-      <section
-        className={cn(
-          "relative min-w-0 rounded-2xl border bg-card shadow-card transition-[border-color,box-shadow] duration-150 ease-out-soft focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/20 motion-reduce:transition-none",
-          lockdown && "lockdown-surface border-lock",
-        )}
-      >
-        <Textarea
-          ref={textarea}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-              e.preventDefault();
-              void start();
-            }
-          }}
-          placeholder="What should your agents work on? For example: add a dark mode toggle to the settings page."
-          className="min-h-32 resize-none rounded-2xl border-0 bg-transparent px-5 pt-4 pb-2 text-base shadow-none hover:border-0 focus-visible:ring-0 md:text-base dark:bg-transparent"
-          autoFocus
-          aria-label="What should the agent do"
-        />
-        <div className="flex min-w-0 flex-wrap items-center gap-1.5 px-3 pb-3">
-          <Select value={project} onValueChange={setProject}>
-            <SelectTrigger
-              size="sm"
-              className={cn(
-                "w-auto max-w-40 rounded-full sm:max-w-56",
-                needsProject && "border-warn/60",
-              )}
-              aria-label="Project"
-              aria-invalid={needsProject || undefined}
-            >
-              <SelectValue placeholder="Pick a project" />
-            </SelectTrigger>
-            <SelectContent>
-              {team ? null : (
-                <SelectItem value={LET_AGENT_DECIDE}>
-                  <SparklesIcon className="size-4 text-primary" aria-hidden />{" "}
-                  Let the agent decide
-                </SelectItem>
-              )}
-              {list.map((p) => (
-                <SelectItem key={p.slug} value={p.slug}>
-                  <ProjectAvatar slug={p.slug} name={p.name} size={20} />{" "}
-                  <span className="truncate">{projectLabel(p)}</span>
-                </SelectItem>
+    <div className="enter grid min-w-0 gap-4">
+      <section className="relative overflow-hidden rounded-xl border bg-card p-5 shadow-card sm:p-6">
+        <div className="flex min-w-0 flex-col gap-5 sm:flex-row sm:items-start">
+          <HiveMascot
+            mood={busy ? "busy" : text.trim() ? "curious" : "happy"}
+            size={84}
+            className="float shrink-0 self-center sm:self-start"
+            title="Pip is ready"
+          />
+          {/* grid-cols-1 (minmax(0,1fr)): an auto track would grow to the widest starter chip and push the card past a phone's edge. */}
+          <div className="grid min-w-0 flex-1 grid-cols-1 gap-4">
+            <div className="grid gap-1">
+              <h2 className="text-xl font-semibold tracking-tight text-foreground">
+                What should the agent do?
+              </h2>
+              <p className="text-sm leading-relaxed text-muted-foreground">
+                Say it the way you would to a colleague. The agent reads the
+                project, works in its own branch, and reports back here.{" "}
+                {busyElsewhere
+                  ? `${plural(busyElsewhere, "other session")} ${busyElsewhere === 1 ? "is" : "are"} working right now.`
+                  : ""}
+              </p>
+            </div>
+            <Textarea
+              ref={textarea}
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                  e.preventDefault();
+                  void start();
+                }
+              }}
+              placeholder="For example: add a dark mode toggle to the settings page and make sure the tests still pass."
+              className="min-h-28 text-sm"
+              autoFocus
+              aria-label="What should the agent do"
+            />
+            <ReferencePicker value={references} onChange={setReferences} />
+            <div className="flex flex-wrap items-center gap-1.5">
+              <MicButton disabled={busy} onText={insertSpokenText} />
+              {STARTERS.map((s) => (
+                <Button
+                  key={s.text}
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setText(s.text)}
+                  className="max-w-full justify-start font-normal text-muted-foreground hover:text-foreground"
+                >
+                  <s.icon aria-hidden />
+                  <span className="truncate">{s.text}</span>
+                </Button>
               ))}
-            </SelectContent>
-          </Select>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="rounded-full text-muted-foreground hover:text-foreground"
-            aria-expanded={options}
-            aria-controls="new-session-options"
-            onClick={() => setOptions((v) => !v)}
-          >
-            <SlidersHorizontalIcon aria-hidden />
-            <span className="max-sm:sr-only">Options</span>
-            {changed ? (
-              <span className="tnum inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[11px] font-semibold text-primary-foreground">
-                {changed}
-              </span>
-            ) : null}
-          </Button>
-          <div className="ml-auto flex items-center gap-1.5">
-            <MicButton disabled={busy} onText={insertSpokenText} />
-            <Button
-              type="button"
-              className="rounded-full"
-              onClick={() => void start()}
-              disabled={!canStart}
-              title="Start (⌘↵)"
-            >
-              {busy ? (
-                <LoaderCircleIcon className="animate-spin" />
-              ) : (
-                <ArrowUpIcon />
-              )}{" "}
-              Start
-            </Button>
-          </div>
-        </div>
-        {options ? (
-          <div
-            id="new-session-options"
-            className="grid min-w-0 gap-4 border-t px-5 py-4"
-          >
+            </div>
             <div className="flex flex-wrap items-center gap-2">
               <Select value={who} onValueChange={(v) => setWho(v as Who)}>
                 <SelectTrigger
@@ -2142,6 +2239,32 @@ function NewConversation({
                     />{" "}
                     The project&apos;s team
                   </SelectItem>
+                </SelectContent>
+              </Select>
+              <Select value={project} onValueChange={setProject}>
+                <SelectTrigger
+                  className={cn(
+                    "w-auto min-w-44 max-w-64",
+                    needsProject && "border-warn/60",
+                  )}
+                  aria-label="Project"
+                  aria-invalid={needsProject || undefined}
+                >
+                  <SelectValue placeholder="Pick a project" />
+                </SelectTrigger>
+                <SelectContent>
+                  {team ? null : (
+                    <SelectItem value={LET_AGENT_DECIDE}>
+                      <SparklesIcon className="size-4 text-primary" aria-hidden />{" "}
+                      Let the agent decide
+                    </SelectItem>
+                  )}
+                  {list.map((p) => (
+                    <SelectItem key={p.slug} value={p.slug}>
+                      <ProjectAvatar slug={p.slug} name={p.name} size={20} />{" "}
+                      <span className="truncate">{projectLabel(p)}</span>
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
               {team ? null : (
@@ -2166,97 +2289,86 @@ function NewConversation({
                   ? "Pick the project: its lead agent plans the steps and hands each to an agent."
                   : "The project's lead agent plans the steps and hands each to an agent; they show under it in the list. The team uses the project's own settings."}
               </p>
-            ) : (
-              <div className="grid min-w-0 gap-1 sm:grid-cols-2">
-                <label className="flex items-center gap-2 rounded-xl border border-transparent py-1.5 text-sm text-foreground">
-                  <Switch
-                    checked={auto}
-                    onCheckedChange={setAuto}
-                    aria-label="Approve tool calls automatically"
-                  />
-                  <span className="grid">
-                    <span className="font-medium">
-                      Approve tools automatically
+            ) : null}
+            <div className="flex flex-wrap items-end gap-x-4 gap-y-3">
+              {team ? null : (
+                // The two switches stack on one left edge. Each label is a
+                // padded box (Lockdown's turns into the sealed surface when
+                // on), so the stack bleeds left by the box's padding and
+                // border to line the switches up with the pickers above.
+                <div className="-ml-[9px] grid min-w-0 gap-1">
+                  <label className="flex items-center gap-2 rounded-xl border border-transparent px-2 py-1.5 text-sm text-foreground">
+                    <Switch
+                      checked={auto}
+                      onCheckedChange={setAuto}
+                      aria-label="Approve tool calls automatically"
+                    />
+                    <span className="grid">
+                      <span className="font-medium">
+                        Approve tools automatically
+                      </span>
+                      <span className="text-xs text-muted-foreground">
+                        {auto
+                          ? "Runs commands and edits files without stopping to ask."
+                          : "Stops before each risky command and waits for your yes."}
+                      </span>
                     </span>
-                    <span className="text-xs text-muted-foreground">
-                      {auto
-                        ? "Runs commands and edits files without stopping to ask."
-                        : "Stops before each risky command and waits for your yes."}
+                  </label>
+                  <label
+                    className={cn(
+                      "flex items-center gap-2 rounded-xl border border-transparent px-2 py-1.5 text-sm text-foreground transition-colors",
+                      lockdown && "lockdown-surface border-lock",
+                    )}
+                    data-testid="new-lockdown"
+                  >
+                    <Switch
+                      checked={lockdown}
+                      onCheckedChange={setLockdown}
+                      aria-label="Lockdown (sandbox) mode"
+                    />
+                    <span className="grid">
+                      <span className="flex items-center gap-1.5 font-medium">
+                        {lockdown ? (
+                          <LockIcon
+                            className="lockdown-mark size-3.5 text-lock"
+                            aria-hidden
+                          />
+                        ) : (
+                          <LockOpenIcon
+                            className="size-3.5 text-muted-foreground"
+                            aria-hidden
+                          />
+                        )}
+                        Lockdown (sandbox)
+                      </span>
+                      <span className="max-w-xs text-xs text-muted-foreground">
+                        {lockdownHint(lockdown)}
+                      </span>
                     </span>
-                  </span>
-                </label>
-                <label
-                  className="flex items-center gap-2 rounded-xl border border-transparent py-1.5 text-sm text-foreground"
-                  data-testid="new-lockdown"
-                >
-                  <Switch
-                    checked={lockdown}
-                    onCheckedChange={setLockdown}
-                    aria-label="Lockdown (sandbox) mode"
-                  />
-                  <span className="grid">
-                    <span className="flex items-center gap-1.5 font-medium">
-                      {lockdown ? (
-                        <LockIcon
-                          className="lockdown-mark size-3.5 text-lock"
-                          aria-hidden
-                        />
-                      ) : (
-                        <LockOpenIcon
-                          className="size-3.5 text-muted-foreground"
-                          aria-hidden
-                        />
-                      )}
-                      Lockdown (sandbox)
-                    </span>
-                    <span className="max-w-xs text-xs text-muted-foreground">
-                      {lockdownHint(lockdown)}
-                    </span>
-                  </span>
-                </label>
-              </div>
-            )}
-            <ReferencePicker value={references} onChange={setReferences} />
+                  </label>
+                </div>
+              )}
+              <Button
+                type="button"
+                className="ml-auto"
+                onClick={() => void start()}
+                disabled={!canStart}
+              >
+                {busy ? (
+                  <LoaderCircleIcon className="animate-spin" />
+                ) : (
+                  <ArrowUpIcon />
+                )}{" "}
+                Start
+                <kbd className="ml-1 hidden rounded border border-primary-foreground/30 px-1 font-mono text-xs opacity-80 sm:inline">
+                  ⌘↵
+                </kbd>
+              </Button>
+            </div>
           </div>
-        ) : null}
+        </div>
       </section>
-      {/* grid would grow to the widest chip; flex-wrap keeps them on a phone's width. */}
-      <div className="flex min-w-0 flex-wrap items-center gap-1.5 px-1">
-        <span className="mr-0.5 text-xs text-muted-foreground">Try</span>
-        {STARTERS.map((s) => (
-          <Button
-            key={s.label}
-            type="button"
-            variant="outline"
-            size="xs"
-            onClick={() => {
-              setText(s.text);
-              textarea.current?.focus();
-            }}
-            title={s.text}
-            className="max-w-full rounded-full font-normal text-muted-foreground hover:text-foreground"
-          >
-            <s.icon aria-hidden />
-            <span className="truncate">{s.label}</span>
-          </Button>
-        ))}
-      </div>
-      {blocked ? (
-        <p
-          className="flex items-start gap-1.5 px-1 text-[13px] text-you-ink"
-          role="status"
-          data-testid="start-blocked"
-        >
-          <InfoIcon className="mt-0.5 size-3.5 shrink-0" aria-hidden />
-          {blocked}
-        </p>
-      ) : null}
-      {busyElsewhere ? (
-        <p className="px-1 text-xs text-muted-foreground">
-          {plural(busyElsewhere, "other session")}{" "}
-          {busyElsewhere === 1 ? "is" : "are"} working right now.
-        </p>
-      ) : null}
+      <NewSessionTip />
     </div>
   );
 }
@@ -2534,7 +2646,6 @@ function ConversationBody({
   const [busy, setBusy] = useState("");
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(c.title);
-  const [showWork, setShowWork] = useWorkPanel();
   const [stick, setStick] = useState(true);
   const scroller = useRef<HTMLDivElement | null>(null);
   const models = useApi<HarnessModelsResponse>("harness/models", {
@@ -2766,260 +2877,250 @@ function ConversationBody({
         )}
         Lockdown
       </label>
-    </>
-  );
-  // Stop stays in sight beside the box while a turn runs; the rest above
-  // waits under the composer's Options.
-  const stop =
-    running || waiting ? (
-      <Button
-        type="button"
-        size="sm"
-        variant="outline"
-        className="h-8 shrink-0 rounded-full"
-        onClick={() => void act("cancel", () => writes.chatCancel(c.id))}
-        disabled={!!busy}
-      >
-        <CircleStopIcon className="text-bad" /> Stop
-      </Button>
-    ) : null;
-  // How many of the turn's settings differ from the defaults, for the
-  // Options button: auto-approve off, lockdown on, a model or effort picked.
-  const optionsChanged = [
-    !live.auto_approve,
-    sealed,
-    !!c.model,
-    !!c.reasoning,
-  ].filter(Boolean).length;
-
-  const details = [
-    c.branch || "",
-    c.turns ? plural(c.turns, "turn") : "",
-    c.cost ? num(Math.round(c.cost * 100) / 100) + " credits" : "",
-  ].filter(Boolean);
-  const section = (
-    <section className="flex min-h-0 min-w-0 flex-col gap-3 lg:flex-1">
-      {/* One quiet header: back, Pip, the title, one line of where it
-          stands, and two buttons - the work panel and a menu for the rest
-          (rename, finish, restart, archive, and the branch and credits). */}
-      <header
-        className="enter flex min-w-0 items-center gap-3"
-        data-lockdown={sealed || undefined}
-      >
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-sm"
-              className="-ml-1.5 hidden shrink-0 text-muted-foreground hover:text-foreground lg:inline-flex"
-              onClick={onBack}
-              aria-label="All sessions"
-            >
-              <ArrowLeftIcon />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>All sessions</TooltipContent>
-        </Tooltip>
-        <span className={cn("shrink-0 max-sm:hidden", sealed && "lockdown-ring")} aria-hidden={sealed || undefined}>
-          <HiveMascot
-            mood={mood.pip}
-            size={36}
-            className={cn("shrink-0", running && "float")}
-            title={mood.word}
-          />
-        </span>
-        <div className="grid min-w-0 flex-1 gap-0.5">
-          {editing ? (
-            <form
-              className="flex min-w-0 items-center gap-1.5"
-              onSubmit={(e) => {
-                e.preventDefault();
-                saveTitle();
-              }}
-            >
-              <Input
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                onBlur={saveTitle}
-                autoFocus
-                aria-label="Session title"
-                className="h-8 max-w-md"
-                maxLength={120}
-              />
-              <Button
-                type="submit"
-                size="xs"
-                variant="ghost"
-                aria-label="Save title"
-              >
-                <CheckIcon />
-              </Button>
-            </form>
-          ) : (
-            <h1
-              className="line-clamp-2 text-base font-semibold leading-6 tracking-tight text-foreground anywhere sm:line-clamp-1 sm:text-lg"
-              title={c.title}
-            >
-              {c.title || "Untitled"}
-            </h1>
-          )}
-          <p className="flex min-w-0 items-center gap-x-2 overflow-hidden text-[13px] text-muted-foreground">
-            <span
-              className={cn(
-                "inline-flex shrink-0 items-center gap-1.5 font-medium",
-                mood.tone === "wait" ? "text-you-ink" : TONE_TEXT[mood.tone],
-              )}
-            >
-              {running ? (
-                <LoaderCircleIcon className="size-3.5 animate-spin" />
-              ) : (
-                <span
-                  className={cn("live-dot size-2 rounded-full", mood.dot)}
-                  aria-hidden
-                />
-              )}
-              {mood.word}
-              {running ? <TurnClock since={live.turn_started_at} /> : null}
-            </span>
-            <span aria-hidden>·</span>
-            {c.project ? (
-              <span className="min-w-0 truncate">
-                <ProjectLink slug={c.project} />
-              </span>
-            ) : (
-              <span className="truncate">no project yet</span>
-            )}
-            {c.parent ? (
-              <>
-                <span aria-hidden>·</span>
-                <Link
-                  href={hrefs.conversations(c.parent)}
-                  className="inline-flex min-w-0 items-center gap-1 truncate underline-offset-4 hover:text-foreground hover:underline"
-                  title="Open the session this one is part of"
-                >
-                  <CornerDownRightIcon className="size-3 shrink-0" aria-hidden />
-                  <span className="truncate">{d.parentTitle || c.parent}</span>
-                </Link>
-              </>
-            ) : null}
-            {sealed ? (
-              <span
-                className="lockdown-badge shrink-0"
-                title={LOCKDOWN_BAR}
-                data-testid="lockdown-bar"
-              >
-                <LockIcon className="size-3" aria-hidden />
-                <span className="sr-only">{LOCKDOWN_BAR}</span>
-                {/* On a phone the lock alone, so the project keeps its room. */}
-                <span aria-hidden className="max-sm:hidden">Lockdown</span>
-              </span>
-            ) : null}
-          </p>
-        </div>
+      {running || waiting ? (
         <Button
           type="button"
           size="sm"
-          variant={showWork ? "secondary" : "outline"}
-          className="shrink-0"
-          aria-pressed={showWork}
-          onClick={() => setShowWork(!showWork)}
-          title={showWork ? "Hide the changes, terminal and files" : "Show the changes, terminal and files"}
+          variant="outline"
+          className="h-7 shrink-0 rounded-full"
+          onClick={() => void act("cancel", () => writes.chatCancel(c.id))}
+          disabled={!!busy}
         >
-          <PanelRightIcon />
-          {showWork ? "Hide work" : "Show work"}
-          {!showWork && changeCount ? (
-            <span className="tnum inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[11px] font-semibold text-primary-foreground">
-              {changeCount}
-            </span>
-          ) : null}
+          <CircleStopIcon className="text-bad" /> Stop
         </Button>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              type="button"
-              size="icon-sm"
-              variant="ghost"
-              className="shrink-0 text-muted-foreground hover:text-foreground"
-              aria-label="More for this session"
-              disabled={!!busy}
-            >
-              <MoreHorizontalIcon />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-64 p-1.5">
-            {details.length ? (
-              <>
-                <DropdownMenuLabel className="grid gap-0.5 font-normal">
+      ) : null}
+    </>
+  );
+
+  const section = (
+    <section className="flex min-h-0 min-w-0 flex-col gap-3 lg:flex-1">
+      <BackButton onBack={onBack} />
+      <header
+        className={cn(
+          "enter grid min-w-0 gap-2 rounded-lg border bg-card px-4 py-3 shadow-card transition-colors",
+          mood.tone === "wait" && "surface-you",
+          running && "border-primary/40",
+          sealed && "lockdown-surface lockdown-scan",
+        )}
+        data-lockdown={sealed || undefined}
+      >
+        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
+          {sealed ? (
+            <span className="lockdown-ring shrink-0" aria-hidden>
+              <HiveMascot
+                mood={mood.pip}
+                size={44}
+                className={cn("shrink-0", running && "float")}
+                title={mood.word}
+              />
+            </span>
+          ) : (
+            <HiveMascot
+              mood={mood.pip}
+              size={44}
+              className={cn("shrink-0", running && "float")}
+              title={mood.word}
+            />
+          )}
+          <div className="grid min-w-[14rem] flex-1 gap-0.5">
+            {editing ? (
+              <form
+                className="flex min-w-0 items-center gap-1.5"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  saveTitle();
+                }}
+              >
+                <Input
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  onBlur={saveTitle}
+                  autoFocus
+                  aria-label="Session title"
+                  className="h-8 max-w-md"
+                  maxLength={120}
+                />
+                <Button
+                  type="submit"
+                  size="xs"
+                  variant="ghost"
+                  aria-label="Save title"
+                >
+                  <CheckIcon />
+                </Button>
+              </form>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setEditing(true)}
+                className="group flex min-w-0 items-center gap-1.5 text-left"
+                title="Rename"
+              >
+                <span
+                  className="truncate text-base font-semibold tracking-tight text-foreground"
+                  title={c.title}
+                >
+                  {c.title || "Untitled"}
+                </span>
+                {sealed ? (
+                  <span className="lockdown-badge" title={LOCKDOWN_BADGE}>
+                    <LockIcon className="size-3" aria-hidden />
+                    <span className="sr-only">{LOCKDOWN_BADGE}</span>
+                    <span aria-hidden>Lockdown</span>
+                  </span>
+                ) : null}
+                <PencilIcon
+                  className="size-3.5 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
+                  aria-hidden
+                />
+              </button>
+            )}
+            <p className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+              <span
+                className={cn(
+                  "inline-flex items-center gap-1 font-medium",
+                  mood.tone === "wait" ? "text-you-ink" : TONE_TEXT[mood.tone],
+                )}
+              >
+                {running ? (
+                  <LoaderCircleIcon className="size-3 animate-spin" />
+                ) : (
+                  <span
+                    className={cn("live-dot size-1.5 rounded-full", mood.dot)}
+                    aria-hidden
+                  />
+                )}
+                {mood.word}
+                {running ? <TurnClock since={live.turn_started_at} /> : null}
+              </span>
+              <span aria-hidden>·</span>
+              {c.project ? (
+                <span className="inline-flex min-w-0 items-center gap-1">
+                  <ProjectLink slug={c.project} />{" "}
                   {c.branch ? (
-                    <code className="truncate font-mono text-xs text-foreground" title={c.branch}>
+                    <code className="truncate rounded bg-muted px-1 py-px font-mono text-xs">
                       {c.branch}
                     </code>
                   ) : null}
-                  <span className="text-xs text-muted-foreground">
-                    {details.filter((x) => x !== c.branch).join(" · ")}
+                </span>
+              ) : (
+                <span>no project yet</span>
+              )}
+              {c.parent ? (
+                <>
+                  <span aria-hidden>·</span>
+                  <span className="inline-flex min-w-0 items-center gap-1">
+                    <CornerDownRightIcon
+                      className="size-3 shrink-0"
+                      aria-hidden
+                    />
+                    part of{" "}
+                    <Link
+                      href={hrefs.conversations(c.parent)}
+                      className="truncate underline-offset-4 hover:text-foreground hover:underline"
+                      title="Open the session this one is part of"
+                    >
+                      {d.parentTitle || c.parent}
+                    </Link>
                   </span>
-                </DropdownMenuLabel>
-                <DropdownMenuSeparator />
-              </>
-            ) : null}
-            {!archived ? (
-              <DropdownMenuItem onSelect={() => setEditing(true)}>
-                <PencilIcon /> Rename
-              </DropdownMenuItem>
-            ) : null}
-            {!archived && !closed ? (
-              <DropdownMenuItem
-                onSelect={() =>
-                  void act(
-                    "close",
-                    () => writes.chatClose(c.id),
-                    running || waiting
-                      ? "Finished; the turn was stopped. Write again to reopen it."
-                      : "Finished. Write again to reopen it.",
-                  )
-                }
-              >
-                <CircleCheckIcon /> Finish
-              </DropdownMenuItem>
-            ) : null}
-            {!archived ? (
-              <DropdownMenuItem
-                disabled={running || waiting}
-                title={
+                </>
+              ) : null}
+              {c.turns ? (
+                <>
+                  <span aria-hidden>·</span>
+                  <span>{plural(c.turns, "turn")}</span>
+                </>
+              ) : null}
+              {c.cost ? (
+                <>
+                  <span aria-hidden>·</span>
+                  <span title="model credits used">
+                    {num(Math.round(c.cost * 100) / 100)} credits
+                  </span>
+                </>
+              ) : null}
+            </p>
+          </div>
+          {!archived && !closed ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-7 shrink-0 rounded-full"
+              onClick={() =>
+                void act(
+                  "close",
+                  () => writes.chatClose(c.id),
                   running || waiting
-                    ? "Stop the turn first; then the session can be restarted from the saved transcript"
-                    : RESTART_SESSION_HINT
-                }
-                onSelect={() =>
-                  void act(
-                    "restart",
-                    () => writes.chatRestart(c.id),
-                    "Session restarted. Your next message reloads the session from the saved transcript.",
-                  )
-                }
-              >
-                <RotateCcwIcon /> Restart session
-              </DropdownMenuItem>
-            ) : null}
-            {!archived ? (
-              <>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  onSelect={() =>
-                    void act(
-                      "archive",
-                      () => writes.chatArchive(c.id),
-                      "Archived. The branch stays until you land or delete it.",
-                    )
-                  }
-                >
-                  <ArchiveIcon /> Archive
-                </DropdownMenuItem>
-              </>
-            ) : null}
-          </DropdownMenuContent>
-        </DropdownMenu>
+                    ? "Finished; the turn was stopped. Write again to reopen it."
+                    : "Finished. Write again to reopen it.",
+                )
+              }
+              disabled={!!busy}
+              title="Finish this session; a message reopens it"
+            >
+              <CircleCheckIcon />
+              <span className="sr-only sm:not-sr-only">Finish</span>
+            </Button>
+          ) : null}
+          {!archived ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-7 shrink-0 rounded-full"
+              onClick={() =>
+                void act(
+                  "restart",
+                  () => writes.chatRestart(c.id),
+                  "Session restarted. Your next message reloads the session from the saved transcript.",
+                )
+              }
+              disabled={!!busy || running || waiting}
+              title={
+                running || waiting
+                  ? "Stop the turn first; then the session can be restarted from the saved transcript"
+                  : RESTART_SESSION_HINT
+              }
+            >
+              <RotateCcwIcon />
+              <span className="sr-only sm:not-sr-only">Restart session</span>
+            </Button>
+          ) : null}
+          {!archived ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-7 shrink-0 rounded-full"
+              onClick={() =>
+                void act(
+                  "archive",
+                  () => writes.chatArchive(c.id),
+                  "Archived. The branch stays until you land or delete it.",
+                )
+              }
+              disabled={!!busy}
+              title="Archive this session"
+            >
+              <ArchiveIcon />
+              <span className="sr-only sm:not-sr-only">Archive</span>
+            </Button>
+          ) : null}
+        </div>
+        {sealed ? (
+          <p
+            className="flex min-w-0 items-start gap-2 rounded-lg border border-lock bg-lock/[0.07] px-3 py-1.5 text-xs text-foreground"
+            role="status"
+            data-testid="lockdown-bar"
+          >
+            <LockIcon
+              className="lockdown-mark mt-px size-3.5 shrink-0 text-lock"
+              aria-hidden
+            />
+            <span className="min-w-0">{LOCKDOWN_BAR}</span>
+          </p>
+        ) : null}
       </header>
       {error ? (
         <Notice tone="warn">{"Live updates paused: " + error}</Notice>
@@ -3044,7 +3145,6 @@ function ConversationBody({
                 type="button"
                 className="font-medium text-link underline-offset-2 hover:underline"
                 onClick={() => {
-                  setShowWork(true);
                   ctl.open("artifact", REPORT_PAGE);
                   revealCanvas();
                 }}
@@ -3185,9 +3285,7 @@ function ConversationBody({
         live={live}
         disabled={archived}
         closed={closed}
-        tools={stop}
-        options={tools}
-        optionsChanged={optionsChanged}
+        tools={tools}
         models={models.data?.models ?? []}
         picks={picks}
         onRemovePick={pickSink.remove}
@@ -3257,9 +3355,7 @@ function ConversationBody({
     />
   );
 
-  return (
-    <Pane main={section} wide={ctl.wide} panel={showWork ? canvas : undefined} />
-  );
+  return <Pane main={section} wide={ctl.wide} panel={canvas} />;
 }
 
 function TurnClock({ since }: { since: string }) {
@@ -3995,8 +4091,6 @@ function Composer({
   disabled,
   closed = false,
   tools,
-  options,
-  optionsChanged = 0,
   models = [],
   picks = [],
   onRemovePick,
@@ -4007,12 +4101,7 @@ function Composer({
   live: ConversationLive;
   disabled: boolean;
   closed?: boolean;
-  /** Always in sight beside the box (Stop, while a turn runs). */
   tools?: ReactNode;
-  /** The turn's settings (model, effort, auto-approve, lockdown), folded under Options. */
-  options?: ReactNode;
-  /** How many of those differ from the defaults, shown on the Options button. */
-  optionsChanged?: number;
   /** The provider's models (harness/models), to warn when the conversation's cannot see images. */
   models?: HarnessModel[];
   /** Elements picked in the Browser tab, sent with the next message. */
@@ -4028,7 +4117,6 @@ function Composer({
   // Which way the message in flight goes, so the right button spins.
   const [sending, setSending] = useState<ComposeMode | "">("");
   const [over, setOver] = useState(false);
-  const [showOptions, setShowOptions] = useState(false);
   const fileInput = useRef<HTMLInputElement | null>(null);
   const textarea = useRef<HTMLTextAreaElement | null>(null);
   const running = turnOpen(live.status);
@@ -4272,14 +4360,6 @@ function Composer({
           className="min-h-9 max-h-48 resize-none border-0 bg-transparent px-2.5 py-2 text-sm shadow-none focus-visible:ring-0 dark:bg-transparent"
           aria-label="Message"
         />
-        {options && showOptions ? (
-          <div
-            id={"options-" + conversation.id}
-            className="flex min-w-0 flex-wrap items-center gap-1.5 border-t px-1 pt-2"
-          >
-            {options}
-          </div>
-        ) : null}
         <div className="flex min-w-0 items-center gap-1.5">
           <input
             ref={fileInput}
@@ -4312,27 +4392,7 @@ function Composer({
             </TooltipContent>
           </Tooltip>
           <MicButton disabled={disabled || !!busy} onText={insertSpokenText} />
-          {options ? (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="shrink-0 rounded-full text-muted-foreground hover:text-foreground"
-              aria-expanded={showOptions}
-              aria-controls={"options-" + conversation.id}
-              onClick={() => setShowOptions((v) => !v)}
-              title="Model, effort, auto-approve and lockdown for the next turn"
-            >
-              <SlidersHorizontalIcon aria-hidden />
-              <span className="max-sm:sr-only">Options</span>
-              {optionsChanged ? (
-                <span className="tnum inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[11px] font-semibold text-primary-foreground">
-                  {optionsChanged}
-                </span>
-              ) : null}
-            </Button>
-          ) : null}
-          <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-1.5">
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
             {tools}
           </div>
           {running ? (
@@ -4375,24 +4435,35 @@ function Composer({
                 )}
               </Button>
             </TooltipTrigger>
-            <TooltipContent className="max-w-72">
-              {running ? STEER_TITLE : SEND_TITLE}
-              <span className="mt-1 block text-background/70">
-                {composeKeysHint(running)} Drop or paste files to attach them.
-              </span>
-            </TooltipContent>
+            <TooltipContent>{running ? STEER_TITLE : SEND_TITLE}</TooltipContent>
           </Tooltip>
         </div>
       </div>
-      {/* The keys and the drop hint live in the send button's tooltip and
-          the box's placeholder; this line speaks only while it has news. */}
-      {uploading || over ? (
-        <p className="px-2 text-xs text-primary" role="status">
-          {uploading
-            ? "Uploading " + (busy.slice("upload ".length) || "…")
-            : "Drop to attach"}
-        </p>
-      ) : null}
+      <p className="flex min-w-0 flex-wrap items-center gap-x-2 px-2 text-xs text-muted-foreground">
+        {uploading ? (
+          <span className="text-primary">
+            Uploading {busy.slice("upload ".length) || "…"}
+          </span>
+        ) : over ? (
+          <span className="text-primary">Drop to attach</span>
+        ) : (
+          <span>
+            {composeKeysHint(running)} Drop or paste files to attach them, or
+            press the microphone to dictate.
+          </span>
+        )}
+        {conversation.cwd ? (
+          <span className="min-w-0 truncate" title={conversation.cwd}>
+            Working in <code className="font-mono">{conversation.cwd}</code>.
+          </span>
+        ) : null}
+        {sealed ? (
+          <span className="inline-flex items-center gap-1 text-lock">
+            <LockIcon className="size-3" aria-hidden /> In lockdown: only work
+            inside the sandbox.
+          </span>
+        ) : null}
+      </p>
     </form>
   );
 }

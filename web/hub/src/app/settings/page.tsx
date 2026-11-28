@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { BellIcon, ChevronDownIcon, ChevronRightIcon, CloudIcon, CpuIcon, GaugeIcon, GitBranchIcon, KeyRoundIcon, PaletteIcon, PlayIcon, PlugIcon, SearchIcon, ServerIcon, Settings2Icon, ShieldAlertIcon, SlidersHorizontalIcon, SparklesIcon, UserRoundIcon } from "lucide-react";
+import { BellIcon, ChevronRightIcon, CloudIcon, CpuIcon, GaugeIcon, GitBranchIcon, KeyRoundIcon, PaletteIcon, PlayIcon, PlugIcon, SearchIcon, ServerIcon, Settings2Icon, ShieldAlertIcon, SlidersHorizontalIcon, SparklesIcon, UserRoundIcon } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -200,20 +200,18 @@ const OTHER: Group = { id: "other", title: "Other", note: "Settings this page do
 // search shows every section with a match. General holds the brake, You,
 // Appearance and Notifications, whose own anchors (#stop #owner
 // #appearance #notify) open it. Icons come from groupIcon (settings-state).
-// The first four are what a new owner touches; the rest fold under
-// Advanced in the picker until opened (or searched, or linked to).
-const NAV: { id: string; title: string; icon: Icon; advanced?: boolean }[] = [
+const NAV: { id: string; title: string; icon: Icon }[] = [
   { id: "general", title: "General", icon: iconOf("general") },
   { id: "appearance", title: "Appearance", icon: iconOf("appearance") },
   { id: "harness", title: "Harness", icon: iconOf("harness") },
   { id: "secrets", title: "Secrets", icon: iconOf("secrets") },
-  { id: "runner", title: "Limits", icon: iconOf("runner"), advanced: true },
-  { id: "compute", title: "Machines", icon: iconOf("compute"), advanced: true },
-  { id: "git", title: "Git", icon: iconOf("git"), advanced: true },
-  { id: "evolve", title: "Self-improvement", icon: iconOf("evolve"), advanced: true },
-  { id: "daemon", title: "This machine", icon: iconOf("daemon"), advanced: true },
-  { id: "provider", title: "Provider addresses", icon: iconOf("provider"), advanced: true },
-  { id: "other", title: "Other", icon: iconOf("other"), advanced: true },
+  { id: "runner", title: "Limits", icon: iconOf("runner") },
+  { id: "compute", title: "Machines", icon: iconOf("compute") },
+  { id: "git", title: "Git", icon: iconOf("git") },
+  { id: "evolve", title: "Self-improvement", icon: iconOf("evolve") },
+  { id: "daemon", title: "This machine", icon: iconOf("daemon") },
+  { id: "provider", title: "Provider addresses", icon: iconOf("provider") },
+  { id: "other", title: "Other", icon: iconOf("other") },
 ];
 const PAGE_OF: Record<string, string> = { stop: "general", owner: "general", appearance: "general", notify: "general", "runner-controls": "daemon" };
 const pageOf = (id: string) => PAGE_OF[id] ?? id;
@@ -412,13 +410,8 @@ function Section({ id, title, note, count, children }: { id: string; title: stri
 // that sticks under the phone header below that. Each item is a plain
 // anchor to its section's hash; the section in view (or, while searching,
 // the one scrolled to) is marked aria-current in both.
-type NavEntry = { id: string; title: string; icon: Icon; hit: boolean; count?: number; advanced?: boolean };
-
-function SectionNav({ items: all, active, stopped, advanced, onAdvanced }: { items: NavEntry[]; active: string; stopped: boolean; advanced: boolean; onAdvanced: () => void }) {
+function SectionNav({ items, active, stopped }: { items: { id: string; title: string; icon: Icon; hit: boolean; count?: number }[]; active: string; stopped: boolean }) {
   const chips = useRef<HTMLDivElement>(null);
-  const items = advanced ? all : all.filter((n) => !n.advanced);
-  const folded = all.length - items.length;
-  const firstAdvanced = all.find((n) => n.advanced)?.id;
   useEffect(() => {
     const el = chips.current?.querySelector<HTMLElement>('[aria-current="true"]');
     if (!el || !chips.current || chips.current.offsetParent === null) return;
@@ -447,12 +440,6 @@ function SectionNav({ items: all, active, stopped, advanced, onAdvanced }: { ite
               </a>
             </Button>
           ))}
-          {folded ? (
-            <Button variant="ghost" size="sm" className="shrink-0 whitespace-nowrap text-muted-foreground" aria-expanded={false} onClick={onAdvanced}>
-              Advanced
-              <ChevronDownIcon aria-hidden />
-            </Button>
-          ) : null}
         </div>
       </nav>
       <nav aria-label="Settings sections" className="sticky top-6 hidden self-start lg:block">
@@ -462,9 +449,6 @@ function SectionNav({ items: all, active, stopped, advanced, onAdvanced }: { ite
             const on = active === n.id;
             return (
               <li key={n.id}>
-                {n.id === firstAdvanced ? (
-                  <p className="mt-4 mb-1 px-3 text-xs font-medium text-muted-foreground">Advanced</p>
-                ) : null}
                 <a
                   href={"#" + n.id}
                   aria-current={on ? "true" : undefined}
@@ -483,18 +467,6 @@ function SectionNav({ items: all, active, stopped, advanced, onAdvanced }: { ite
             );
           })}
         </ul>
-        {folded ? (
-          <button
-            type="button"
-            aria-expanded={false}
-            onClick={onAdvanced}
-            className="mt-3 flex w-full items-center gap-2.5 rounded-md py-2 pl-3.5 pr-3 text-sm text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            <ChevronRightIcon aria-hidden className="size-4 shrink-0" />
-            <span className="min-w-0 flex-1 truncate text-left">Advanced</span>
-            <span className="tnum text-xs">{folded}</span>
-          </button>
-        ) : null}
       </nav>
     </>
   );
@@ -523,7 +495,6 @@ export default function SettingsPage() {
   const [find, setFind] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [spied, setSpied] = useState("");
-  const [advancedOpen, setAdvancedOpen] = useState(false);
   const showKeys = useShowKeys();
   const hash = useHash();
   const groups = useMemo(() => {
@@ -588,14 +559,11 @@ export default function SettingsPage() {
   const page = present.has(pageOf(hash)) ? pageOf(hash) : "general";
   const show = (id: string) => !!needle || pageOf(id) === page;
   // While searching every section with a hit shows, in page order.
-  const order = needle ? [killShown && stopped ? "stop" : "", hits.owner ? "owner" : "", appearanceShown ? "appearance" : "", notifyShown ? "notify" : "", killShown && !stopped ? "stop" : "", harnessShown ? "harness" : "", secretsShown ? "secrets" : "", ...shown.map((x) => x.g.id).filter((id) => id !== "owner")].filter(Boolean).join(" ") : "";
+  const order = needle ? [killShown ? "stop" : "", hits.owner ? "owner" : "", appearanceShown ? "appearance" : "", notifyShown ? "notify" : "", harnessShown ? "harness" : "", secretsShown ? "secrets" : "", ...shown.map((x) => x.g.id).filter((id) => id !== "owner")].filter(Boolean).join(" ") : "";
   // Appearance lives on the General page (#appearance scrolls to its card) but
   // has its own nav item, so the marker names it rather than General.
   const navOf = (id: string) => (id === "appearance" ? id : pageOf(id));
   const current = needle ? navOf(spied || order.split(" ")[0] || "") : present.has(pageOf(hash)) ? navOf(hash) : "general";
-  // Advanced sections show in the picker once asked for, while searching, or
-  // when a link opened one of them.
-  const advanced = advancedOpen || !!needle || !!NAV.find((n) => n.id === current)?.advanced;
 
   // Opening a section starts at its top; an anchor inside General (#notify) scrolls to itself.
   useEffect(() => {
@@ -633,7 +601,7 @@ export default function SettingsPage() {
     };
   }, [order]);
 
-  const title = <PageHeader title="Settings" subtitle="The basics first; everything else is under Advanced." />;
+  const title = <PageHeader title="Settings" subtitle="How Hive runs" />;
   if (q.error && !d)
     return (
       <>
@@ -650,14 +618,6 @@ export default function SettingsPage() {
       else next.add(id);
       return next;
     });
-
-  const pauseSection =
-    killShown && stop && show("stop") ? (
-      <section id="stop" aria-label="Pause all work" className={ANCHOR}>
-        <h2 className="sr-only">Pause all work</h2>
-        <PauseCard s={stop} canEdit={d.can_edit} />
-      </section>
-    ) : null;
 
   const groupSection = ({ g, rows, all }: { g: Group; rows: Setting[]; all: number }) => (
     <Section key={g.id} id={g.id} title={g.title} note={g.note} count={needle ? rows.length + " of " + all : undefined}>
@@ -698,19 +658,18 @@ export default function SettingsPage() {
             ) : (
               ((names) => "No single setting matches, but the " + names.join(" and ") + (names.length > 1 ? " sections do." : " section does."))([appearanceShown ? "Appearance" : "", notifyShown ? "Notifications" : "", harnessShown ? "Harness" : ""].filter(Boolean))
             )
-          ) : null}
+          ) : (
+            "Search by name, by what it does, or by its key."
+          )}
         </p>
-        {/* Raw keys are for whoever went looking past the basics. */}
-        {advanced || showKeys ? (
-          <label className="flex shrink-0 items-center gap-2 text-[13px] text-muted-foreground">
-            <Switch checked={showKeys} onCheckedChange={setShowKeys} aria-label="Show setting keys" />
-            Show setting keys
-          </label>
-        ) : null}
+        <label className="flex shrink-0 items-center gap-2 text-[13px] text-muted-foreground">
+          <Switch checked={showKeys} onCheckedChange={setShowKeys} aria-label="Show setting keys" />
+          Show setting keys
+        </label>
       </div>
 
       <div className="min-w-0 lg:grid lg:grid-cols-[13.5rem_minmax(0,1fr)] lg:gap-10">
-        <SectionNav items={navItems} active={current} stopped={stopped} advanced={advanced} onAdvanced={() => setAdvancedOpen(true)} />
+        <SectionNav items={navItems} active={current} stopped={stopped} />
 
         <div className="grid min-w-0 gap-10">
           {!d.available || (d.available && !d.can_edit) || (stopped && page !== "general") ? (
@@ -729,9 +688,12 @@ export default function SettingsPage() {
             </div>
           ) : null}
 
-          {/* The brake leads General only while work is paused; otherwise it
-              waits at the foot of the page, out of a new owner's first look. */}
-          {stopped ? pauseSection : null}
+          {killShown && stop && show("stop") ? (
+            <section id="stop" aria-label="Pause all work" className={ANCHOR}>
+              <h2 className="sr-only">Pause all work</h2>
+              <PauseCard s={stop} canEdit={d.can_edit} />
+            </section>
+          ) : null}
 
           {shown.filter((x) => x.g.id === "owner" && show("owner")).map(groupSection)}
 
@@ -746,8 +708,6 @@ export default function SettingsPage() {
               <NotificationsCard />
             </Section>
           ) : null}
-
-          {stopped ? null : pauseSection}
 
           {harnessShown && show("harness") ? (
             <Section id="harness" title="Harness" note="The model provider, the models and the limits of each agent run." count={needle && harnessHits ? harnessHits + " of " + harnessRows.length : undefined}>

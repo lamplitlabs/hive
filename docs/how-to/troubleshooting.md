@@ -239,7 +239,7 @@ work stands.
   and the job is retried ([above](#a-job-failed)).
 - **A step of the task still runs.** A task is one pull request, opened once
   none of its jobs is queued, running or blocked. Until then a finished step
-  reads **Opening a pull request**.
+  reads **Waiting for its pull request**.
 
 ## The loop does nothing
 

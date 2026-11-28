@@ -4,7 +4,6 @@ import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { Fragment, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import {
-  ChevronDownIcon,
   MessageSquarePlusIcon,
   MoreHorizontalIcon,
   PanelLeftCloseIcon,
@@ -49,8 +48,7 @@ import { CrumbsProvider, useCurrentCrumbs } from "./crumbs";
 import { NAV_ICON } from "./nav-icons";
 import {
   machineName,
-  MORE_GROUPS,
-  PRIMARY_ITEMS,
+  NAV_GROUPS,
   shortcutWords,
   type NavItem,
 } from "./nav-items";
@@ -62,7 +60,6 @@ import { sidebarToggleLabel } from "./sidebar-state";
 import { SystemStatus } from "./system-status";
 import { PhoneBar, TopBar, TOPBAR_H } from "./top-bar";
 import { UpdateBanner } from "./update-banner";
-import { useMoreOpen } from "./use-more";
 import { useSidebarCollapsed } from "./use-sidebar";
 
 const focusRing =
@@ -247,19 +244,9 @@ function SearchRow() {
 
 // ----- nav ------------------------------------------------------------------
 
-// The count of things waiting for you, in the one warm colour; on the rail a
-// dot. A project row shows only the dot (`dot`): Sessions carries the one
-// number, so the sidebar doesn't read as a column of badges.
-function Waiting({ n, className, dot }: { n: number; className?: string; dot?: boolean }) {
+// The count of things waiting for you, in the one warm colour; on the rail a dot.
+function Waiting({ n, className }: { n: number; className?: string }) {
   if (!n) return null;
-  if (dot)
-    return (
-      <span
-        className={cn("size-2 shrink-0 rounded-full bg-you collapsed:absolute collapsed:top-1.5 collapsed:right-1.5 collapsed:size-1.5", className)}
-        aria-label={n + " waiting"}
-        role="img"
-      />
-    );
   return (
     <>
       <span
@@ -335,11 +322,8 @@ function NavLink({
   );
 }
 
-// The sidebar keeps to what a new owner needs: Sessions and Tasks, then the
-// projects (rendered live from the org, passed in as `projects`), then one
-// "More" fold holding every other page (Knowledge and System). The fold
-// opens by itself on a page that lives in it, and remembers the owner's
-// choice; on the rail it is a menu.
+// The groups in the spec's order - no label, Knowledge, Projects (rendered
+// live from the org, passed in as `projects`), System.
 function NavGroups({
   pathname,
   projects,
@@ -351,105 +335,36 @@ function NavGroups({
   const total = useHardStops().rows.length;
   return (
     <>
-      <nav aria-label="Your work">
-        <ul className="grid gap-0.5">
-          {PRIMARY_ITEMS.map((n) => (
-            <li key={n.href}>
-              <NavLink
-                item={n}
-                active={n.match(pathname)}
-                count={n.icon === "sessions" ? total : undefined}
-              />
-            </li>
-          ))}
-        </ul>
-      </nav>
-      {projects}
-      <MoreNav pathname={pathname} />
-    </>
-  );
-}
-
-const MORE_ITEMS = MORE_GROUPS.flatMap((g) => g.items);
-
-function MoreNav({ pathname }: { pathname: string }) {
-  const [stored, setOpen] = useMoreOpen();
-  const here = MORE_ITEMS.some((n) => n.match(pathname));
-  const open = stored || here;
-  return (
-    <nav aria-label="More">
-      {/* Open sidebar: a fold. */}
-      <button
-        type="button"
-        aria-expanded={open}
-        aria-controls="sidebar-more"
-        onClick={() => setOpen(!open)}
-        className={cn(
-          "flex h-8 w-full items-center gap-3 rounded-md px-2.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground motion-reduce:transition-none collapsed:hidden",
-          focusRing,
-        )}
-      >
-        <MoreHorizontalIcon
-          aria-hidden
-          className="size-[18px] shrink-0"
-          strokeWidth={1.75}
-        />
-        <span className="min-w-0 flex-1 truncate text-left">More</span>
-        <ChevronDownIcon
-          aria-hidden
-          className={cn(
-            "size-4 shrink-0 transition-transform motion-reduce:transition-none",
-            open ? "rotate-0" : "-rotate-90",
-          )}
-        />
-      </button>
-      {open ? (
-        <ul id="sidebar-more" className="mt-0.5 grid gap-0.5 collapsed:hidden">
-          {MORE_ITEMS.map((n) => (
-            <li key={n.href}>
-              <NavLink item={n} active={n.match(pathname)} />
-            </li>
-          ))}
-        </ul>
-      ) : null}
-      {/* The rail: one button with every other page in a menu. */}
-      <div aria-hidden className="mx-2 mb-2 hidden border-t collapsed:block" />
-      <DropdownMenu>
-        <RailTip label="More" hint="Records, runs, machines and the rest">
-          <DropdownMenuTrigger asChild>
-            <button
-              type="button"
-              aria-label="More pages"
-              className={cn(navRow, focusRing, "hidden collapsed:flex", here && navOn)}
-            >
-              <MoreHorizontalIcon
+      {NAV_GROUPS.map((g, gi) => (
+        <Fragment key={g.label ?? "main"}>
+          {g.label === "System" ? projects : null}
+          <nav aria-label={g.label ?? "Your work"}>
+            {g.label ? (
+              <p className="mb-1 px-2.5 text-xs font-medium text-muted-foreground collapsed:sr-only">
+                {g.label}
+              </p>
+            ) : null}
+            {gi > 0 ? (
+              <div
                 aria-hidden
-                className={cn("size-[18px] shrink-0", here ? "text-link" : "")}
-                strokeWidth={1.75}
+                className="mx-2 mb-2 hidden border-t collapsed:block"
               />
-            </button>
-          </DropdownMenuTrigger>
-        </RailTip>
-        <DropdownMenuContent side="right" align="start" className="w-56 p-1.5">
-          {MORE_GROUPS.map((g, gi) => (
-            <Fragment key={g.label}>
-              {gi > 0 ? <DropdownMenuSeparator /> : null}
-              {g.items.map((n) => {
-                const Icon = NAV_ICON[n.icon];
-                return (
-                  <DropdownMenuItem key={n.href} asChild className="gap-2.5">
-                    <Link href={n.href} aria-current={n.match(pathname) ? "page" : undefined}>
-                      <Icon aria-hidden className="size-4 text-muted-foreground" />
-                      {n.label}
-                    </Link>
-                  </DropdownMenuItem>
-                );
-              })}
-            </Fragment>
-          ))}
-        </DropdownMenuContent>
-      </DropdownMenu>
-    </nav>
+            ) : null}
+            <ul className="grid gap-0.5">
+              {g.items.map((n) => (
+                <li key={n.href}>
+                  <NavLink
+                    item={n}
+                    active={n.match(pathname)}
+                    count={n.icon === "sessions" ? total : undefined}
+                  />
+                </li>
+              ))}
+            </ul>
+          </nav>
+        </Fragment>
+      ))}
+    </>
   );
 }
 
@@ -495,7 +410,7 @@ function ProjectRow({
             <span className="min-w-0 flex-1 truncate collapsed:sr-only">
               {name}
             </span>
-            {waiting ? <Waiting n={waiting} dot /> : null}
+            {waiting ? <Waiting n={waiting} /> : null}
           </Link>
         </RailTip>
         <DropdownMenu>
@@ -614,7 +529,7 @@ function SidebarProjects({ onAdd }: { onAdd: () => void }) {
                   Shared board
                 </span>
                 {commons.questions_open ? (
-                  <Waiting n={commons.questions_open} dot />
+                  <Waiting n={commons.questions_open} />
                 ) : null}
               </Link>
             </RailTip>
@@ -645,14 +560,7 @@ function Sidebar({ pathname }: { pathname: string }) {
   const [adding, setAdding] = useState(false);
   const settingsActive = pathname.startsWith("/settings");
   const onAdd = useCallback(() => setAdding(true), []);
-  const sp = useSearchParams();
-  const slug = sp.get("slug") || "";
-  // The Sessions landing carries its own broken-strip with the fix buttons;
-  // the sidebar's line would only say it twice there.
-  const landing =
-    (pathname === "/chat" || pathname === "/chat/" || pathname === "/") &&
-    !sp.get("id") &&
-    !sp.get("task");
+  const slug = useSearchParams().get("slug") || "";
   const navBox = useRef<HTMLDivElement>(null);
   // On a short window the list scrolls; keep the page you are on in sight,
   // so Automations or Insights don't open with their own item below the
@@ -715,7 +623,7 @@ function Sidebar({ pathname }: { pathname: string }) {
         />
       </div>
       <div className="grid shrink-0 gap-2 border-t border-sidebar-border px-3 pt-3 pb-2.5 collapsed:justify-items-center collapsed:px-2">
-        {landing ? null : <SystemStatus problemsOnly />}
+        <SystemStatus />
         <OwnerRow active={settingsActive} />
       </div>
       <AddProjectDialog open={adding} onOpenChange={setAdding} />

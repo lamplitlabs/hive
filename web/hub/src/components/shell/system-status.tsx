@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { ChevronRightIcon, CpuIcon, TriangleAlertIcon } from "lucide-react";
+import { ChevronRightIcon, CpuIcon } from "lucide-react";
 import { daemonControlState, daemonHeadline } from "@/components/hive/daemon-control-state";
 import { BrandLogo, logoFor } from "@/components/hive/logo";
 import type { HarnessStatus, Runner, ServicePayload, SettingsPayload } from "@/lib/api";
@@ -99,35 +99,8 @@ function StatusGlyph({ line }: { line: StatusLine }) {
   );
 }
 
-// `problemsOnly` (the sidebar) draws only the lines that need a fix, and
-// nothing at all while the runner and the provider are fine; two problems
-// fold into one line that leads to Sessions, where each has its fix button.
-// The phone's More sheet shows both lines always.
-export function SystemStatus({ className, problemsOnly }: { className?: string; problemsOnly?: boolean }) {
-  const all = useSystemStatus();
-  const lines = problemsOnly ? all.filter((l) => l.tone === "warn" || l.tone === "bad") : all;
-  if (!lines.length) return null;
-  if (problemsOnly && lines.length > 1) {
-    const words = lines.length + " things need a fix";
-    return (
-      <RailTip label={words} hint={lines.map((l) => l.label + ": " + l.sub).join(" · ")}>
-        <Link
-          href="/chat/"
-          title={lines.map((l) => l.label + ": " + l.sub).join("\n")}
-          className={cn("group flex min-w-0 items-center gap-2.5 rounded-lg border border-warn/30 bg-warn/10 px-2 py-1.5 transition-colors hover:bg-warn/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring collapsed:justify-center collapsed:border-0 collapsed:bg-transparent collapsed:px-0", className)}
-        >
-          <span aria-hidden className="relative inline-flex size-7 shrink-0 items-center justify-center rounded-md bg-card text-warn">
-            <TriangleAlertIcon className="size-4" strokeWidth={1.75} />
-          </span>
-          <span className="min-w-0 flex-1 collapsed:sr-only">
-            <span className="block truncate text-[13px] font-medium leading-tight text-foreground">{words}</span>{" "}
-            <span className="block truncate text-xs leading-tight text-muted-foreground">{lines.map((l) => l.label).join(", ")}</span>
-          </span>
-          <ChevronRightIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground collapsed:hidden" />
-        </Link>
-      </RailTip>
-    );
-  }
+export function SystemStatus({ className }: { className?: string }) {
+  const lines = useSystemStatus();
   return (
     <div className={cn("grid gap-0.5 rounded-lg border bg-card p-1 collapsed:border-0 collapsed:bg-transparent collapsed:p-0", className)}>
       {lines.map((l) => (

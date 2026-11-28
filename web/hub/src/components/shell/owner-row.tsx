@@ -15,12 +15,13 @@ import { invalidate, useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 import { RailTip } from "./rail-tip";
 import { AwakeStatus } from "./awake";
+import { ThemeToggle } from "./theme-toggle";
 import { SETTINGS_ITEM } from "./nav-items";
 
 // The foot of the sidebar (spec "App shell" - Owner row): your avatar and
-// name, then Settings and the keep-awake cup (only while it is on). Here /
-// Away and the theme live in Settings and on the phone's More sheet, so the
-// sidebar stays quiet. On the rail the pieces stack. The avatar keeps its room when the row is full: the name
+// name, a Here / Away switch (owner.presence - it replaces Home's away
+// banner), then Settings, the keep-awake cup and the theme. On the rail the
+// pieces stack. The avatar keeps its room when the row is full: the name
 // folds away first (a container query on the link), never under the switch.
 
 const PRESENCE_PATHS = ["org", "settings", "events", "inbox"];
@@ -75,6 +76,7 @@ export function OwnerRow({ active }: { active: boolean }) {
           <span className="min-w-0 truncate @max-[4rem]/owner:sr-only collapsed:sr-only">{name}</span>
         </Link>
       </RailTip>
+      <PresenceSwitch className="mr-1 collapsed:hidden" />
       <RailTip label={SETTINGS_ITEM.label} hint={SETTINGS_ITEM.hint}>
         <Button asChild variant="ghost" size="icon-sm" className={cn("text-muted-foreground hover:text-foreground", active && "bg-accent text-link")}>
           <Link href={SETTINGS_ITEM.href} aria-label="Settings" aria-current={active ? "page" : undefined}>
@@ -84,6 +86,7 @@ export function OwnerRow({ active }: { active: boolean }) {
       </RailTip>
       {/* The keep-awake cup: only while the setting is on (steaming while held). */}
       <AwakeStatus />
+      <ThemeToggle />
     </div>
   );
 }

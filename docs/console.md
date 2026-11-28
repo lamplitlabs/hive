@@ -8,15 +8,10 @@ front you run yourself, with passkey-signed writes (see
 such as `/tasks`, redirect to their exported path (`/tasks/`) without
 losing query parameters.
 
-The console opens on **Sessions**: `/` forwards there. The sidebar keeps to
-what a new owner needs: **Sessions** and **Tasks**, then your projects, then
-one **More** fold that holds every other page - **Records**, **Reports**,
-**Votes**, **Memory**, **Runs**, **Machines**, **Connections**,
-**Automations** and **Insights** (on the phone they sit under **More** in
-the bottom bar). The fold opens by itself on a page that lives in it and
-remembers whether you left it open. **Settings** is the gear in the owner's
-row at the foot, and above it a line shows only when something needs a fix
-(the runner is off, the provider's sign-in expired). Three
+The console opens on **Sessions**: `/` forwards there. The sidebar lists the
+pages: **Sessions** and **Tasks**; under **Knowledge**, **Records**, **Reports**, **Votes** and
+**Memory**; under **System**, **Runs**, **Machines**, **Connections**,
+**Automations** and **Insights**; and **Settings** in the owner's row. Three
 of them have no section of their own below. **Memory** shows the files that
 hold what agents remember across runs ([Memory](harness.md#memory)).
 **Connections** holds the tools and skills agents can use
@@ -75,14 +70,9 @@ Everything else happens in the console. On a new machine Sessions shows the card
    the runner without installing anything.
 
 The card goes away once a provider is signed in and a project is added.
-Until a provider is signed in (or while its sign-in has expired), the
-new-session box keeps **Start** off and says why under it, pointing at
-the step that fixes it, rather than letting a session start that no agent
-can work on.
 After that Sessions shows a notice with the same step behind its button:
 **Start runner** while no runner runs, **Keep Hive running** while one runs
-in a terminal only. The sidebar's foot shows a line while the runner is
-off or the provider needs a sign-in. This
+in a terminal only. The sidebar's foot shows the runner's state. This
 machine's card on the **Machines** page has **Pause** and, after a pause,
 **Start**, and the runner's settings are under **Settings → This machine**.
 The runner's controls are at the top of that section: **Keep Hive running**,
@@ -101,20 +91,16 @@ The console speaks plainly - the runner, not the daemon; machines, not
 executors; private tests, not held-out fixtures - and keeps ids, commands and
 the store's own terms in tooltips and folded **Technical details**.
 
-Sessions greets you (**Welcome back**, or **Welcome to Hive** on a new
-machine) and leads with the box that starts a session. Around it, only what
-needs a person now, and nothing when nothing does:
+Above the session list, Sessions shows only what needs a person now, and
+nothing when nothing does:
 
-- **The broken strip**, over the box: one line for each thing that stops
-  work - the runner is off, paused or not responding, or no model provider
-  is signed in (a sign-in that expired, a login that was never made) - each
-  with the button that fixes it (**Start runner**, **Sign in**).
-- **Set up Hive**, over the box on a new machine only: the three-step card
-  of [Starting the console](#starting-the-console), one step at a time (the
-  next step's button is the dark one).
-- **Decisions only you can make**, under the box, folded to one line with
-  its count and **Review**, which unfolds the list (a notification's link
-  and `/chat/#hard-stops` open it unfolded): the asks at a hard stop - money, what
+- **The broken strip**: one line for each thing that stops work - the runner
+  is off, paused or not responding, or no model provider is signed in (a
+  sign-in that expired, a login that was never made) - each with the button
+  that fixes it (**Start runner**, **Sign in**).
+- **Set up Hive**, on a new machine only: the three-step card of
+  [Starting the console](#starting-the-console).
+- **Decisions only you can make**: the asks at a hard stop - money, what
   cannot be undone, credentials and publication - across projects, each with
   its buttons (**Approve**/**Deny** for a compute request, **Accept** and
   **Decline** for a decision record or a proposal, one button per answer for
@@ -128,23 +114,12 @@ needs a person now, and nothing when nothing does:
   Everything else that once waited on For you is the project lead's to
   decide, and it is listed on the project's **For you** tab.
 
-Under the box Sessions lists the sessions and tasks themselves, in three
-plain sections: **Needs you** (the decisions line above, then each session
-that asked you or stopped, and each pull request the reviewer handed to you,
-with its **Merge** button), **Your sessions** (what works or is open) and
-**Done** (folded; **Show archived** inside it). Each row is the state, the
-title, one line of where it runs and what it holds (*2 steps with the
-team*, *1 sub-session*, *PR #12*), its word as a chip and when it moved. A
-task's steps and a session's sub-sessions show inside it, not in the list.
-
-An open session or task takes the whole page: no list beside it (**All
-sessions** goes back), the transcript at a reading width, and a quiet header
-- the title, its state and project, **Show work** and a **⋯** menu with the
-rest. **Runs** lists the agents at work across projects.
+**Working now** sits under the new-session form: the agents at work, six at
+most, each with its task and project; **See all runs** opens **Runs**.
 
 Where the rest of the old Home and For you went: the greeting and its
 **New task** / **New session** buttons are the sidebar's **New**; **Needs you**
-and the For you page's filters became the decisions line (hard stops only) and
+and the For you page's filters became the strip above (hard stops only) and
 each project's **For you** tab (everything else); **Projects** is the sidebar's
 project list with its waiting counts; **This week**'s numbers are on
 **Insights**; the *Runs on a generated goal* nudge is the **Goal** panel on
@@ -466,38 +441,44 @@ fresh session with the transcript carried over; the **Effort** picker beside it
 (also on the start form) asks the model for a reasoning effort - `minimal` to
 `xhigh`, *Model default* to send nothing - and leaves the `harness.reasoning`
 setting in charge when you leave it, with the same next-turn restart; **Auto**
-and **Lockdown** sit with them under the message box's **Options**, which
-counts the ones changed from the defaults, and **Stop** stays beside the box
-while a turn runs.
+and **Stop** sit beside them.
 
 A session has an end: the agent calls its `finish` tool with a one-line
 summary when the request is done (the brief tells it to, and to give its
-closing reply after), or you press **Finish** in the **⋯** menu (which stops a running turn), and
+closing reply after), or you press **Finish** (which stops a running turn), and
 the session is marked *Finished* with the summary as its note; your next
 message reopens it, so nothing is lost.
 
-The list on the Sessions landing is one list of sessions and tasks in
-three sections, ordered by what moved last. **Needs you**: a pull request
-the reviewer handed to you (with its reasons and the **Merge** button), a
-session that asked you, needs a yes or was stopped by a restart, and a task
-whose lead stopped for you - counted in the tab title. **Your sessions**:
-what is running, open between turns, or on its way through a pull request
-(a task's once its jobs are done, a session's once its `hive/chat-<id>`
-branch holds commits the default branch lacks - before the pull request is
-opened, while it is open or being reviewed, while changes are made and
-while a merge you asked for runs). **Done**: finished, folded until opened,
-five shown and *Show N more* for the rest, with **Show archived** (put away
-is your word, so an archived session stays there whatever its branch
-holds). Each row's chip says where it stands in the same words everywhere:
-*Working*, *Asked you*, *Needs a yes*, *Idle*, *Opening a pull request*,
-*Waiting for review*, *Being reviewed*, *Needs your review*, *Changes
-requested*, *Merging*, *Approved, merging soon*, *Review failed*, *Merge
-conflict* (the work does not merge cleanly and only you can move it),
-*Starting*, *Planned*, *Finished*, *Done*, *Cancelled*. A task the project's team works on is a row
-like any session, its line saying how many steps the lead cut (*2 steps
-with the team*); the steps themselves - the agent on each, its state and
-when it last moved - are on the task's **Steps** tab, and a session's
-sub-sessions on its **Sub-sessions** tab.
+The list is one list, grouped by state - **Needs your review** (a pull request
+the reviewer handed to you, with its reasons and the **Merge** button; these
+stay at the very top), **Working** (running or waiting on you), **In review**
+(nobody at it, and its work is on its way through a pull request: a task's
+once its jobs are done, a session's once its `hive/chat-<id>` branch
+holds commits the default branch lacks - before the pull request is opened,
+while it is open or being reviewed, while changes are made and while a merge
+you asked for runs; the row moves to *Finished* or *Open* the moment the pull
+request is merged or closed), **Open** (idle
+between turns), **Finished** (the latest eight, *Show all* for the rest) and
+**Archived** when shown (put away is your word, so an archived session
+stays there whatever its branch holds) - so the ones that need you stay on
+top, ordered by what moved last. *Waiting to land* and *Reviewing* were the
+groups of the local landing; nothing waits to land now. A task the project's
+team works on is a row like any session - its title, a team mark after
+it, its state in the list's words (*Working* while a step's agent runs, *Asked you* when the lead
+stopped for you - counted in the tab title with the sessions that
+wait - *Waiting for its pull request* once its steps are done, then the
+pull request's own word: *Pull request open*, *In review*, *Needs your
+review* when the reviewer handed it to you, *Changes requested*, *Merging*,
+*Approved, merge waits* followed by the one line it waits for, *Review
+failed* - *Planned*, *Done*, *Cancelled*) - with
+the steps the lead cut as lines under it the way sub-sessions sit under
+their parent: the agent on each (a dashed circle until one takes it), its
+state (*Waiting*, *Starting*, *Working*; a done step whose branch is not
+merged yet reads where the task's pull request stands - *Waiting for its pull
+request*, *Pull request open*, *In review*, *Needs your review*, *Changes
+requested*, *Merging*, *Review failed*; then *Done*, *Failed*, *Blocked*) and
+when it last moved; a finished task folds its steps
+(*N steps · show*).
 
 A session's title follows the session: it starts as the first line
 you wrote, and after each reply the agent asks its model for a short name of
@@ -507,16 +488,15 @@ leaves it alone from then on.
 
 Opening a task, or a step without an agent yet, opens the task in place the way
 a session opens (`?task=TASK-NNN` in the address, so a link lands on it):
-a header with its state and project, **Show work**, and a **⋯** menu holding
-the lead agent, the step count and the task id, **Edit the task**, **Finish**
-and **Cancel the task**; under it the task's whole feed as the
+a header with its state, project and lead, **Finish** and **Cancel** beside it
+(the title opens the brief for editing); under it the task's whole feed as the
 session (see **Tasks** above) - what you asked on the right, the lead's
 replies on the left with any choices it offers as buttons, a step agent's
 report back framed with where its work stands, and each run as a live chapter
 under the agent doing it, its commands and words arriving as it works - and a
 box to answer or steer, which the lead reads on its next turn (a finished task
-says so and takes no more); the canvas, behind **Show work** (the same one a
-session has), opens with the **Steps** - who is on each, how far they are,
+says so and takes no more); the canvas beside it (below, the same one a
+session has) opens with the **Steps** - who is on each, how far they are,
 the one whose run is on the canvas marked - and **What you asked** with the
 task's history and facts, and while a step's agent works, that run's plan,
 terminal, the files it edits and the pages it reads open there by themselves,
@@ -912,15 +892,6 @@ is away](recovery.md#when-the-owner-is-away)). Secret-shaped values are stored b
 never echoed; the held-out evaluator directory is owner-private and is masked
 in every agent-facing view and event.
 
-The page shows one section at a time. The section list starts with the
-four a new owner needs - **General**, **Appearance**, **Harness** and
-**Secrets** - and folds the rest (**Limits**, **Machines**, **Git**,
-**Self-improvement**, **This machine**, **Provider addresses**, **Other**)
-under **Advanced** until you open it, search, or follow a link to one of
-them (`/settings/#daemon`). **Show setting keys**, which prints each
-setting's raw key, appears with Advanced. On **General**, **Pause all work**
-sits at the foot of the page, and moves to the top while work is paused.
-
 ### Reaching the console from anywhere
 
 The console listens on 127.0.0.1 and nowhere else; `hive hub --host`
@@ -1220,7 +1191,7 @@ would answer and whether the provider is signed in.
 
 ## Agents
 
-The console has no Agents page. **Runs** lists the agents at
+The console has no Agents page. **Working now** on Sessions lists the agents at
 work, a project's **Team & tools** tab shows its lead agents, and **Runs**
 lists every run with the agent that made it. The roster itself is in a
 terminal: `hive agents` lists each agent with its presence, its last

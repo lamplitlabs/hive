@@ -10,7 +10,7 @@
 
 import Link from "next/link";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { BotIcon, CheckIcon, ChevronDownIcon, ChevronRightIcon, CornerDownRightIcon, FilePenIcon, FilePlusIcon, ListChecksIcon, MessageSquareIcon, PlugIcon, RadioIcon, TerminalIcon, TriangleAlertIcon, WrenchIcon, XIcon } from "lucide-react";
+import { BotIcon, CheckIcon, ChevronDownIcon, ChevronRightIcon, CornerDownRightIcon, FilePenIcon, FilePlusIcon, ListChecksIcon, MessageSquareIcon, PlugIcon, RadioIcon, TerminalIcon, TriangleAlertIcon, XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { DeliveryLine, reportWhere } from "@/components/chat/chat-pane";
@@ -141,14 +141,21 @@ export function TaskActivityPane({ task, chat, footer, className, jumpOn }: { ta
   const closed = task.status === "done" || task.status === "cancelled";
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
-      {/* A bar only while an agent is at it: a feed that explains itself
-          when nothing happens is one more thing to read. */}
-      {data.running ? (
-        <div className="flex items-center gap-2 border-b px-5 py-2 text-[13px] text-foreground">
-          <RadioIcon className="size-3.5 text-primary" aria-hidden />
-          An agent is working on this right now.
-        </div>
-      ) : null}
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b px-5 py-2.5 text-[13px] text-muted-foreground">
+        <span className="inline-flex items-center gap-2">
+          {data.running ? (
+            <>
+              <RadioIcon className="size-3.5 text-primary" aria-hidden />
+              <span className="text-foreground">Live: an agent is working on this task right now.</span>
+            </>
+          ) : closed ? (
+            <span>Everything that happened on this task, in order.</span>
+          ) : (
+            <span>What has happened so far. New steps show up here as agents work.</span>
+          )}
+        </span>
+        <span className="tnum">{plural(data.total, "line")}</span>
+      </div>
       <div
         ref={list}
         onScroll={(e) => {
@@ -396,17 +403,14 @@ function RunChapter({ block, expanded, task }: { block: Extract<ActivityBlock, {
       </header>
       {show ? (
         <ol className="grid gap-2 border-t px-3 py-3">
-          {chapterGroups(items).map((g, gi, all) =>
-            Array.isArray(g) ? (
-              <li key={g[0].id} className="min-w-0">
-                <StepFold items={g} open={live && gi === all.length - 1} />
+          {items.map((i) => {
+            if (i.kind === "run") return null;
+            return (
+              <li key={i.id} className="min-w-0">
+                <StepLine item={i} inChapter />
               </li>
-            ) : (
-              <li key={g.id} className="min-w-0">
-                <StepLine item={g} inChapter />
-              </li>
-            ),
-          )}
+            );
+          })}
           {live ? (
             // The list's item stays an item; the live words inside it are the status.
             <li className="px-1 text-xs text-primary">
@@ -432,78 +436,14 @@ function RunChapter({ block, expanded, task }: { block: Extract<ActivityBlock, {
   );
 }
 
-// A chapter's lines with the agent's words (and its plan and errors) kept
-// in view and each run of tool steps between them gathered into one fold:
-// a finished stretch reads as what the agent said, its work one click away.
-// A lone tool step stays a line of its own.
-type ChapterGroup = ActivityItem | ActivityItem[];
-const KEEP_IN_VIEW = new Set(["assistant", "plan", "error", "exit"]);
-
-function chapterGroups(items: ActivityItem[]): ChapterGroup[] {
-  const out: ChapterGroup[] = [];
-  for (const i of items) {
-    if (i.kind === "run") continue;
-    if (i.kind === "step" && KEEP_IN_VIEW.has(i.what)) {
-      out.push(i);
-      continue;
-    }
-    const last = out[out.length - 1];
-    if (Array.isArray(last)) last.push(i);
-    else out.push([i]);
-  }
-  return out.map((g) => (Array.isArray(g) && g.length === 1 ? g[0] : g));
-}
-
-// "2 commands, 1 edit, 3 more" for a fold's line, and whether a command in
-// it failed (said in red on the line, so a failure is never hidden).
-function foldWords(items: ActivityItem[]): { words: string; failed: number } {
-  let commands = 0;
-  let edits = 0;
-  let more = 0;
-  let failed = 0;
-  for (const i of items) {
-    if (i.kind === "quiet") more += i.count || 1;
-    else if (i.what === "command") {
-      commands++;
-      if (i.exit_code) failed++;
-    } else if (i.what === "edit" || i.what === "write") edits++;
-    else more++;
-  }
-  const parts = [commands ? plural(commands, "command") : "", edits ? plural(edits, "edit") : "", more ? (commands || edits ? more + " more" : plural(more, "step")) : ""].filter(Boolean);
-  return { words: parts.join(", "), failed };
-}
-
-function StepFold({ items, open }: { items: ActivityItem[]; open: boolean }) {
-  const { words, failed } = foldWords(items);
-  return (
-    <details className="group/fold min-w-0" open={open || undefined}>
-      <summary className="flex w-fit max-w-full cursor-pointer list-none items-center gap-2 rounded-full border border-border/70 bg-muted/40 px-3 py-1 text-[13px] text-muted-foreground select-none hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
-        <WrenchIcon className="size-3.5 shrink-0" aria-hidden />
-        <span className="min-w-0 truncate">Worked · {words}</span>
-        {failed ? <span className="shrink-0 font-medium text-bad">{plural(failed, "failed command")}</span> : null}
-        <ChevronRightIcon className="size-3.5 shrink-0 transition-transform duration-150 group-open/fold:rotate-90 motion-reduce:transition-none" aria-hidden />
-      </summary>
-      <ol className="mt-2 grid gap-2 border-l border-border/70 pl-2">
-        {items.map((i) => (
-          <li key={i.id} className="min-w-0">
-            <StepLine item={i} inChapter />
-          </li>
-        ))}
-      </ol>
-    </details>
-  );
-}
-
 // A harness step as the feed shows it: the agent's words as a bubble, a
 // command or file as one compact line with its outcome, a quiet stretch as
 // a muted count.
 function StepLine({ item, inChapter }: { item: ActivityItem; inChapter?: boolean }) {
   if (item.kind === "quiet") {
-    // The hub names a quiet stretch by its raw step kinds ("hook", "note
-    // ×2"); the feed says how many, and keeps the kinds for the tooltip.
     return (
-      <p className="px-1 text-xs text-muted-foreground" title={(item.title ? item.title + ": " : "") + "reads, searches, notes and checks the feed folds"}>
-        {plural(item.count || 1, "small step")}
+      <p className="px-1 text-xs text-muted-foreground" title={plural(item.count || 0, "step") + " the feed folds: reads, searches and notes"}>
+        {item.title}
       </p>
     );
   }

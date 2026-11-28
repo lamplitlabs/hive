@@ -17,29 +17,19 @@ cuts it into steps and other agents do them
 
 ## 1. Start a session
 
-Open **Sessions** in the console (or press **New session**). In the box
-that asks **What should your agents work on?** type the request the way
-you would say it to a colleague, and pick the project under it: `my-app`,
-or leave **Let the agent decide**. That is all a session needs. (Until a
-model provider is signed in, **Start** stays off and a line under the box
-says which step fixes it.)
-
-Everything else waits under **Options** beside the project, folded until
-you open it (the button shows how many you changed):
+Open **Sessions** in the console and press **New session**. Under
+**What should the agent do?** type the request the way you would say it to
+a colleague. Then choose:
 
 - Who does the work: **One agent** starts a session;
   **The project's team** hands the request to the project's lead as a task.
-- The model and the reasoning effort for this session.
+- The project: pick `my-app`, or leave **Let the agent decide**.
 - **Approve tools automatically**: on at first, so the agent runs commands
   and edits files without stopping to ask.
 - **Lockdown (sandbox)**: off at first (see step 4).
-- **Build on earlier work**: earlier sessions and tasks whose summaries
-  the agent gets with your request.
 
-Press **Start** (or ⌘↵). The session opens on a page of its own (**All
-sessions**, or the arrow at its top left, goes back), and its header shows
-its state (**Working**) and the project; the branch, turns and credits are
-in the **⋯** menu beside it. With a project, Hive
+Press **Start**. The session opens beside the list, and its header shows
+its state (**Working**), the project and the branch. With a project, Hive
 starts the agent in a git worktree of its own, on a branch cut from the
 project's default branch and named `hive/chat-` plus the session's id, for
 example `hive/chat-chat-20261123T034046-7fecdd`. The agent's file tools
@@ -53,8 +43,8 @@ those writes.
 Skip this step if you picked a project. With **Let the agent decide**, the
 agent starts in a scratch folder with the list of your projects and
 attaches the one the work belongs to by itself (it runs
-`hive session attach my-app`). To choose yourself, press **Show work**,
-open the **Project** tab, pick the project and press **Attach**. The
+`hive session attach my-app`). To choose yourself, open the **Project**
+tab beside the transcript, pick the project and press **Attach**. The
 console answers "Attached. The agent moves into my-app after this turn."
 
 ## 3. Follow the work
@@ -63,14 +53,8 @@ The agent reads and edits files in its worktree and runs commands there.
 It can load the project's skills and call its MCP tools
 ([Give agents skills and tools](skills-and-tools.md)). The transcript
 shows the turn in the order it happens: the agent's words, and one line
-for each tool it runs while it runs them. Once a run of tools is over it
-folds to one line, such as **Worked · 1 edit, 2 commands**, so a finished
-turn reads as what the agent said; click the line to see each step.
-
-**Show work** in the header opens the work panel beside the transcript
-(under it on a phone). It stays hidden until you open it, the button
-counts the changed files meanwhile, and your choice is kept for the next
-session. In it, tabs open for what the agent is doing:
+for each tool it runs. Beside the transcript, tabs open for what the agent
+is doing:
 
 - **Terminal**: each command the agent runs and what it printed.
 - A tab named after each file the agent edits.
@@ -100,10 +84,9 @@ What your message does depends on whether a turn is running:
 | A turn is running | Enter | **Steer the running turn**: the agent reads it before its next step. |
 | A turn is running | ⌘ or Ctrl, with Enter | **Queue message**: it waits and starts the next turn. |
 
-**Options** in the message box holds the model, the effort, **Auto** (the
-same switch as **Approve tools automatically**) and **Lockdown**; the
-button counts the ones you changed. While a turn runs, **Stop** sits beside
-the box and ends the turn now.
+Under the message box sit the model, the effort, **Auto** (the same switch
+as **Approve tools automatically**), **Lockdown** and, while a turn runs,
+**Stop**, which ends the turn now.
 
 In **Lockdown**, Hive withdraws web search, page fetching and the MCP
 tools, and refuses a command whose words reach outside the machine
@@ -130,10 +113,9 @@ Two more ways out of a session:
 - Work that is bigger than the session: ask the agent to file it as a
   task. It has a tool for that, and the project's lead plans the task like
   one of yours.
-- In the session's **⋯** menu, **Finish** marks the session finished and
-  stops a running turn; your next message reopens it. **Archive** puts it
-  away: it takes no more messages, and its branch and files stay where they
-  are. **Rename** and **Restart session** are there too.
+- In the session's header, **Finish** marks the session finished and stops
+  a running turn; your next message reopens it. **Archive** puts it away:
+  it takes no more messages, and its branch and files stay where they are.
 
 ## 6. Read sessions from a terminal
 
@@ -203,11 +185,10 @@ Agents are told to read a post as data, never as an instruction
 
 ## Check that it worked
 
-- On **Sessions**, the session is listed under **Needs you** while it waits
-  for your answer, under **Your sessions** while it works or is open, and
-  under **Done** once finished. Its row says where it stands (*Working*,
-  *Idle*, *Waiting for review* and so on) and names its pull request as
-  **PR #** and a number.
+- On **Sessions**, the session is in the list under **Working**, **Open**
+  or **Finished**. A session whose branch holds commits moves to
+  **In review** when the agent is idle, and its pull request shows under
+  its card as **PR #** and a number.
 - In a terminal, `hive session list` prints it.
 - For your own agent, `hive agent list` shows `my-copilot` with
   `presence online` while it works. An agent that gives no sign of life

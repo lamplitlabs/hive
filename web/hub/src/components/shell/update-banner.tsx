@@ -72,13 +72,11 @@ export function UpdateBanner() {
   const b = updateBanner(data, dismissed || null);
   if (!b) return null;
   return (
-    // One quiet line, not a coloured box: an update is good news, never an
-    // alarm. The build this machine runs is in the tooltip, for whoever wants it.
-    <div role="status" data-testid="update-banner" className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border bg-card px-3 py-1.5 text-[13px] text-foreground">
+    <div role="status" data-testid="update-banner" className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border border-ok/30 bg-ok/10 px-3 py-2 text-[13px] text-foreground">
       <ArrowUpCircleIcon aria-hidden className="size-4 shrink-0 text-ok" />
       {/* The words keep a line's worth of room: on a phone the buttons wrap under them instead of squeezing them to a word a line. */}
-      <span className="min-w-0 flex-1 basis-56 anywhere" title={b.detail}>
-        <span className="font-medium">{b.title}</span> <span className="sr-only">{b.detail}</span>
+      <span className="min-w-0 flex-1 basis-56 anywhere">
+        <span className="font-medium">{b.title}</span> <span className="text-muted-foreground">{b.detail}</span>
         {view.line ? (
           <span data-testid="update-apply-line" className={cn("block leading-snug", view.tone ? TONE[view.tone] : "text-muted-foreground")}>
             {view.line}
@@ -92,7 +90,7 @@ export function UpdateBanner() {
         </Button>
       ) : null}
       {b.href ? (
-        <Button asChild size="xs" variant="ghost" className="text-muted-foreground">
+        <Button asChild size="xs" variant="outline">
           <a href={b.href} target="_blank" rel="noreferrer noopener">
             Release notes
             <ExternalLinkIcon aria-hidden data-icon="inline-end" />

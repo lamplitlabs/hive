@@ -479,7 +479,7 @@ failed twice` and the note *Two review jobs of pull request #n ended without
 a verdict; the pull request waits for you.*; no further review job is queued
 for that head until the pull request is pushed anew. The hub reads *The
 review of PR #n failed: <error>* with the Merge button after the first
-failure and *Being reviewed* again while the second job runs.
+failure and *In review* again while the second job runs.
 
 A `gh` call that fails inside a verdict command - the merge, the review that
 requests changes, the comment that hands over - is `review.failed` with the
@@ -552,7 +552,7 @@ reviewer's merge waits (the task's sheet and the pull request's row show
 retry.
 
 What is waited for is one line: the Sessions page shows it on the pull
-request's row (*Approved, merging soon · The merge waits for the checks still
+request's row (*Approved, merge waits · The merge waits for the checks still
 running (ci/build)* or *· GitHub refused the merge (HTTP 502: Bad Gateway);
 retried at <time> (attempt 2)*), a task's sheet reads *Approved: PR #n — …*,
 and the daemon log prints `review <slug>: #n approved; …` once when the wait

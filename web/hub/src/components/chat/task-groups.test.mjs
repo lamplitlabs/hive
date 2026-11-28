@@ -12,7 +12,7 @@ test("a task's word puts the owner's turn first, then what the agents do", () =>
   assert.equal(taskMood(task({ sessions: [session({ job_status: "leased" })] })).word, "Working");
   assert.equal(taskMood(task({ sessions: [session({ job_status: "done", status: "ended" })] })).word, "In progress");
   assert.equal(taskMood(task({ status: "open", lead: "" })).word, "New");
-  assert.equal(taskMood(task({ status: "open" })).word, "Starting");
+  assert.equal(taskMood(task({ status: "open" })).word, "Lead agent starting");
   assert.equal(taskMood(task({ status: "planned" })).word, "Planned");
   assert.equal(taskMood(task({ status: "done", sessions: [session({ status: "running" })] })).word, "Done");
   assert.equal(taskMood(task({ status: "cancelled" })).word, "Cancelled");
@@ -60,17 +60,17 @@ test("work done without a pull request yet waits for one: a step by its branch, 
   assert.equal(jobWaitingForPr("failed", "hive/iris/job-1"), false);
   assert.equal(jobWaitingForPr("leased", "hive/iris/job-1"), false);
   const waiting = session({ job_status: "done", status: "ended", branch: "hive/iris/job-1" });
-  assert.deepEqual(sessionWords(waiting), { word: "Opening a pull request", tone: "neutral" });
-  assert.deepEqual(stepWords("done", false, "hive/iris/job-1"), { word: "Opening a pull request", tone: "neutral" });
+  assert.deepEqual(sessionWords(waiting), { word: "Waiting for its pull request", tone: "neutral" });
+  assert.deepEqual(stepWords("done", false, "hive/iris/job-1"), { word: "Waiting for its pull request", tone: "neutral" });
   assert.deepEqual(stepWords("done", true, "hive/iris/job-1"), { word: "Working", tone: "run" }, "a session at it outranks the branch");
   assert.deepEqual(stepWords("done", false, ""), { word: "Done", tone: "ok" });
   // The task: the section sits between working and open; a step waiting for
   // the pull request outranks Done (the task is not on main yet) but not an
   // agent at another step, nor the owner's turn.
   assert.deepEqual(GROUP_ORDER, ["needs_review", "working", "review", "open", "finished", "archived"]);
-  assert.equal(taskMood(task({ sessions: [waiting] })).word, "Opening a pull request");
+  assert.equal(taskMood(task({ sessions: [waiting] })).word, "Waiting for its pull request");
   assert.equal(taskGroup(task({ sessions: [waiting] })), "review");
-  assert.equal(taskMood(task({ status: "done", sessions: [waiting] })).word, "Opening a pull request");
+  assert.equal(taskMood(task({ status: "done", sessions: [waiting] })).word, "Waiting for its pull request");
   assert.equal(taskGroup(task({ status: "done", sessions: [waiting] })), "review");
   assert.equal(taskGroup(task({ status: "cancelled", sessions: [waiting] })), "review");
   assert.equal(taskMood(task({ sessions: [waiting, session({ job_status: "leased", status: "running" })] })).word, "Working");
@@ -80,11 +80,11 @@ test("work done without a pull request yet waits for one: a step by its branch, 
   assert.equal(taskGroup(task({ status: "done", sessions: [session({ job_status: "done", branch: "" })] })), "finished");
   // The task's own page reads the same from its jobs.
   const state = (over = {}) => ({ status: "in_progress", lead: "one-lead", needs_you: false, working: false, waiting_for_pr: true, ...over });
-  assert.equal(taskMoodOf(state()).word, "Opening a pull request");
+  assert.equal(taskMoodOf(state()).word, "Waiting for its pull request");
   assert.equal(taskGroupOf(state()), "review");
-  assert.equal(taskMoodOf(state({ status: "done" })).word, "Opening a pull request");
+  assert.equal(taskMoodOf(state({ status: "done" })).word, "Waiting for its pull request");
   assert.equal(taskMoodOf(state({ working: true })).word, "Working");
-  assert.equal(taskMoodOf(state({ status: "done", working: true })).word, "Opening a pull request", "a done task's running session does not hide the step without a pull request");
+  assert.equal(taskMoodOf(state({ status: "done", working: true })).word, "Waiting for its pull request", "a done task's running session does not hide the step without a pull request");
   assert.equal(taskGroupOf(state({ status: "done", working: true })), "review");
   assert.deepEqual(taskMoodOf(state()), taskMood(task({ sessions: [waiting] })));
   // A conversation: the hub's answer puts a finished or idle one in the
@@ -115,7 +115,7 @@ test("a pull request's review state groups the entry first: the owner's two stat
   assert.equal(prMood("needs_owner").word, "Needs your review");
   assert.equal(prMood("needs_owner").tone, "wait");
   assert.equal(prMood("review_failed").word, "Review failed");
-  assert.equal(prMood("in_review").word, "Being reviewed");
+  assert.equal(prMood("in_review").word, "In review");
   assert.equal(prMood("merge_asked").word, "Merging");
   assert.equal(prMood("changes_requested").word, "Changes requested");
   assert.equal(prMood("merged"), null);
@@ -124,9 +124,9 @@ test("a pull request's review state groups the entry first: the owner's two stat
   // first; the owner's Merge comes before everything.
   const pr = (state) => ({ number: 7, url: "https://g/pr/7", state });
   const waiting = session({ job_status: "done", status: "ended", branch: "hive/iris/job-1" });
-  assert.equal(taskMood(task({ sessions: [waiting], pr: pr("pr_open") })).word, "Waiting for review");
+  assert.equal(taskMood(task({ sessions: [waiting], pr: pr("pr_open") })).word, "Pull request open");
   assert.equal(taskGroup(task({ sessions: [waiting], pr: pr("pr_open") })), "review");
-  assert.equal(taskMood(task({ status: "done", sessions: [waiting], pr: pr("in_review") })).word, "Being reviewed");
+  assert.equal(taskMood(task({ status: "done", sessions: [waiting], pr: pr("in_review") })).word, "In review");
   assert.equal(taskGroup(task({ status: "done", pr: pr("in_review") })), "review");
   assert.equal(taskMood(task({ status: "done", pr: pr("merged") })).word, "Done");
   assert.equal(taskGroup(task({ status: "done", pr: pr("merged") })), "finished");
@@ -139,9 +139,9 @@ test("a pull request's review state groups the entry first: the owner's two stat
   assert.equal(taskGroup(task({ status: "done", pr: pr("review_failed") })), "needs_review");
   assert.equal(taskMood(task({ status: "done", pr: pr("review_failed") })).word, "Review failed");
   // Its steps read the pull request's word instead of waiting for one.
-  assert.deepEqual(sessionWords(waiting, "in_review"), { word: "Being reviewed", tone: "run" });
+  assert.deepEqual(sessionWords(waiting, "in_review"), { word: "In review", tone: "run" });
   assert.deepEqual(stepWords("done", false, "hive/x", "needs_owner"), { word: "Needs your review", tone: "wait" });
-  assert.deepEqual(stepWords("done", false, "hive/x", "merged"), { word: "Opening a pull request", tone: "neutral" }, "a branch the daemon has not cleared yet");
+  assert.deepEqual(stepWords("done", false, "hive/x", "merged"), { word: "Waiting for its pull request", tone: "neutral" }, "a branch the daemon has not cleared yet");
   assert.deepEqual(stepWords("done", true, "hive/x", "needs_owner"), { word: "Working", tone: "run" });
   assert.deepEqual(stepWords("done", false, "", "needs_owner"), { word: "Done", tone: "ok" });
   // The task's own page reads the same from the delivery state.
@@ -258,7 +258,7 @@ test("a report note says what the sub-conversation did", () => {
 });
 
 test("an approved pull request whose merge waits says what it waits for, in one line", () => {
-  assert.equal(prMood("merge_waiting").word, "Approved, merging soon");
+  assert.equal(prMood("merge_waiting").word, "Approved, merge waits");
   assert.equal(prMood("merge_waiting").tone, "neutral");
   assert.equal(
     prWaitLine("merge_waiting", "approved; the merge waits for the checks still running (ci/build)"),
@@ -275,22 +275,22 @@ test("an approved pull request whose merge waits says what it waits for, in one 
 test("a pull request held for the owner is the owner's turn; one the runner retries is not", () => {
   const done = session({ job_status: "done", branch: "hive/w/job-1" });
   const conflict = task({ sessions: [done], hold: { state: "held_for_owner", note: "does not merge cleanly; this one is for you", at: "" } });
-  assert.equal(taskMood(conflict).word, "Merge conflict");
+  assert.equal(taskMood(conflict).word, "Pull request held for you");
   assert.equal(taskMood(conflict).tone, "wait");
   assert.equal(taskGroup(conflict), "needs_review");
-  assert.equal(sessionWords(done, taskPrState(conflict)).word, "Merge conflict");
+  assert.equal(sessionWords(done, taskPrState(conflict)).word, "Pull request held for you");
   assert.equal(taskOwnerTurn(conflict), true);
   // A hub that says so wins.
   assert.equal(taskOwnerTurn({ ...conflict, owner_turn: false }), false);
 
   const fault = task({ sessions: [done], hold: { state: "held", note: "gh: could not resolve host", at: "" } });
-  assert.equal(taskMood(fault).word, "Opening a pull request");
+  assert.equal(taskMood(fault).word, "Waiting for its pull request");
   assert.equal(taskGroup(fault), "review");
   assert.equal(taskOwnerTurn(fault), false);
 
   // The owner's turn outranks a step at work, as on the lifecycle view.
   const busy = task({ sessions: [done, session({ job: "job-2", job_status: "leased" })], hold: conflict.hold });
-  assert.equal(taskMood(busy).word, "Merge conflict");
+  assert.equal(taskMood(busy).word, "Pull request held for you");
   assert.equal(ownerTurn("in_progress", "held_for_owner"), true);
   assert.equal(ownerTurn("review", ""), true);
   assert.equal(ownerTurn("in_progress", "held"), false);
