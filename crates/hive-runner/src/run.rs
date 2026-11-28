@@ -6180,6 +6180,134 @@ mod tests {
         );
     }
 
+    /// A join onto a stacked base (TASK-183 item a): the base is the head of
+    /// the pull request the task stacks on, and the project's checkout holds
+    /// it only as the upstream's (`refs/remotes/origin/<base>`, as delivery
+    /// fetched it). The worker starts from the base its clone carries and
+    /// merges the job branches; the landing answers for the merges and the
+    /// job commits they bring - the base's commits are not this run's, and
+    /// are not counted or refused as if they were.
+    #[test]
+    fn a_join_onto_a_base_only_the_upstream_has_lands_its_merges() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = hive_testutil::env_lock();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let s = new_store();
+        let (_proj, root) = new_repo(&s);
+        join(&s, "aurora");
+        let git = |args: &[&str]| -> String {
+            let mut argv = vec!["git", "-c", "commit.gpgsign=false"];
+            argv.extend_from_slice(args);
+            run(&root, &argv).trim().to_string()
+        };
+        let commit_on = |branch: &str, from: &str, file: &str| -> String {
+            git(&["checkout", "-q", "-b", branch, from]);
+            std::fs::write(
+                std::path::Path::new(&root).join(file),
+                format!("{branch}\n"),
+            )
+            .unwrap();
+            git(&["add", file]);
+            git(&["commit", "-q", "-m", file]);
+            let sha = git(&["rev-parse", "HEAD"]);
+            git(&["checkout", "-q", "main"]);
+            sha
+        };
+        // The job branches were cut from main, as every job's clone is; the
+        // base (the stacked pull request's head) is not on any of them.
+        let base_name = "hive/task-TASK-117";
+        let base = commit_on(base_name, "main", "base.txt");
+        git(&[
+            "update-ref",
+            &format!("refs/remotes/origin/{base_name}"),
+            &base,
+        ]);
+        git(&["branch", "-q", "-D", base_name]);
+        let branches = ["hive/zephyr-95/job-a", "hive/yarrow-95/job-b"];
+        let shas: Vec<String> = branches
+            .iter()
+            .enumerate()
+            .map(|(i, b)| commit_on(b, "main", &format!("part{i}.txt")))
+            .collect();
+        // main moved on after the base was cut: the run's base is still the
+        // base, not main.
+        let main_tip = commit_on("later", "main", "later.txt");
+        git(&["checkout", "-q", "main"]);
+        git(&["merge", "-q", "--ff-only", &main_tip]);
+        git(&["branch", "-q", "-D", "later"]);
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "Join the branches of TASK-149 onto hive/task-TASK-117".into(),
+            "merge both branches onto the base".into(),
+            1,
+            0,
+            "test".into(),
+            crate::util::HUMAN_AGENT.into(),
+            false,
+        )
+        .unwrap();
+        let c = s.conn().unwrap();
+        crate::util::event_at(
+            &c,
+            &s.now(),
+            "daemon",
+            "land.rebase",
+            "proj",
+            serde_json::json!({
+                "project": "proj", "task": "TASK-149", "job": "job-b", "branch": branches[1],
+                "sha": shas[1], "files": ["x"], "follow_up": job.str("id"),
+                "base": base_name, "base_sha": base, "join": true,
+                "jobs": ["job-a", "job-b"], "branches": branches, "shas": shas,
+            }),
+        );
+        drop(c);
+        let job = crate::jobs::lease_job(
+            &s,
+            "aurora".into(),
+            TEST_NOW.into(),
+            crate::jobs::LeaseOpts {
+                job_id: job.str("id"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let worker = format!(
+            "git checkout -q {base_name} && \
+             git merge -q --no-ff -m 'Join job a.' {a} && git merge -q --no-ff -m 'Join job b.' {b} && echo 'SUMMARY: joined both'",
+            a = shas[0],
+            b = shas[1],
+        );
+        let r = run_job(
+            &s,
+            job,
+            "aurora",
+            TEST_NOW,
+            RunOpts {
+                worker_cmd: format!("sh -c {}", crate::util::shell_quote(&worker)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let log_text = std::fs::read_to_string(r.str("log")).unwrap_or_default();
+        assert_eq!(r.str("status"), "done", "run: {r:?}\n{log_text}");
+        // The two merges and the two job commits they bring; neither the
+        // base's commit nor main's later one.
+        assert_eq!(r.int("commits"), 4, "the merges and the parts alone: {r:?}");
+        assert_eq!(r.str("base"), base, "the run's base is the carried base");
+        let landed = r.str("branch");
+        assert!(!landed.is_empty(), "run: {r:?}");
+        for sha in &shas {
+            assert!(
+                crate::util::git(&root, &["merge-base", "--is-ancestor", sha, &landed]).ok(),
+                "{sha} is on {landed}"
+            );
+        }
+    }
+
     /// The reviewer's clone stands on the pull request's head after
     /// A commit the identity check refuses (here: no trailers) is still the
     /// worker's work: it is kept on the job's -failed branch, as after a

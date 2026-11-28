@@ -1167,6 +1167,41 @@ impl Base {
         }
     }
 
+    /// The commit the work starts from in the checkout at `root`, whose
+    /// default branch is `def`: the stacked head, or the default branch's
+    /// tip now. Empty when git cannot say.
+    fn commit(&self, root: &str, def: &str) -> String {
+        rev(root, &self.rev(def))
+    }
+
+    /// Where a delivery follow-up job starts, as its brief says it: the
+    /// base by name and by commit `sha` (`Base::commit`), so a worker whose
+    /// clone lacks the branch - a paired or rented machine made before
+    /// clones carried it - still knows the exact commit (TASK-183 item b).
+    /// A stacked base is the head of the pull request below, which the
+    /// job's clone starts on; the default branch is the current one.
+    fn start_from(&self, sha: &str) -> String {
+        let at = if sha.is_empty() {
+            String::new()
+        } else {
+            format!(" at commit {}", crate::recipe::short(sha, 12))
+        };
+        if self.stacked() {
+            format!(
+                "Start from `{}`{at} (the head of open pull request #{}, which the task's pull request stacks on; your clone starts on it and carries the branches to merge as branches of their own names)",
+                self.branch, self.stack_on
+            )
+        } else if sha.is_empty() {
+            format!("Start from the current `{}`", self.branch)
+        } else {
+            format!(
+                "Start from the current `{}` (at commit {} when this job was queued)",
+                self.branch,
+                crate::recipe::short(sha, 12)
+            )
+        }
+    }
+
     /// The base in words: `main`, or `hive/task-X (pull request #N)`.
     fn describe(&self) -> String {
         if self.stacked() {
@@ -2789,6 +2824,12 @@ fn deliver_task(
                         tip: tip.clone(),
                         errors,
                         base: base.clone(),
+                        base_sha: rev(&root, &start),
+                        open_head: remote_head.as_ref().map(|sha| merge_check::OpenHead {
+                            branch: head.clone(),
+                            sha: sha.clone(),
+                            number: rt.open.as_ref().map(number_of).unwrap_or_default(),
+                        }),
                     })));
                 }
                 merge_check::Checked::Skipped(why) if !why.is_empty() => {
@@ -2887,19 +2928,15 @@ fn rebase_or_hold(
     drop(conn);
     let short = crate::recipe::short(&c.sha, 12);
     // A stacked task's branch goes onto the pull request below, not onto
-    // the default branch: the brief says which, and that the worker has
-    // to fetch it.
-    let which = if c.base.stacked() {
-        format!(
-            " - the head of open pull request #{}, which the task's pull request stacks on; your clone carries it as a branch of that name, beside the branches to merge",
-            c.base.stack_on
-        )
-    } else {
-        String::new()
-    };
+    // the default branch: the brief says which, by name and commit.
+    let base_sha = c.base.commit(
+        &project.str("path"),
+        &crate::baseline::default_branch(project.clone()),
+    );
+    let start = c.base.start_from(&base_sha);
     let brief = format!(
         "Branch `{branch}` (job {job_id}, commit {short}) is finished work for task {task} ({title}), but it no longer merges onto `{def}`: {files} conflict with what landed on `{def}` after the branch was cut.\n\n\
-         Start from the current `{def}`{which} and merge the branch into it: `git merge --no-ff {sha}`. {MERGE_RECIPE} \
+         {start} and merge the branch into it: `git merge --no-ff {sha}`. {MERGE_RECIPE} \
          Commit on your own branch and leave `{branch}` as it is; the task's pull request opens from your branch once it merges cleanly.\n\n\
          The job's own account of its work:\n\n{result}",
         branch = c.branch,
@@ -2948,7 +2985,7 @@ fn rebase_or_hold(
         &slug,
         json!({
             "project": slug, "task": task, "job": c.job, "branch": c.branch, "sha": c.sha,
-            "files": c.files, "follow_up": follow_up, "base": def,
+            "files": c.files, "follow_up": follow_up, "base": def, "base_sha": base_sha,
         }),
     );
     let _ = hive_tasks::send_message(
@@ -3010,14 +3047,10 @@ fn join_or_hold(
         hold(s, now, &slug, json!({"task": task, "work": key}), &note);
         return format!("task pr {slug} {task}: held: {note}");
     }
-    let which = if c.base.stacked() {
-        format!(
-            " - the head of open pull request #{}, which the task's pull request stacks on; your clone carries it as a branch of that name, beside the branches to merge",
-            c.base.stack_on
-        )
-    } else {
-        String::new()
-    };
+    let base_sha = c
+        .base
+        .commit(&root, &crate::baseline::default_branch(project.clone()));
+    let start = c.base.start_from(&base_sha);
     // Only the branches the build merges: one another side carries already
     // (a first job's old branch after a rebuild, the ones a join merged) is
     // passed over, and merging it again meets the conflict it was left out
@@ -3052,7 +3085,7 @@ fn join_or_hold(
     }
     let brief = format!(
         "Task {task} ({title}) has {n} finished job branches to bring together{passed}. Each merges onto `{def}` alone, but they conflict with each other: `{branch}` (job {job_id}) conflicts with the ones before it in {files}.\n\n\
-         Start from the current `{def}`{which} and merge every branch below into it, in this order:\n\n{list}\n\
+         {start} and merge every branch below into it, in this order:\n\n{list}\n\
          {MERGE_RECIPE} Commit on your own branch and leave the branches as they are: your branch then carries the task's work, and the task's pull request opens from it alone.",
         title = rt.title,
         n = sides.len(),
@@ -3094,7 +3127,7 @@ fn join_or_hold(
         &slug,
         json!({
             "project": slug, "task": task, "job": c.job, "branch": c.branch, "sha": c.sha,
-            "files": c.files, "follow_up": follow_up, "base": def, "join": true,
+            "files": c.files, "follow_up": follow_up, "base": def, "base_sha": base_sha, "join": true,
             "jobs": jobs, "branches": branches, "shas": shas,
         }),
     );
@@ -9171,6 +9204,18 @@ exit 0
         assert_eq!(broken["base"], "main");
         assert_eq!(broken["jobs"], json!([order[0].0, order[1].0]));
         assert_eq!(broken["branches"], json!([order[0].1, order[1].1]));
+        // The commits too, and the base's (TASK-183 item c): no pull request
+        // is open, so no head of one rides along.
+        let main_tip = rev(&repo, "refs/heads/main");
+        assert_eq!(broken["base_sha"], main_tip);
+        assert_eq!(
+            broken["shas"],
+            json!([
+                rev(&repo, &format!("refs/heads/{}", order[0].1)),
+                rev(&repo, &format!("refs/heads/{}", order[1].1))
+            ])
+        );
+        assert_eq!(broken["open_head"], 0);
         assert_eq!(
             broken["errors"],
             json!([
@@ -9196,6 +9241,14 @@ exit 0
         );
         assert!(brief.contains("error[E0061]"), "{brief}");
         assert!(brief.contains("- `hive/worker/a` (job "), "{brief}");
+        assert!(
+            brief.contains(&format!(
+                "Start from the current `main` (at commit {} when this job was queued), merge them",
+                crate::recipe::short(&main_tip, 12)
+            )),
+            "{brief}"
+        );
+        assert!(!brief.contains("open pull request"), "{brief}");
         // A merge, never a copy: the landing refuses cherry-picked commits
         // as work the worker did not write.
         assert!(brief.contains("`git merge --no-ff <commit>`"), "{brief}");
@@ -9273,6 +9326,85 @@ exit 0
         // Held until the work changes.
         assert!(tend_proj(&s, &proj, TEST_NOW).is_empty());
         assert_eq!(cargo.calls().len(), 2);
+    }
+
+    /// A task whose pull request is open and whose next branch breaks the
+    /// merged tree (TASK-183 item d): the build merged the open pull
+    /// request's head too, so `land.merge-broken` names it among the
+    /// branches with its commit (the fix job's clone carries it from there),
+    /// and the brief lists it with the others to merge rather than asking
+    /// the worker to fetch it from the upstream.
+    #[test]
+    fn a_broken_merge_onto_an_open_pull_request_names_its_head_among_the_branches() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let _gh = fake_gh();
+        let cargo = FakeCargo::new();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        cargo_project(&repo);
+        let task = task_with_branches(&s, &proj, &repo, "Add the thing", &["hive/worker/a"]);
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains(&format!("{task}: #7 opened"))),
+            "{lines:?}"
+        );
+        let c = push_branch(&s, &proj, &repo, "hive/worker/c");
+        exec1(
+            &s,
+            "UPDATE jobs SET source = ? WHERE id = ?",
+            &[&format!("task:{task}"), &c.str("id")],
+        );
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("makes them compile together")),
+            "{lines:?} {:?}",
+            cargo.calls()
+        );
+        let broken = last_detail(&s, "land.merge-broken");
+        let head = task_branch(&task);
+        let head_sha = rev(&bare, &format!("refs/heads/{head}"));
+        assert!(!head_sha.is_empty());
+        let branches: Vec<&str> = broken["branches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert_eq!(branches.last(), Some(&head.as_str()), "{broken}");
+        assert!(branches.contains(&"hive/worker/c"), "{broken}");
+        let shas = broken["shas"].as_array().unwrap();
+        assert_eq!(shas.len(), branches.len());
+        assert_eq!(shas.last().and_then(Value::as_str), Some(head_sha.as_str()));
+        assert_eq!(broken["open_head"], 7);
+        assert!(
+            !broken["jobs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|j| j == head.as_str()),
+            "{broken}"
+        );
+        let fu = job_row(&s, broken["follow_up"].as_str().unwrap());
+        let brief = fu.str("brief");
+        assert!(
+            brief.contains(&format!(
+                "- `{head}` (the head of the task's open pull request #7, commit {};",
+                crate::recipe::short(&head_sha, 12)
+            )),
+            "{brief}"
+        );
+        assert!(
+            brief.contains(&format!(
+                "your clone carries it as `{head}`, so merge it like the others"
+            )),
+            "{brief}"
+        );
+        assert!(!brief.contains("from the upstream"), "{brief}");
     }
 
     /// The check never holds work it could not judge: a cargo that fails
@@ -9371,6 +9503,9 @@ exit 0
         assert_eq!(rebase["job"], b);
         assert_eq!(rebase["sha"], b_tip);
         assert_eq!(rebase["files"], json!(["hive_worker_b.txt"]));
+        let main_tip = rev(&repo, "refs/heads/main");
+        assert_eq!(rebase["base"], "main");
+        assert_eq!(rebase["base_sha"], main_tip);
         let follow_up = rebase["follow_up"].as_str().unwrap().to_string();
         let fu = job_row(&s, &follow_up);
         assert_eq!(fu.str("status"), "queued");
@@ -9380,6 +9515,14 @@ exit 0
                 .starts_with("Merge hive/worker/b onto main:"),
             "{}",
             fu.str("title")
+        );
+        assert!(
+            fu.str("brief").contains(&format!(
+                "Start from the current `main` (at commit {} when this job was queued) and merge the branch into it",
+                crate::recipe::short(&main_tip, 12)
+            )),
+            "{}",
+            fu.str("brief")
         );
         assert!(
             fu.str("brief")
@@ -9615,6 +9758,9 @@ exit 0
         assert_eq!(join["join"], true);
         assert_eq!(join["task"], task);
         assert_eq!(join["files"], json!(["shared.txt"]));
+        assert_eq!(join["base"], "main");
+        let main_tip = rev(&repo, "refs/heads/main");
+        assert_eq!(join["base_sha"], main_tip);
         let mut joined: Vec<String> = join["jobs"]
             .as_array()
             .unwrap()
@@ -9642,6 +9788,13 @@ exit 0
             );
         }
         assert!(brief.contains("Do not `git cherry-pick`"), "{brief}");
+        assert!(
+            brief.contains(&format!(
+                "Start from the current `main` (at commit {} when this job was queued) and merge every branch",
+                crate::recipe::short(&main_tip, 12)
+            )),
+            "{brief}"
+        );
         // The branches stay with their jobs: the join's branch carries them.
         assert_eq!(job_row(&s, &a).str("branch"), "hive/worker/a");
         assert_eq!(job_row(&s, &b).str("branch"), "hive/worker/b");
@@ -10687,7 +10840,7 @@ exit 0
         let _env = hive_testutil::env_lock();
         let gh = fake_gh();
         let s = new_store();
-        let (proj, repo, _bare) = push_fixture(&s);
+        let (proj, repo, bare) = push_fixture(&s);
         let first = task_with_two_branches(&s, &proj, &repo);
         tend_proj(&s, &proj, TEST_NOW);
         let second =
@@ -10715,6 +10868,10 @@ exit 0
         let rebase = last_detail(&s, "land.rebase");
         assert_eq!(rebase["task"], second);
         assert_eq!(rebase["base"], task_branch(&first));
+        // The stacked head's commit, as fetched from the upstream.
+        let top = rev(&bare, &format!("refs/heads/{}", task_branch(&first)));
+        assert!(!top.is_empty());
+        assert_eq!(rebase["base_sha"], top);
         let fu = job_row(&s, rebase["follow_up"].as_str().unwrap());
         assert_eq!(
             fu.str("title"),
@@ -10724,9 +10881,11 @@ exit 0
             )
         );
         assert!(
-            fu.str("brief").contains(
-                "the head of open pull request #7, which the task's pull request stacks on"
-            ),
+            fu.str("brief").contains(&format!(
+                "Start from `{}` at commit {} (the head of open pull request #7, which the task's pull request stacks on; your clone starts on it",
+                task_branch(&first),
+                crate::recipe::short(&top, 12)
+            )),
             "{}",
             fu.str("brief")
         );

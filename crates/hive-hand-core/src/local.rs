@@ -210,10 +210,15 @@ pub struct ClonePrep {
     pub executor: String,
     /// The base of a held run whose clone this run carries on in.
     pub resume_base: Option<String>,
-    /// Refs of `root` the clone carries as branches beside the one it is
-    /// cloned on ([`carry_branches`]): a join job's base and the branches it
-    /// merges.
-    pub carry: Vec<String>,
+    /// Branches the clone carries beside the one it is cloned on, as (the
+    /// branch's name, the rev of `root` it is made from - a ref, or the
+    /// commit the job was given): a join job's base and the branches it
+    /// merges ([`fetch_branches`]).
+    pub carry: Vec<(String, String)>,
+    /// The carried branch the clone starts on instead of `branch`: a join
+    /// job's base when it is not the default branch, so the run's base is
+    /// the commit the job builds on. Empty stays on `branch`.
+    pub start: String,
 }
 
 /// The branch a ref carried into a job's clone becomes there:
@@ -224,15 +229,20 @@ pub fn carried_branch(r: &str) -> Option<&str> {
         Some(b) => b,
         None => r.strip_prefix("refs/remotes/")?.split_once('/')?.1,
     };
-    let plain = !name.is_empty()
+    plain_branch(name).then_some(name)
+}
+
+/// Whether `name` is a branch name a clone may be given: no `HEAD`, no
+/// leading dash or slash, no `..`, nothing but letters, digits and `._/-`.
+pub fn plain_branch(name: &str) -> bool {
+    !name.is_empty()
         && name != "HEAD"
         && !name.starts_with(['-', '/'])
         && !name.ends_with('/')
         && !name.contains("..")
         && name
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '/' | '-'));
-    plain.then_some(name)
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '/' | '-'))
 }
 
 /// Makes each of `refs` of `source` - the project's repository, or the
@@ -242,18 +252,41 @@ pub fn carried_branch(r: &str) -> Option<&str> {
 /// once its origin is removed. The branch the clone is on is left alone.
 /// Returns the branches made and one line for each ref that could not be.
 pub fn carry_branches(clone: &str, source: &str, refs: &[String]) -> (Vec<String>, Vec<String>) {
+    let mut wanted = Vec::new();
+    let mut failed = Vec::new();
+    for r in refs {
+        match carried_branch(r) {
+            Some(name) => wanted.push((name.to_string(), r.clone())),
+            None => failed.push(format!("{r}: not a branch a clone carries")),
+        }
+    }
+    let (made, more) = fetch_branches(clone, source, &wanted);
+    failed.extend(more);
+    (made, failed)
+}
+
+/// Makes each (name, rev) of `wanted` a branch `name` of `clone`, fetched
+/// from `source`: `rev` is a ref of `source` or a commit id it holds (the
+/// commit a join job was given, when its branch moved on or went). The
+/// branch the clone is on is left alone. Returns the branches made and one
+/// line for each that could not be.
+pub fn fetch_branches(
+    clone: &str,
+    source: &str,
+    wanted: &[(String, String)],
+) -> (Vec<String>, Vec<String>) {
     let on = crate::util::git(clone, &["symbolic-ref", "--short", "-q", "HEAD"])
         .stdout
         .trim()
         .to_string();
     let mut made: Vec<String> = Vec::new();
     let mut failed = Vec::new();
-    for r in refs {
-        let Some(name) = carried_branch(r) else {
-            failed.push(format!("{r}: not a branch a clone carries"));
+    for (name, rev) in wanted {
+        if !plain_branch(name) || rev.is_empty() || rev.starts_with('-') {
+            failed.push(format!("{name} ({rev}): not a branch a clone carries"));
             continue;
-        };
-        if name == on || made.iter().any(|m| m == name) {
+        }
+        if *name == on || made.iter().any(|m| m == name) {
             continue;
         }
         let got = crate::util::git_timeout(
@@ -264,14 +297,14 @@ pub fn carry_branches(clone: &str, source: &str, refs: &[String]) -> (Vec<String
                 "-q",
                 "--no-tags",
                 source,
-                &format!("+{r}:refs/heads/{name}"),
+                &format!("+{rev}:refs/heads/{name}"),
             ],
         );
         if got.ok() {
-            made.push(name.to_string());
+            made.push(name.clone());
         } else {
             let why = got.stderr.split_whitespace().collect::<Vec<_>>().join(" ");
-            failed.push(format!("{r}: {}", short(&why, 300)));
+            failed.push(format!("{name} ({rev}): {}", short(&why, 300)));
         }
     }
     (made, failed)
@@ -339,12 +372,15 @@ pub fn prepare_clone(
         .into());
     }
     if !prep.carry.is_empty() {
-        let (made, failed) = carry_branches(&prep.clone_dir, &prep.root, &prep.carry);
+        let (made, failed) = fetch_branches(&prep.clone_dir, &prep.root, &prep.carry);
         if !made.is_empty() {
             log.add(format!("the clone carries {}", made.join(", ")));
         }
         for line in failed {
             log.add(format!("the clone could not carry {line}"));
+        }
+        if !prep.start.is_empty() {
+            start_on(&prep.clone_dir, &prep.start, &made, &prep.branch, log);
         }
     }
     let _ = crate::util::git(&prep.clone_dir, &["remote", "remove", "origin"]);
@@ -355,6 +391,38 @@ pub fn prepare_clone(
             .trim()
             .to_string(),
     )
+}
+
+/// Puts the clone on the carried branch `start`, the base a join job
+/// builds on, so the commit the run counts and lands from is that base and
+/// not the default branch (TASK-183 item a). A branch that was not carried,
+/// or a checkout git refuses, leaves the clone on `branch` and says so.
+fn start_on(clone: &str, start: &str, made: &[String], branch: &str, log: &RunLog) {
+    let stays = if branch.is_empty() {
+        "its branch"
+    } else {
+        branch
+    };
+    if !made.iter().any(|m| m == start) {
+        log.add(format!(
+            "the clone stays on {stays}: the base {start} was not carried"
+        ));
+        return;
+    }
+    let out = crate::util::git(clone, &["checkout", "-q", start]);
+    if out.ok() {
+        let at = crate::util::git(clone, &["rev-parse", "HEAD"]).stdout;
+        log.add(format!(
+            "the clone starts on {start} at {}, the base the job builds on",
+            short(at.trim(), 12)
+        ));
+    } else {
+        let why = out.stderr.split_whitespace().collect::<Vec<_>>().join(" ");
+        log.add(format!(
+            "the clone stays on {stays}: git could not check out the base {start}: {}",
+            short(&why, 300)
+        ));
+    }
 }
 
 /// What running the worker in its clone needs to know.
@@ -570,6 +638,7 @@ mod tests {
             executor: "local".into(),
             resume_base: None,
             carry: Vec::new(),
+            start: String::new(),
         };
         let cancel = crate::ctx::CancellationToken::new();
         assert_eq!(prepare_clone(&cancel, &prep, &log).unwrap(), head);
@@ -594,6 +663,66 @@ mod tests {
             log.text()
                 .contains("clone kept from the held run (base 0123456789ab)")
         );
+
+        // A join's clone (TASK-183 items a and c): the base and a branch are
+        // carried at the commits given - the base only as the upstream's
+        // ref, the branch at a commit its ref has moved past - and the clone
+        // starts on the base, which is what it hands back as the run's base.
+        std::fs::remove_dir_all(&clone_dir).unwrap();
+        run(&root, &["git", "checkout", "-q", "-b", "hive/a/job-1"]);
+        std::fs::write(root.join("b.txt"), "b\n").unwrap();
+        run(&root, &["git", "add", "b.txt"]);
+        run(&root, &["git", "commit", "-q", "-m", "given"]);
+        let given = run(&root, &["git", "rev-parse", "HEAD"]).trim().to_string();
+        std::fs::write(root.join("b.txt"), "b2\n").unwrap();
+        run(&root, &["git", "commit", "-q", "-am", "later"]);
+        run(&root, &["git", "checkout", "-q", "main"]);
+        run(
+            &root,
+            &[
+                "git",
+                "update-ref",
+                "refs/remotes/origin/hive/task-TASK-117",
+                &given,
+            ],
+        );
+        let join = ClonePrep {
+            carry: vec![
+                (
+                    "hive/task-TASK-117".into(),
+                    "refs/remotes/origin/hive/task-TASK-117".into(),
+                ),
+                ("hive/a/job-1".into(), given.clone()),
+                ("hive/gone".into(), "refs/heads/hive/gone".into()),
+            ],
+            start: "hive/task-TASK-117".into(),
+            ..prep.clone()
+        };
+        let log = RunLog::default();
+        assert_eq!(prepare_clone(&cancel, &join, &log).unwrap(), given);
+        let text = log.text();
+        assert!(
+            text.contains("the clone carries hive/task-TASK-117, hive/a/job-1"),
+            "{text}"
+        );
+        assert!(
+            text.contains("the clone could not carry hive/gone (refs/heads/hive/gone): "),
+            "{text}"
+        );
+        assert!(
+            text.contains("the clone starts on hive/task-TASK-117 at "),
+            "{text}"
+        );
+        let at = |r: &str| {
+            crate::util::git(&clone_dir, &["rev-parse", r])
+                .stdout
+                .trim()
+                .to_string()
+        };
+        assert_eq!(at("refs/heads/hive/a/job-1"), given);
+        assert_eq!(at("refs/heads/main"), head);
+        std::fs::remove_dir_all(&clone_dir).unwrap();
+        assert_eq!(prepare_clone(&cancel, &prep, &log).unwrap(), head);
 
         let cmd = vec![
             "sh".to_string(),

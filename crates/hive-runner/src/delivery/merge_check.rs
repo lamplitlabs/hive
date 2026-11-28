@@ -161,6 +161,23 @@ pub(super) struct Broken {
     pub(super) tip: String,
     pub(super) errors: Vec<String>,
     pub(super) base: Base,
+    /// The commit the merges started from (`Base::commit`).
+    pub(super) base_sha: String,
+    /// The head of the task's open pull request, when one is open: the
+    /// merged tree takes it in after the job branches, so the fix job merges
+    /// it too and its clone carries it (TASK-183 item d).
+    pub(super) open_head: Option<OpenHead>,
+}
+
+/// The head of a task's open pull request as a delivery pass fetched it.
+#[derive(Debug)]
+pub(super) struct OpenHead {
+    /// The branch, `hive/task-<id>`.
+    pub(super) branch: String,
+    /// Its commit on the upstream, fetched into the checkout.
+    pub(super) sha: String,
+    /// The pull request's number.
+    pub(super) number: i64,
 }
 
 /// Hands a broken merge to a fix job on the same task, or holds the task
@@ -237,26 +254,8 @@ pub(super) fn fix_or_hold(
         ));
     }
     drop(conn);
-    let which = if b.base.stacked() {
-        format!(
-            " - the head of open pull request #{}, which the task's pull request stacks on; your clone carries it as a branch of that name, beside the branches to merge",
-            b.base.stack_on
-        )
-    } else {
-        String::new()
-    };
-    let open = rt
-        .open
-        .as_ref()
-        .map(|pr| {
-            format!(
-                " The task's pull request #{} is open: fetch `{}` from the upstream and merge it too.",
-                number_of(pr),
-                task_branch(task)
-            )
-        })
-        .unwrap_or_default();
-    let list = b
+    let start = b.base.start_from(&b.base_sha);
+    let mut list = b
         .merged
         .iter()
         .map(|(job, branch, sha)| {
@@ -265,12 +264,30 @@ pub(super) fn fix_or_hold(
                 crate::recipe::short(sha, 12)
             )
         })
-        .collect::<Vec<_>>()
-        .join("\n");
+        .collect::<Vec<_>>();
+    // The open pull request's head is merged last, as the build did: it
+    // holds what a reviewer or the owner pushed there. The clone carries
+    // it as a branch of its name at the commit named here.
+    let open = match &b.open_head {
+        Some(h) => {
+            list.push(format!(
+                "- `{}` (the head of the task's open pull request #{}, commit {}; it holds what was pushed onto the pull request)",
+                h.branch,
+                h.number,
+                crate::recipe::short(&h.sha, 12)
+            ));
+            format!(
+                " The last of them is the head of the task's open pull request #{}: your clone carries it as `{}`, so merge it like the others.",
+                h.number, h.branch
+            )
+        }
+        None => String::new(),
+    };
+    let list = list.join("\n");
     let brief = format!(
         "The finished branches of task {task} ({title}) each passed their own check, but merged together onto `{def}` they do not compile: `{cmd}` on the merged tree (commit {tip}) says\n\n```\n{errors}\n```\n\n\
          The branches, in the order the task's pull request merges them:\n\n{list}\n\n\
-         Start from the current `{def}`{which}, merge them in that order with `git merge --no-ff <commit>` - never a cherry-pick or a rebase, which the landing refuses as copies of work you did not write - fix what one side's change broke in the other - a signature one changed that the other still calls the old way, a name one moved - keeping the intent of both, run the project's check, and commit on your own branch.{open} \
+         {start}, merge them in that order with `git merge --no-ff <commit>` - never a cherry-pick or a rebase, which the landing refuses as copies of work you did not write - fix what one side's change broke in the other - a signature one changed that the other still calls the old way, a name one moved - keeping the intent of both, run the project's check, and commit on your own branch.{open} \
          Leave those branches as they are; the task's pull request opens from your branch once its merged tree compiles.\n\n\
          What the jobs said of their work:\n\n{results}",
         title = rt.title,
@@ -309,15 +326,28 @@ pub(super) fn fix_or_hold(
             );
         }
     }
+    // The branches the fix job merges, in order, and the commit of each:
+    // the job branches, then the open pull request's head (whose job is no
+    // single one, so `jobs` stays the job branches' alone).
+    let mut branches: Vec<&str> = b.merged.iter().map(|(_, br, _)| br.as_str()).collect();
+    let mut shas: Vec<&str> = b.merged.iter().map(|(_, _, sha)| sha.as_str()).collect();
+    let open_head = match &b.open_head {
+        Some(h) => {
+            branches.push(&h.branch);
+            shas.push(&h.sha);
+            h.number
+        }
+        None => 0,
+    };
     event(
         s,
         now,
         "land.merge-broken",
         &slug,
         json!({
-            "project": slug, "task": task, "tip": b.tip, "base": def,
+            "project": slug, "task": task, "tip": b.tip, "base": def, "base_sha": b.base_sha,
             "jobs": b.merged.iter().map(|(j, _, _)| j).collect::<Vec<_>>(),
-            "branches": b.merged.iter().map(|(_, br, _)| br).collect::<Vec<_>>(),
+            "branches": branches, "shas": shas, "open_head": open_head,
             "errors": b.errors, "follow_up": follow_up,
         }),
     );
