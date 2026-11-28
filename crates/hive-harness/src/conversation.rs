@@ -6655,7 +6655,45 @@ mod tests {
             }
             thread::sleep(Duration::from_millis(25));
         }
-        panic!("the conversation never reached {want:?}");
+        let row = m.row(id).expect("row");
+        let live = m.live(&row);
+        panic!(
+            "the conversation never reached {want:?}: it stands {} (stored {}), queued {:?}",
+            live.status, row.status, live.queued
+        );
+    }
+
+    /// Waits until `id` has run a turn on message `n` (an assistant reply
+    /// after it) and settled: idle, ended or closed, nothing queued, the
+    /// row caught up. Closed counts: a turn on a report may end with the
+    /// agent's finish, and which turn that is depends on how reports
+    /// queued behind a turn were joined.
+    fn wait_turn_after(m: &Manager, id: &str, n: i64) -> Row {
+        for _ in 0..400 {
+            let row = m.row(id).expect("row");
+            let live = m.live(&row);
+            let replied = m
+                .store
+                .chat_messages(id, n)
+                .unwrap()
+                .iter()
+                .any(|x| x.role == "assistant");
+            if replied
+                && ["idle", "ended", "closed"].contains(&live.status.as_str())
+                && live.queued.is_empty()
+                && stored_as_live(m, &row, &live)
+            {
+                return row;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        let row = m.row(id).expect("row");
+        panic!(
+            "conversation {id} never settled after a turn on message {n}: it stands {} (stored {}): {:#?}",
+            m.live(&row).status,
+            row.status,
+            m.store.chat_messages(id, 0).unwrap()
+        );
     }
 
     fn transcript(s: &Store, id: &str) -> Vec<(String, String)> {
@@ -7170,10 +7208,19 @@ mod tests {
             "{}",
             report.content
         );
-        let parent = wait_status(&m, &pid, &["idle"]);
-        assert_eq!(
-            parent.status, "idle",
-            "the report reopened the finished parent"
+        // The parent runs a turn on the report and settles. Where it
+        // settles depends on the same race: a report that arrives alone
+        // (the child's reply while the child is still open) gets a refused
+        // finish and leaves the parent idle; reports that queued behind
+        // the parent's turn arrive together in one turn, by then the child
+        // is closed, so the parent's scripted finish is accepted and it
+        // closes - without ever showing "idle". Both are correct; what
+        // they share is a reply after the report and a parent at rest.
+        let parent = wait_turn_after(&m, &pid, report.n);
+        assert!(
+            ["idle", "closed"].contains(&parent.status.as_str()),
+            "the parent took the report up and settled: {}",
+            parent.status
         );
         let msgs = s.chat_messages(&pid, 0).unwrap();
         let after = msgs.iter().position(|x| x.n == report.n).unwrap();
@@ -7181,6 +7228,16 @@ mod tests {
             msgs[after + 1..].iter().any(|x| x.role == "assistant"),
             "the parent's agent took the report up: {msgs:#?}"
         );
+        if parent.status == "closed" {
+            // The finish came in the turn on the report, once its child
+            // had closed: the closing note follows the report.
+            assert!(
+                msgs[after + 1..]
+                    .iter()
+                    .any(|x| x.extra.get("closed").is_some()),
+                "the parent closed after reading the report: {msgs:#?}"
+            );
+        }
 
         // The grandchild: started by the child (one level down is fine),
         // refused its own start (two levels down).
