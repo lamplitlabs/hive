@@ -225,6 +225,22 @@ pub(crate) struct Dispatch {
     /// The tick that started it, ISO; the restart window counts the budget
     /// of the runs in flight from here.
     pub(crate) started_at: String,
+    /// The run's own stop: cancelling it stops this run alone, as the
+    /// daemon's stop grace stops them all. The restart's wait cancels it
+    /// for a run on another machine once daemon.restart_remote_minutes is
+    /// up; the run's commits are fetched as kept work (run.rs).
+    pub(crate) stop: hive_bus::CancellationToken,
+    /// Why `stop` was cancelled, read by the run (`RunOpts::stop_why`).
+    pub(crate) stop_why: crate::run::StopWhy,
+}
+
+impl Dispatch {
+    /// Whether the run goes on another machine (a rented or paired hand):
+    /// its slot is not this machine's. A run through this machine's own
+    /// `hive-hand` (executor.transport local-hand) keeps the local slot.
+    pub(crate) fn remote(&self) -> bool {
+        !self.slot.is_empty() && self.slot != crate::executor::LOCAL_EXECUTOR
+    }
 }
 
 /// Set when a daemon run thread ends, however it ends (a return, an error
@@ -1961,6 +1977,10 @@ pub(crate) fn daemon(
         };
     // The loop's exits name their result and the note the say lines carry.
     let leave: (&str, &str);
+    // Set when the restart's bound or drain ends the handover with runs in
+    // flight to hold: the hold is asked once the daemon is about to leave
+    // (the wait after the loop), not when its wait begins.
+    let mut hold_on_leave = false;
     // Set when the watchdog asks for the restart: the stuck pass has already
     // had `RESTART_DRAIN` since its cancellation, so the exit does not wait
     // for it again.
@@ -2136,12 +2156,13 @@ pub(crate) fn daemon(
                 say(&o, line);
                 // A self-update's drain that ends with runs in flight holds
                 // them; the console's drain without "now" waits them out, as
-                // the owner chose (`hold_for_restart`).
-                if !inflight.is_empty() && !restart.console_draining() && restart_hold_on(s) {
-                    for line in hold_for_restart(s, inflight.len()) {
-                        say(&o, line);
-                    }
-                }
+                // the owner chose (`hold_for_restart`). The hold is asked
+                // when the daemon is about to leave: at once when every run
+                // is on this machine, else once the runs on other machines
+                // have ended or been stopped (daemon.restart_remote_minutes)
+                // - until then the runs here work on (TASK-152).
+                hold_on_leave =
+                    !inflight.is_empty() && !restart.console_draining() && restart_hold_on(s);
                 leave = ("restart", "restarting");
                 break;
             }
@@ -3100,11 +3121,13 @@ pub(crate) fn daemon(
                             &now,
                         );
                         let leased_line = format!("leased {} after {}s", job.str("id"), wait_s);
+                        let run_parent = run_ctx.child();
                         let d = Dispatch {
                             slot: slot.clone(),
                             worker,
                             job,
                             started_at: now.clone(),
+                            stop: run_parent.clone(),
                             ..Default::default()
                         };
                         let key = dispatch_key(&d.slot, &d.worker, &d.job);
@@ -3119,7 +3142,6 @@ pub(crate) fn daemon(
                         let o_run = o.clone();
                         let now_run = now.clone();
                         let actor_run = actor.clone();
-                        let run_parent = run_ctx.child();
                         let run_returned = Arc::new(std::sync::atomic::AtomicBool::new(false));
                         let returned_run = Arc::clone(&run_returned);
                         let (lease_job, lease_at) = (d.job.str("id"), d.started_at.clone());
@@ -3143,6 +3165,7 @@ pub(crate) fn daemon(
                                                 worker_cmd: o_run.worker_cmd.clone(),
                                                 executor: d.slot.clone(),
                                                 cancel: dctx,
+                                                stop_why: d.stop_why.clone(),
                                             },
                                         ) {
                                             Ok(run) => {
@@ -3707,6 +3730,58 @@ pub(crate) fn daemon(
         let never_done = crossbeam_channel::never::<()>();
         let mut timer = (grace > Duration::ZERO).then(|| crossbeam_channel::after(grace));
         let mut caller_done = Some(cancel.done());
+        // A restart waits for the runs on other machines at most
+        // daemon.restart_remote_minutes past its bound; then their commits
+        // are fetched as kept work and they are stopped (run.rs). The runs
+        // on this machine are asked to hold (daemon.restart_hold) once
+        // nothing on another machine is left to wait for: the daemon is
+        // about to leave then, and not before.
+        let remote_deadline = if result == "restart" {
+            restart.begin_wait(s)
+        } else {
+            None
+        };
+        let remote_left = |inflight: &BTreeMap<String, Dispatch>| {
+            inflight.values().filter(|d| d.remote()).count()
+        };
+        let mut remote_timer = remote_deadline
+            .filter(|_| remote_left(&inflight) > 0)
+            .map(crossbeam_channel::at);
+        if let Some(at) = remote_deadline
+            && remote_left(&inflight) > 0
+        {
+            let mut on: BTreeMap<&str, usize> = BTreeMap::new();
+            for d in inflight.values().filter(|d| d.remote()) {
+                *on.entry(d.slot.as_str()).or_default() += 1;
+            }
+            let machines = on
+                .iter()
+                .map(|(m, n)| format!("{n} on {m}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            say(
+                &o,
+                format!(
+                    "restart: waiting for {} run(s) on other machines ({machines}) at most {} more (daemon.restart_remote_minutes); then their commits are fetched as kept work, they stop and their jobs return to the queue",
+                    remote_left(&inflight),
+                    hive_cli::format_duration(Duration::from_secs(
+                        at.saturating_duration_since(std::time::Instant::now())
+                            .as_secs_f64()
+                            .round() as u64
+                    ))
+                ),
+            );
+        }
+        let mut hold_pending = hold_on_leave;
+        let ask_hold = |inflight: &BTreeMap<String, Dispatch>, pending: &mut bool| {
+            if *pending && remote_left(inflight) == 0 && !inflight.is_empty() {
+                *pending = false;
+                for line in hold_for_restart(s, inflight.len()) {
+                    say(&o, line);
+                }
+            }
+        };
+        ask_hold(&inflight, &mut hold_pending);
         // The wait can outlast the heartbeat's freshness (a brain run takes
         // an hour): beat on, naming the runs, so the console does not call a
         // daemon that waits for its runs silent.
@@ -3740,6 +3815,22 @@ pub(crate) fn daemon(
                     } else if !d.reason.is_empty() {
                         say(&o, format!("idle: {}", d.reason));
                     }
+                    ask_hold(&inflight, &mut hold_pending);
+                },
+                recv(remote_timer.as_ref().unwrap_or(&never_tick)) -> _ => {
+                    remote_timer = None;
+                    let remote: Vec<&Dispatch> = inflight.values().filter(|d| d.remote()).collect();
+                    say(&o, format!(
+                        "restart: daemon.restart_remote_minutes is up; stopping {} run(s) on other machines, their commits fetched as kept work and their jobs returned to the queue",
+                        remote.len()
+                    ));
+                    for d in remote {
+                        d.stop_why.set(&format!(
+                            "the restart waited daemon.restart_remote_minutes past its bound (daemon.restart_max_minutes) for this run on {}",
+                            d.slot
+                        ));
+                        d.stop.cancel();
+                    }
                 },
                 recv(beat_tick) -> _ => wait_beat(&inflight, &restart),
                 recv(ask_tick) -> _ => {
@@ -3749,6 +3840,7 @@ pub(crate) fn daemon(
                     {
                         let held = hold_runs_in_flight(s);
                         let heard = held.iter().filter(|(_, n)| *n > 0).count();
+                        hold_pending = false;
                         // The cap then stops the runs as a restart asked for
                         // now before the loop ended does, and the heartbeat
                         // says the restart is now forced.
@@ -8069,6 +8161,300 @@ mod tests {
             "no owner's run started in the window:\n{out}"
         );
         assert!(fed > owner_ran, "fed {fed}, ran {owner_ran}:\n{out}");
+    }
+
+    /// TASK-152: at the restart's bound a run on another machine gets its
+    /// own short wait (daemon.restart_remote_minutes), then its commits are
+    /// fetched as kept work and it stops; it does not hold the daemon. The
+    /// run on this machine is asked to hold only once the daemon is about to
+    /// leave, and its finished commit lands. On 2026-11-27 a daemon waited
+    /// for seven runs on hands-cr-11116 from 06:21Z with nothing said.
+    #[test]
+    fn a_restart_at_its_bound_stops_a_run_on_another_machine_and_keeps_its_commits() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = hive_testutil::env_lock();
+        if which::which("ssh-keygen").is_err() {
+            return;
+        }
+        // Minutes are seconds here: the bound is up four seconds after the
+        // restart is armed, the other machine's run five seconds later.
+        let bound = Duration::from_secs(4);
+        let remote_wait = Duration::from_secs(5);
+        let _minute = MaxMinuteSecs;
+        crate::restart::TEST_MAX_MINUTE_SECS.store(1, std::sync::atomic::Ordering::SeqCst);
+        hive_bus::reset_default();
+        let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
+        let bin = crate::test_helpers::build_hive();
+        let _stage = crate::test_helpers_staged_hive::stage_local_hive(&bin);
+        let s = new_store();
+        let (_proj, root) = new_bare_repo(&s);
+        join(&s, "aurora");
+        join(&s, "borealis");
+        crate::capacity::pin_per_project(&s, 3);
+        for (key, value) in [
+            ("jobs_per_day", "none"),
+            ("capacity", "3"),
+            ("daemon.restart_drain_minutes", "30"),
+            ("daemon.restart_max_minutes", &bound.as_secs().to_string()),
+            (
+                "daemon.restart_remote_minutes",
+                &remote_wait.as_secs().to_string(),
+            ),
+        ] {
+            s.set_setting(hive_store::HUMAN_AGENT, key, value).unwrap();
+        }
+        // The machine's git-upload-pack does not answer through this
+        // fixture: its commits come home through the bundle verb.
+        let tools = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tools.path().join("ssh"),
+            "#!/bin/sh\necho 'fatal: Could not read from remote repository.' >&2\nexit 128\n",
+        )
+        .unwrap();
+        crate::test_helpers::run(tools.path(), &["chmod", "+x", "ssh"]);
+        let path = format!(
+            "{}:{}",
+            tools.path().display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let _path = hive_testutil::setenv("PATH", &path);
+        // The other machine: the open `hive-hand` binary over a pipe.
+        let workroot = tempfile::tempdir().unwrap();
+        let workdir = workroot.path().join("farhand");
+        let hands_home = tempfile::tempdir().unwrap();
+        let fake_path = crate::test_helpers::fake_hands_path(&[]);
+        let fake_path = fake_path.trim_start_matches("PATH=").to_string();
+        let old_ssh = crate::executor::set_run_ssh(|_, _, _, _| unreachable!());
+        let _ssh = crate::test_helpers_hands::RunSshGuard::new(old_ssh);
+        let runner = crate::executor::local_hand_runner(
+            crate::test_helpers_hands::hive_hand_binary(),
+            vec![
+                ("HIVE_HANDS_WORKDIR".into(), workdir.display().to_string()),
+                ("HOME".into(), hands_home.path().display().to_string()),
+                ("HIVE_HANDS_ALLOW_ANY_WORKER".into(), "1".into()),
+                ("HIVE_HANDS_KEYS_OK".into(), "yes".into()),
+                ("PATH".into(), fake_path),
+            ],
+        );
+        crate::executor::set_run_ssh(move |c, a, i, t| runner(c, a, i, t));
+        crate::executor::add_executor(
+            &s,
+            &s.now(),
+            "hands",
+            "hive@hands",
+            workdir.to_str().unwrap(),
+            1,
+            "*",
+            hive_store::HUMAN_AGENT,
+        )
+        .unwrap();
+        let (ok, note) =
+            crate::executor::probe_executor(&s, "hands", hive_store::HUMAN_AGENT, &s.now())
+                .unwrap();
+        assert!(ok, "probe: {note:?}");
+        for title in ["Near run", "Far run"] {
+            crate::test_helpers::task_for_source(&s, "proj", "test");
+            crate::jobs::add_job(
+                &s,
+                "proj".into(),
+                "task".into(),
+                title.into(),
+                "fake worker only".into(),
+                0,
+                100,
+                "test".into(),
+                hive_store::HUMAN_AGENT.into(),
+                false,
+            )
+            .unwrap();
+        }
+        let old_stamp = *BINARY_STAMP.read().unwrap();
+        TEST_RESTART_CHANGED.store(false, std::sync::atomic::Ordering::SeqCst);
+        set_binary_stamp(test_restart_stamp);
+        let out = OutBuf::new();
+        // Both workers commit; the one on the other machine then works on
+        // far past the bound, the one here a little past it.
+        let worker = "sh -c 'case \"$PWD\" in *farhand*) f=far; n=600;; *) f=near; n=30;; esac; echo $f > $f.txt && git add $f.txt && git commit -q -m $f && sleep $n; echo SUMMARY: done - $f'";
+        let opts = DaemonOpts {
+            interval: 300,
+            out: Some(out.writer()),
+            worker_cmd: worker.into(),
+            restart_on_change: true,
+            ..Default::default()
+        };
+        let s_daemon = s.clone();
+        let cancel = hive_bus::CancellationToken::new();
+        let cancel_daemon = cancel.clone();
+        let (done_tx, done_rx) = crossbeam_channel::bounded(1);
+        std::thread::spawn(move || {
+            let _ = done_tx.send(daemon(&cancel_daemon, &s_daemon, opts));
+        });
+        let running = |s: &hive_store::Store, executor: &str| {
+            count(
+                s,
+                "SELECT COUNT(*) AS n FROM runs WHERE status = 'running' AND executor = ?",
+                &[&executor],
+            )
+        };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let waited = std::time::Instant::now();
+            while running(&s, "hands") == 0 || running(&s, "local") == 0 {
+                assert!(
+                    waited.elapsed() < test_wait(Duration::from_secs(120)),
+                    "the two runs never started, one here and one on the other machine:\n{}",
+                    out.string()
+                );
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            TEST_RESTART_CHANGED.store(true, std::sync::atomic::Ordering::SeqCst);
+            hive_bus::emit(
+                &s,
+                "human",
+                "post.question",
+                "wake-restart",
+                serde_json::json!({"project": "proj"}),
+            )
+            .unwrap();
+            while !out.string().contains("hive changed on disk") {
+                assert!(
+                    waited.elapsed() < test_wait(Duration::from_secs(180)),
+                    "the daemon never noticed the binary change:\n{}",
+                    out.string()
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            let armed = std::time::Instant::now();
+            let result = done_rx
+                .recv_timeout(test_wait(bound + remote_wait + Duration::from_secs(60)))
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "the daemon waited on for the run on the other machine:\n{}",
+                        out.string()
+                    )
+                });
+            (result, armed.elapsed())
+        }));
+        cancel.cancel();
+        set_binary_stamp(old_stamp);
+        TEST_RESTART_CHANGED.store(false, std::sync::atomic::Ordering::SeqCst);
+        let (result, took) = match result {
+            Ok(v) => v,
+            Err(panic) => panic!("{}\n{}", panic_message(&panic), out.string()),
+        };
+        let out = out.string();
+        assert_eq!(result, "restart", "{out}");
+        // Gone within the named wait: the bound, the other machine's wait and
+        // the run here finishing its half minute - never the other run's ten
+        // minutes.
+        assert!(
+            took < bound + remote_wait + test_wait(Duration::from_secs(40)),
+            "left {took:?} after the restart was armed:\n{out}"
+        );
+        let at = |needle: &str| {
+            out.find(needle)
+                .unwrap_or_else(|| panic!("never said {needle:?}:\n{out}"))
+        };
+        let far_runs = count(
+            &s,
+            "SELECT COUNT(*) AS n FROM runs WHERE executor = 'hands'",
+            &[],
+        );
+        let near_runs = count(
+            &s,
+            "SELECT COUNT(*) AS n FROM runs WHERE executor = 'local' AND started_at != ''",
+            &[],
+        );
+        assert!(
+            far_runs >= 1 && near_runs >= 1,
+            "{far_runs} far, {near_runs} near:\n{out}"
+        );
+        let bound_at = at("(daemon.restart_max_minutes): nothing new starts");
+        let waits_at = at(&format!(
+            "restart: waiting for {far_runs} run(s) on other machines ({far_runs} on hands) at most 5s more (daemon.restart_remote_minutes)"
+        ));
+        let stop_at = at(&format!(
+            "daemon.restart_remote_minutes is up; stopping {far_runs} run(s) on other machines"
+        ));
+        let hold_at = at(&format!(
+            "restart: {near_runs} run(s) in flight, 0 asked to hold (daemon.restart_hold)"
+        ));
+        // The run here is asked to hold when the daemon is about to leave,
+        // not when its wait begins.
+        assert!(
+            bound_at < waits_at && waits_at < stop_at && stop_at < hold_at,
+            "out of order:\n{out}"
+        );
+        assert_eq!(
+            out.matches("asked to hold (daemon.restart_hold)").count(),
+            1,
+            "{out}"
+        );
+        // Every run on the other machine: stopped, its commit fetched as
+        // kept work, its job queued again at no cost of an attempt, and the
+        // job's next run starts from those commits (the brief's earlier
+        // attempt names the patch).
+        let fars = crate::util::must_rows(
+            &s.conn().unwrap(),
+            "SELECT r.status, r.summary, r.agent, j.id AS job, j.status AS job_status, j.attempts FROM runs r JOIN jobs j ON j.id = r.job_id WHERE r.executor = 'hands'",
+            &[],
+        );
+        for far in &fars {
+            assert_eq!(far.str("status"), "lost", "{far:?}\n{out}");
+            assert!(
+                far.str("summary").starts_with(
+                    "stopped on hands: the restart waited daemon.restart_remote_minutes"
+                ) && far.str("summary").contains("1 commit(s) fetched"),
+                "{far:?}\n{out}"
+            );
+            assert_eq!(
+                (far.str("job_status").as_str(), far.int("attempts")),
+                ("queued", 0),
+                "{far:?}"
+            );
+            let kept = crate::land::failed_work_branch(&far.str("agent"), &far.str("job"));
+            let shown = std::process::Command::new("git")
+                .args(["-C", &root, "show", &format!("{kept}:far.txt")])
+                .output()
+                .unwrap();
+            assert!(
+                shown.status.success() && String::from_utf8_lossy(&shown.stdout).trim() == "far",
+                "{kept}: {shown:?}\n{out}"
+            );
+            let earlier = crate::brief::earlier_attempt(&s, &far.str("job"), "someone").unwrap();
+            assert!(
+                earlier.why.contains("the runner stopped its run on hands")
+                    && earlier.patch.ends_with(".patch")
+                    && std::path::Path::new(&earlier.patch).exists(),
+                "{earlier:?}"
+            );
+        }
+        // The runs on this machine finished and their commits landed.
+        let nears = crate::util::must_rows(
+            &s.conn().unwrap(),
+            "SELECT status, summary, commits, branch FROM runs WHERE executor = 'local' AND started_at != ''",
+            &[],
+        );
+        // A finished run's commit is on main or on its branch for the next
+        // daemon to land: none is lost.
+        for near in &nears {
+            assert_eq!(near.str("status"), "done", "{near:?}\n{out}");
+            assert!(near.int("commits") >= 1, "{near:?}");
+            let on = |rev: &str| {
+                std::process::Command::new("git")
+                    .args(["-C", &root, "log", "--format=%s", rev])
+                    .output()
+                    .map(|o| {
+                        String::from_utf8_lossy(&o.stdout)
+                            .lines()
+                            .any(|l| l == "near")
+                    })
+                    .unwrap_or(false)
+            };
+            assert!(
+                on("main") || on(&near.str("branch")),
+                "the finished commit of {near:?} is nowhere:\n{out}"
+            );
+        }
     }
 
     impl Write for SignalWriter {

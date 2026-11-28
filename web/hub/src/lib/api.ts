@@ -1027,6 +1027,17 @@ export interface DaemonRestart {
   // nothing new starts, the owner's work included. Omitted without a bound
   // and by older daemons.
   until?: string;
+  // Once the daemon has left its loop and waits for its runs: per machine,
+  // how many runs, since when, and for another machine when they are stopped
+  // with their commits kept (daemon.restart_remote_minutes; empty: waited
+  // out). Omitted while it still dispatches and by older daemons.
+  machines?: {
+    machine: string;
+    local: boolean;
+    runs: number;
+    since: string;
+    until?: string;
+  }[];
 }
 
 // The keep-awake hold (daemon.keep_awake): whether the daemon holds this
