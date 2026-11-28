@@ -184,6 +184,25 @@ pub(crate) fn parallel_per_project(s: &hive_store::Store) -> i32 {
     crate::capacity::parallel_per_project(s)
 }
 
+/// How many of a project's owner work jobs may run on this machine before
+/// its last free local slot is kept from the next one
+/// ([`LeaseOpts::keep_slot`], yield_lane.rs `past_share`): the project's
+/// share, but never all of this machine's slots. The share counts the
+/// hands' slots too (capacity.rs), so at 21 slots and five busy projects or
+/// fewer it is five or more, and five owner tasks filled a five-slot
+/// machine: no slot was kept, no express slot opens while an owner run is
+/// in flight here, and a review queued behind them waited for a task to end,
+/// which can be hours (review of TASK-186, item a). One slot less than the
+/// machine has, never under one, keeps a slot for a lead's sitting, an
+/// answer or a review: one project runs four owner tasks here, not five.
+pub(crate) fn kept_share(s: &hive_store::Store) -> i32 {
+    let local = crate::capacity::local_slots(s).saturating_sub(1).max(1);
+    // The kept slot is this machine's alone (LeaseOpts::keep_slot is set
+    // for a local slot only), so the share is this machine's (share_on,
+    // TASK-156), bound by its slots less one.
+    crate::capacity::share_on(s, crate::executor::LOCAL_EXECUTOR).min(local)
+}
+
 /// The job kinds whose runs commit and so run the project's check under the
 /// verify lock (a clone's pre-commit hook, the post-run check, the landing):
 /// these share a project's work lanes. Research, ballots and answers read
@@ -906,14 +925,16 @@ pub(crate) fn lease_job(
         // share the fleet fills would otherwise refuse the owner's first
         // task the last free slot while no fleet run is asked to hold (the
         // fleet is not full), and the task waited beside an idle slot
-        // (review of PR 276, item A).
+        // (review of PR 276, item A). The share is bound by this machine's
+        // slots less one (kept_share): a share as large as the machine kept
+        // nothing (review of TASK-186, item a).
         if o.keep_slot {
             sql.push_str(&format!(
                 " AND NOT (j.kind IN ({work_kinds}) AND {OWNER_DRIVEN_SQL} AND (SELECT COUNT(*) FROM jobs k WHERE k.project = j.project AND k.kind IN ({work_kinds}) AND {} AND {OCCUPIED_JOB_SQL} AND {on_machine}) >= ?)",
                 owner_driven_sql("k")
             ));
             vals.push(Box::new(machine.clone()));
-            vals.push(Box::new(limit));
+            vals.push(Box::new(kept_share(s)));
         }
         // The owner's work goes first in its project: while an owner-driven
         // work job is queued there, the fleet's work jobs of that project
@@ -1064,11 +1085,15 @@ pub(crate) fn lease_job(
             sql.push_str(&format!(" AND j.kind IN ({})", no_code_kinds_sql()));
         }
         // The work this agent holds first - its clone and conversation carry
-        // on only under it; then the owner's work; then a review, on every
-        // slot, work-first ones too (TASK-186: nothing a work job makes lands
-        // before the pull requests ahead of it are reviewed, one review per
-        // project is queued at a time so it cannot crowd the work out, and
-        // it leases on this machine alone, STORE_KINDS); then the jobs that
+        // on only under it; then the owner's work; then a review or an
+        // answer to the owner, on every slot, work-first ones too (TASK-186:
+        // nothing a work job makes lands before the pull requests ahead of
+        // it are reviewed, one review per project is queued at a time so it
+        // cannot crowd the work out, and it leases on this machine alone,
+        // STORE_KINDS; the owner's answer shares the term so it does not
+        // wait behind every project's review, review of TASK-186 item c - a
+        // role lead's answer is not the owner's and keeps its place); then
+        // the jobs that
         // need this kind of machine (fewer machines can take them, so the
         // ones that can do, and the plain jobs go to the others); then the
         // work class, on a slot kept for it or once a work job has waited
@@ -1082,7 +1107,7 @@ pub(crate) fn lease_job(
             "j.created_at <= ?".to_string()
         };
         sql.push_str(&format!(
-            " ORDER BY CASE WHEN EXISTS (SELECT 1 FROM harness_sessions h WHERE h.job_id = j.id AND h.status = 'held' AND h.agent = ?) THEN 0 ELSE 1 END, CASE WHEN {OWNER_DRIVEN_SQL} THEN 0 ELSE 1 END, CASE WHEN j.kind = '{review}' THEN 0 ELSE 1 END, CASE WHEN j.needs != '' THEN 0 ELSE 1 END, CASE WHEN j.kind IN ({work_class}) AND {work_waited} THEN 0 ELSE 1 END, MAX(COALESCE((SELECT MAX(r.started_at) FROM runs r WHERE r.project = j.project), ''), COALESCE((SELECT MAX(e.at) FROM jobs k JOIN events e ON e.subject = k.id AND e.action = 'job.lease' WHERE k.project = j.project AND k.status = 'leased'), '')) ASC, j.priority DESC, j.created_at LIMIT 1"
+            " ORDER BY CASE WHEN EXISTS (SELECT 1 FROM harness_sessions h WHERE h.job_id = j.id AND h.status = 'held' AND h.agent = ?) THEN 0 ELSE 1 END, CASE WHEN {OWNER_DRIVEN_SQL} THEN 0 ELSE 1 END, CASE WHEN j.kind = '{review}' OR (j.kind = 'answer' AND j.source NOT LIKE 'lead-role:%') THEN 0 ELSE 1 END, CASE WHEN j.needs != '' THEN 0 ELSE 1 END, CASE WHEN j.kind IN ({work_class}) AND {work_waited} THEN 0 ELSE 1 END, MAX(COALESCE((SELECT MAX(r.started_at) FROM runs r WHERE r.project = j.project), ''), COALESCE((SELECT MAX(e.at) FROM jobs k JOIN events e ON e.subject = k.id AND e.action = 'job.lease' WHERE k.project = j.project AND k.status = 'leased'), '')) ASC, j.priority DESC, j.created_at LIMIT 1"
         ));
         vals.push(Box::new(agent.clone()));
         if !o.work_first {
@@ -2166,6 +2191,11 @@ mod tests {
         crate::test_helpers::new_bare_repo(&s);
         add_second_project(&s, "other");
         crate::capacity::pin_per_project(&s, 3);
+        // A machine of eight slots: the share of three is under its slots
+        // less one (kept_share), so the kept slot counts the share itself.
+        s.set_setting(hive_store::HUMAN_AGENT, "capacity", "8")
+            .unwrap();
+        assert_eq!(super::kept_share(&s), 3);
         let agents = ["a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8"];
         for name in agents {
             join(&s, name);
@@ -3238,6 +3268,118 @@ mod tests {
         )
         .unwrap();
         assert_eq!(express.str("id"), review, "{express:?}");
+    }
+
+    /// Review of TASK-186, item a: the share counts the paired machines'
+    /// slots, so at a share of five on a five-slot machine the keep clause
+    /// never fired and five owner tasks filled it; a review queued after
+    /// them waited for one to end. The share the last free slot counts is
+    /// this machine's slots less one (`kept_share`): the fifth task is
+    /// refused the kept slot and the review takes it.
+    #[test]
+    fn the_kept_slot_holds_a_slot_for_a_review_when_the_share_is_the_whole_machine() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        s.set_setting(hive_store::HUMAN_AGENT, "capacity", "5")
+            .unwrap();
+        crate::capacity::pin_per_project(&s, 5);
+        assert_eq!(super::kept_share(&s), 4);
+        let agents = ["a1", "a2", "a3", "a4", "a5", "a6"];
+        for name in agents {
+            join(&s, name);
+        }
+        let lease = |agent: &str, keep_slot: bool| {
+            super::lease_job(
+                &s,
+                agent.into(),
+                crate::test_helpers::TEST_NOW.into(),
+                super::LeaseOpts {
+                    any_proj: true,
+                    keep_slot,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        let tasks = (1..=5)
+            .map(|n| queue(&s, "proj", "task", &format!("task:TASK-00{n}"), 80))
+            .collect::<Vec<_>>();
+        for (agent, task) in agents.iter().zip(&tasks[..4]) {
+            assert_eq!(lease(agent, false).str("id"), *task);
+        }
+        // The fifth slot is the machine's last: the fifth task is past the
+        // bound share and does not take it.
+        let none = lease(agents[4], true);
+        assert!(
+            none.0.is_empty(),
+            "the fifth task took the kept slot: {none:?}"
+        );
+        let review = queue(&s, "proj", crate::review::KIND, "review:proj:311", 60);
+        assert_eq!(lease(agents[4], true).str("id"), review);
+        // A slot that is not the last still takes the owner's fifth task.
+        assert_eq!(lease(agents[5], false).str("id"), tasks[4]);
+        // A one-slot machine keeps its share at one, never at none.
+        s.set_setting(hive_store::HUMAN_AGENT, "capacity", "1")
+            .unwrap();
+        assert_eq!(super::kept_share(&s), 1);
+    }
+
+    /// Review of TASK-186, item e: two projects' reviews both go before the
+    /// owner's work in either project; an owner's answer sorts
+    /// with them (item c), so it is not behind every queued review; the job
+    /// an agent's held session waits on still goes first for that agent.
+    #[test]
+    fn reviews_of_two_projects_and_the_owners_answer_lease_before_work_held_jobs_first() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        add_second_project(&s, "other");
+        crate::capacity::pin_per_project(&s, 4);
+        for name in ["aurora", "borealis", "cinder", "dusk", "ember", "frost"] {
+            join(&s, name);
+        }
+        let lease = |agent: &str| {
+            super::lease_job(
+                &s,
+                agent.into(),
+                crate::test_helpers::TEST_NOW.into(),
+                super::LeaseOpts {
+                    any_proj: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        let work = queue(&s, "proj", "task", "task:TASK-1", 90);
+        let other_work = queue(&s, "other", "task", "task:TASK-2", 90);
+        let other_review = queue(&s, "other", crate::review::KIND, "review:other:9", 60);
+        let review = queue(&s, "proj", crate::review::KIND, "review:proj:8", 60);
+        // A low-priority owner task `frost` held a session on: frost takes
+        // it before any review.
+        let held = queue(&s, "proj", "task", "task:TASK-3", 10);
+        crate::util::exec1(
+            &*s.conn().unwrap(),
+            "INSERT INTO harness_sessions (id, run_id, job_id, agent, project, status, started_at, updated_at) VALUES ('hs-frost', 'run-frost', ?1, 'frost', 'proj', 'held', ?2, ?2)",
+            &[&held, &crate::test_helpers::TEST_NOW],
+        );
+        assert_eq!(lease("frost").str("id"), held);
+        // The answer to the owner, queued last at a higher priority, goes
+        // before both reviews; before item c it went after every one.
+        let answer = queue(&s, "other", "answer", "answer:other:q1", 70);
+        assert_eq!(lease("aurora").str("id"), answer);
+        // The two reviews next.
+        let reviews = [lease("borealis").str("id"), lease("cinder").str("id")];
+        assert!(
+            reviews.contains(&review) && reviews.contains(&other_review),
+            "{reviews:?}"
+        );
+        // Then the work, not held back by either review.
+        let rest = [lease("dusk").str("id"), lease("ember").str("id")];
+        assert!(
+            rest.contains(&work) && rest.contains(&other_work),
+            "{rest:?}"
+        );
     }
 
     fn fake_probe_ssh(
