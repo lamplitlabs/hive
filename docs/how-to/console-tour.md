@@ -19,19 +19,21 @@ The sidebar on the left is the same on every page.
   **Add project**.
 - **Search** (⌘K, or Ctrl-K) finds pages, projects, tasks and records. A
   question typed there goes to **Ask**.
-- The pages come in three groups. **Sessions** and **Tasks** are the ones
-  you use every day; the console opens on **Sessions**. **Knowledge** holds
-  **Records**, **Reports**, **Votes** and **Memory**. **System** holds
-  **Runs**, **Machines**, **Connections**, **Automations** and
-  **Insights**.
-- **Projects** lists each project, with a count of what waits for you
-  there. **Sessions** carries a count too: the decisions only you can make.
-- The foot shows two lights. The first says whether the runner is on. The
-  runner is the part of Hive that plans jobs and starts agents; in a
-  terminal it is `hive daemon`. The second says which model provider is
-  connected. When one of them needs you, it links to the fix.
-- Your own row is at the bottom: your name, a switch for when you are
-  away, **Settings** and the theme.
+- **Sessions** and **Tasks** are the pages you use every day; the console
+  opens on **Sessions**, which carries a count: the decisions only you can
+  make.
+- **Projects** lists each project, with a dot when something waits for you
+  there.
+- **More** folds away every other page: **Records**, **Reports**,
+  **Votes**, **Memory**, **Runs**, **Machines**, **Connections**,
+  **Automations** and **Insights**. It opens by itself when you are on one
+  of them.
+- The foot stays empty while all is well. When the runner is off (the part
+  of Hive that plans jobs and starts agents; in a terminal it is
+  `hive daemon`) or the model provider needs a sign-in, a line there says
+  so and links to the fix.
+- Your own row is at the bottom: your name and **Settings**. Whether you are
+  away and the theme are in **Settings → General**.
 
 The top bar has **Ask** (⌘J, or Ctrl-J), the bell for notifications, and
 the list of keyboard shortcuts (press `?`).
@@ -40,24 +42,30 @@ the list of keyboard shortcuts (press `?`).
 
 ![Sessions: three decisions only you can make, each with its buttons, above the new-session form and the list of sessions](images/console-sessions.webp)
 
-The console opens on **Sessions**. Above the new-session form it shows only
+The console opens on **Sessions**, with a greeting and one box: what
+should your agents work on? Type it, pick the project and press **Start**;
+everything else is under **Options**. Around the box Sessions shows only
 what needs you now, and nothing when nothing does.
 
-- **A notice for each thing that stops work**: the runner is off or paused,
-  or the model provider's sign-in has expired. Its button fixes it:
-  **Start runner** or **Sign in**.
-- **Set up Hive**, on a new machine only: three steps to a working machine
+- **A notice for each thing that stops work**, over the box: the runner is
+  off or paused, or the model provider's sign-in has expired. Its button
+  fixes it: **Start runner** or **Sign in**.
+- **Set up Hive**, over the box on a new machine only: three steps to a
+  working machine, one at a time
   ([Set up your first project](first-project.md)).
-- **Decisions only you can make**: the asks that spend money, cannot be
-  undone, touch a credential or publish something. Each row has its own
-  buttons. Everything else is for the project's lead to decide; a project's
-  **For you** tab lists all of its asks.
-- **Working now**, under the form, lists the agents at work. **See all
-  runs** opens **Runs**.
+- **Decisions only you can make**, under the box, as one line with
+  **Review**: the asks that spend money, cannot be undone, touch a
+  credential or publish something. **Review** unfolds them, each row with
+  its own buttons. Everything else is for the project's lead to decide; a
+  project's **For you** tab lists all of its asks.
+- **Your sessions**, under that, lists what is working or open, one row
+  each, and **Done** folds away what finished. Open one and it takes the
+  page: the conversation in the middle, **Show work** for the changes,
+  terminal and files, and **⋯** for rename, finish, restart and archive.
 
 Two more things wait for you on other pages: a task whose lead stopped for
 you is on **Tasks** under **Asked you**, and a pull request handed to you is
-under **Needs your review** in the session list.
+under **Needs you** on Sessions, with its **Merge** button.
 [Answer what waits for you](what-needs-you.md) goes through each kind.
 
 ## Tasks

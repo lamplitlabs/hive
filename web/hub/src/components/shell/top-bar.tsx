@@ -18,10 +18,13 @@ export const TOPBAR_H = "48px";
 
 // Whether the hub's live event stream is up: a steady dot, amber while it
 // reconnects. Shared by the desktop top bar and the phone's More sheet.
-export function LiveStatus({ compact, className }: { compact?: boolean; className?: string }) {
+// `quiet` (the top bar) draws nothing while the stream is live: a steady
+// green dot says nothing new, so only trouble shows.
+export function LiveStatus({ compact, quiet, className }: { compact?: boolean; quiet?: boolean; className?: string }) {
   const { state } = useEventStream();
   const live = state === "live";
   const label = live ? "Live: changes show up as they happen" : state === "polling" ? "Reconnecting: refreshing every 10 seconds until the live stream is back" : "Connecting to Hive…";
+  if (quiet && live) return null;
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -84,8 +87,8 @@ export function Breadcrumbs({ className }: { className?: string }) {
 }
 
 // The desktop top bar (spec "Top bar"): 48 px, sticky, blurred over the
-// page; the breadcrumbs on the left, Ask Hive, the bell, the live dot and
-// the shortcut help on the right. The border shows once the page scrolls.
+// page; the breadcrumbs on the left, Ask Hive, the bell, the live dot (only
+// while the stream is down) and the shortcut help on the right. The border shows once the page scrolls.
 export function TopBar({ onHelp }: { onHelp: () => void }) {
   const scrolled = useScrolled();
   return (
@@ -97,7 +100,7 @@ export function TopBar({ onHelp }: { onHelp: () => void }) {
       <div className="flex shrink-0 items-center gap-1">
         <AskTrigger variant="bar" className="text-[13px] hover:text-foreground" />
         <Bell />
-        <LiveStatus compact />
+        <LiveStatus compact quiet />
         <Tooltip>
           <TooltipTrigger asChild>
             <Button variant="ghost" size="icon-sm" className="text-muted-foreground hover:text-foreground" aria-label="Keyboard shortcuts (?)" aria-keyshortcuts="?" onClick={onHelp}>

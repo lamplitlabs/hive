@@ -2,7 +2,9 @@
 // groups). Pure: icons are named, not imported, so node --test can check the
 // model and app-shell.tsx maps the names to lucide glyphs. The labels are what
 // each page is about, not what the store calls it (Runs is the harness's log,
-// Machines is compute).
+// Machines is compute). The sidebar shows only the first group, then the
+// projects; Knowledge and System fold under one "More" (MORE_GROUPS), so a
+// new owner meets two pages, not eleven.
 
 export type NavIcon =
   | "sessions"

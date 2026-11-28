@@ -19,9 +19,14 @@ test("a task's pull request: open links PR #N, merged links it, held names the n
   assert.equal(held.tone, "warn");
   // A conflict is the owner's: the runner waits for the work to change.
   const mine = deliveryView({ state: "held_for_owner", note: "does not merge cleanly; this one is for you" });
-  assert.equal(line(mine), "Held for you: does not merge cleanly; this one is for you. The runner tries again once the work changes.");
+  assert.equal(line(mine), "Merge conflict: does not merge cleanly; this one is for you. Hive tries again once the work changes.");
   assert.equal(mine.tone, "warn");
-  assert.equal(line(deliveryView({ state: "held_for_owner" })), "Held for you. The runner tries again once the work changes.");
+  assert.equal(line(deliveryView({ state: "held_for_owner" })), "Merge conflict. Hive tries again once the work changes.");
+  assert.equal(
+    line(deliveryView({ state: "held_for_owner", note: "does not merge cleanly into main; job job-20260901T190200Z-87e2d1 already rebased the task's work once, so this one is for you" })),
+    "Merge conflict: does not merge cleanly into main; Hive already rebased the task's work once, so this one is for you. Hive tries again once the work changes.",
+    "the hub's job id reads as Hive",
+  );
   assert.equal(deliveryView({ state: "none" }), null);
   assert.equal(deliveryView(null), null);
 });

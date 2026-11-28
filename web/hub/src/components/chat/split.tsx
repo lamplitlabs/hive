@@ -43,6 +43,7 @@ import { cn } from "@/lib/utils";
 // right column), while the Pane tells the Split whether there is a panel
 // and whether the canvas wants the wide share.
 const THREE_COLUMNS_AT = 1100;
+const FOCUS_SIDE_AT = 900;
 const ROOMY_AT = 1264;
 
 export function useWidth(ref: RefObject<HTMLElement | null>): number {
@@ -82,7 +83,8 @@ export function Split({
   fill,
   children,
 }: {
-  list: ReactNode;
+  /** null: no list column - the open view takes the page (see below). */
+  list: ReactNode | null;
   listOnMobile?: boolean;
   fill?: boolean;
   children: ReactNode;
@@ -95,6 +97,53 @@ export function Split({
     () => ({ slot, layout, setLayout }),
     [slot, layout],
   );
+  // Without a list (a conversation or a task open on its own) the view
+  // takes the page: the transcript in the middle at a reading width, and
+  // the work panel beside it only while it is shown. Below FOCUS_SIDE_AT
+  // the panel goes under the transcript, as on a phone.
+  if (list === null) {
+    const side = layout.panel && width >= FOCUS_SIDE_AT;
+    const wide = side && layout.wide;
+    return (
+      <FrameContext.Provider value={frame}>
+        <div
+          ref={box}
+          className={cn(
+            "grid min-w-0 gap-4",
+            side
+              ? wide
+                ? "lg:grid-cols-[minmax(24rem,1fr)_minmax(0,1.25fr)]"
+                : "lg:grid-cols-[minmax(0,1fr)_minmax(20rem,26rem)]"
+              : "lg:grid-cols-[minmax(0,1fr)]",
+            fill
+              ? "lg:min-h-0 lg:flex-1 lg:grid-rows-[minmax(0,1fr)]"
+              : "lg:items-start",
+          )}
+        >
+          <div
+            className={cn(
+              "min-w-0",
+              // Alone, the transcript keeps to a reading width in the middle.
+              !side && "mx-auto w-full max-w-[56rem]",
+              fill && "lg:flex lg:min-h-0 lg:flex-col",
+            )}
+          >
+            {children}
+          </div>
+          <aside
+            ref={setSlot}
+            className={cn(
+              "scroll-thin grid min-w-0 content-start gap-4 empty:hidden lg:overflow-y-auto lg:pb-1",
+              fill ? "lg:min-h-0 lg:grid lg:grid-rows-[minmax(0,1fr)]" : "",
+              !side && "mx-auto w-full max-w-[56rem]",
+              !side && fill && "lg:h-[70dvh]",
+            )}
+            aria-label="Work of this session"
+          />
+        </div>
+      </FrameContext.Provider>
+    );
+  }
   const three = layout.panel && width >= THREE_COLUMNS_AT;
   const wide = three && layout.wide;
   const side = cn(
@@ -200,14 +249,15 @@ export function Pane({
   );
 }
 
-// On a phone the open conversation takes the list's place; this goes back.
+// An open conversation or task takes the whole page; this goes back to the
+// list on the Sessions landing, on every screen.
 export function BackButton({ onBack }: { onBack: () => void }) {
   return (
     <Button
       type="button"
       variant="ghost"
       size="sm"
-      className="-ml-2 justify-self-start lg:hidden"
+      className="-ml-2 justify-self-start text-muted-foreground hover:text-foreground"
       onClick={onBack}
     >
       <ArrowLeftIcon /> All sessions
