@@ -204,8 +204,8 @@ One setting counts every job, and four bound schedules:
 - `schedule.min_minutes` (30): the shortest cadence.
 - `schedule.max_per_project` (10): the active and paused schedules per project.
 - `schedule.script_timeout_minutes` (20): how long a script may run.
-- `schedule.scripts_per_tick` (2): the scripts the runner runs in one pass.
-  While the machine is saturated it runs none.
+- `schedule.scripts_per_tick` (2): the scripts the runner runs at once, off
+  its loop. While the machine is saturated it starts none.
 
 ```bash
 hive status                          # "runs today 0 of 2 (jobs_per_day)" is today's count

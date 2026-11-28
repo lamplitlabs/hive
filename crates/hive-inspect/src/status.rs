@@ -351,6 +351,55 @@ pub struct DaemonBeat {
     /// (daemon.restart_max_minutes) is up; absent when none is pending.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub restart: Option<RestartBeat>,
+    /// The schedules' check and watch scripts running off the loop
+    /// (schedule_script.rs `Scripts::beat`), longest running first; empty
+    /// when none runs and in heartbeats older than TASK-199.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub scripts: Vec<ScriptBeat>,
+}
+
+/// A check or watch script the daemon runs off its loop.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ScriptBeat {
+    pub schedule: String,
+    pub project: String,
+    pub kind: String,
+    pub script: String,
+    /// When it started (UTC).
+    pub since: String,
+    /// How long it had run when the heartbeat was written.
+    pub seconds: u64,
+}
+
+/// What the running check and watch scripts are and for how long, as a
+/// clause of the daemon line: `; check SCHED-015 (proj) scripts/verify-check.sh
+/// running 15m31s`. Their time is counted to `now` from their start, so a
+/// late heartbeat does not shorten it.
+fn scripts_clause(scripts: &[ScriptBeat], now: chrono::DateTime<chrono::Utc>) -> String {
+    let named: Vec<String> = scripts
+        .iter()
+        .map(|sc| {
+            let seconds = parse_utc(&sc.since)
+                .ok()
+                .map(|at| (now - at).num_seconds().max(0) as u64)
+                .unwrap_or(sc.seconds)
+                .max(sc.seconds);
+            format!(
+                "{} {} ({}) {} running {}",
+                sc.kind,
+                sc.schedule,
+                sc.project,
+                sc.script,
+                hive_cli::format_duration(std::time::Duration::from_secs(seconds))
+            )
+        })
+        .collect();
+    if named.is_empty() {
+        String::new()
+    } else {
+        format!("; {}", named.join(", "))
+    }
 }
 
 /// A pending restart as the heartbeat records it.
@@ -607,8 +656,12 @@ pub fn daemon_status(s: &hive_store::Store) -> Result<String> {
         .filter(|_| state == "alive")
         .map(|r| restart_clause(r, now))
         .unwrap_or_default();
+    // A check or watch running off the loop is named with its time: a
+    // whole-suite check runs for many minutes, and the line says so instead
+    // of leaving the owner to guess what the daemon is doing.
+    let scripts = scripts_clause(&beat.scripts, now);
     Ok(format!(
-        "{state} pid {pid}, last loop {age}s ago, {} loop(s), interval {interval_text}s{tick}{restart}",
+        "{state} pid {pid}, last loop {age}s ago, {} loop(s), interval {interval_text}s{tick}{restart}{scripts}",
         beat.loops
     ))
 }
@@ -1467,6 +1520,10 @@ mod tests {
             (
                 r#"{"at":"2026-09-06T19:00:00Z"}"#,
                 "alive pid None, last loop 0s ago, 0 loop(s), interval Nones",
+            ),
+            (
+                r#"{"pid":7,"at":"2026-09-06T19:00:00Z","loops":9,"interval":300,"scripts":[{"schedule":"SCHED-015","project":"proj","kind":"check","script":"scripts/verify-check.sh","since":"2026-09-06T18:44:29Z","seconds":900}]}"#,
+                "alive pid 7, last loop 0s ago, 9 loop(s), interval 300s; check SCHED-015 (proj) scripts/verify-check.sh running 15m31s",
             ),
             (
                 r#"{"pid":7,"at":"2026-09-06T19:00:00Z","loops":9,"interval":300,"tick":{"ms":1200,"max_ms":41000,"slow":2}}"#,

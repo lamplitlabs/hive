@@ -7,8 +7,9 @@
 
 use hive_tasks::schedules::{self, Schedule, ScriptRun, Tree, Verdict};
 use serde_json::json;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Budget for the git commands around the run (the worktree, not the script).
@@ -26,44 +27,300 @@ pub(crate) fn is_hold_line(line: &str) -> bool {
 }
 
 /// Runs the scripts of the due checks and watches of `slugs`, at most
-/// `schedule.scripts_per_tick` of them per tick and none while the machine is
-/// saturated, and says one line per run.
+/// `schedule.scripts_per_tick` of them and none while the machine is
+/// saturated, one after the other in the caller's thread, and says one line
+/// per run. The daemon runs them off its loop instead (`Scripts`).
+#[cfg(test)]
 pub(crate) fn run_due(
     s: &hive_store::Store,
     now: &str,
     actor: &str,
     slugs: &[String],
 ) -> Vec<String> {
+    let room = per_tick(s);
+    match pick_due(s, now, slugs, &BTreeSet::new(), room) {
+        Ok(due) => due
+            .iter()
+            .map(|sched| run_one(s, actor, sched, &hive_bus::CancellationToken::new()))
+            .collect(),
+        Err(lines) => lines,
+    }
+}
+
+/// `schedule.scripts_per_tick`: how many scripts run at once.
+fn per_tick(s: &hive_store::Store) -> usize {
+    crate::util::setting_int(s, "schedule.scripts_per_tick").max(1) as usize
+}
+
+/// The due checks and watches of `slugs` that may start now, the longest
+/// overdue first: none of `skip` (they run already), at most `room`. Err
+/// carries the lines that say why none starts (a hold, a store error).
+fn pick_due(
+    s: &hive_store::Store,
+    now: &str,
+    slugs: &[String],
+    skip: &BTreeSet<String>,
+    room: usize,
+) -> Result<Vec<Schedule>, Vec<String>> {
     let due = match schedules::due_scripts(s, now, slugs) {
-        Ok(due) => due,
-        Err(e) => return vec![format!("schedules: {}", crate::run::err_message(&e))],
+        Ok(due) => due
+            .into_iter()
+            .filter(|sc| !skip.contains(&sc.id))
+            .collect::<Vec<_>>(),
+        Err(e) => return Err(vec![format!("schedules: {}", crate::run::err_message(&e))]),
     };
-    if due.is_empty() {
-        return Vec::new();
+    if due.is_empty() || room == 0 {
+        return Ok(Vec::new());
     }
     // `brain.code none` (ADR-070 rule 6): a script runs in a worktree of
     // the project, which a brain without code does not make.
     if crate::jobs::brain_code_none(s) {
-        return vec![format!(
+        return Err(vec![format!(
             "schedules: {} check/watch script{}{HOLD_MARK}brain.code is none: no project worktree on this machine",
             due.len(),
             if due.len() == 1 { "" } else { "s" }
-        )];
+        )]);
     }
     let limits = crate::daemon_load::limits(s, &crate::daemon_load::Machine::detect(), 0);
     if let Some(why) = crate::daemon_load::hold_reason(&limits, &crate::daemon_load::pressure()) {
-        return vec![format!(
+        return Err(vec![format!(
             "schedules: {} check/watch script{}{HOLD_MARK}{why}",
             due.len(),
             if due.len() == 1 { "" } else { "s" }
-        )];
+        )]);
     }
-    let per_tick = crate::util::setting_int(s, "schedule.scripts_per_tick").max(1) as usize;
-    let mut lines = Vec::new();
-    for sched in due.into_iter().take(per_tick) {
-        lines.push(run_one(s, actor, &sched));
+    Ok(due.into_iter().take(room).collect())
+}
+
+/// A script the daemon runs off its loop, as the heartbeat names it.
+#[derive(Debug, Clone)]
+struct Running {
+    project: String,
+    kind: String,
+    script: String,
+    since: String,
+    started: Instant,
+}
+
+#[derive(Default)]
+struct Shared {
+    running: BTreeMap<String, Running>,
+    lines: Vec<String>,
+}
+
+/// The daemon's check and watch scripts, run off its loop (TASK-199): a
+/// whole-suite check used to hold the loop for its length, and nothing was
+/// leased, delivered or merged meanwhile. A planning pass starts the due
+/// scripts on threads of their own, at most `schedule.scripts_per_tick` at
+/// once; every tick takes the lines of the runs that ended; the heartbeat
+/// names the ones still running.
+pub(crate) struct Scripts {
+    shared: Arc<Mutex<Shared>>,
+    cancel: hive_bus::CancellationToken,
+    threads: Mutex<Vec<std::thread::JoinHandle<()>>>,
+}
+
+impl Default for Scripts {
+    fn default() -> Self {
+        Self {
+            shared: Arc::default(),
+            cancel: hive_bus::CancellationToken::new(),
+            threads: Mutex::default(),
+        }
     }
-    lines
+}
+
+impl Scripts {
+    fn shared(&self) -> std::sync::MutexGuard<'_, Shared> {
+        self.shared.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Starts the due scripts of `slugs` that are not running yet and
+    /// returns at once: one line per script started, or the hold that keeps
+    /// them waiting.
+    pub(crate) fn start_due(
+        &self,
+        s: &hive_store::Store,
+        now: &str,
+        actor: &str,
+        slugs: &[String],
+    ) -> Vec<String> {
+        if self.cancel.is_cancelled() {
+            return Vec::new();
+        }
+        let skip: BTreeSet<String> = self.shared().running.keys().cloned().collect();
+        let room = per_tick(s).saturating_sub(skip.len());
+        let due = match pick_due(s, now, slugs, &skip, room) {
+            Ok(due) => due,
+            Err(lines) => return lines,
+        };
+        let mut lines = Vec::new();
+        for sched in due {
+            let id = sched.id.clone();
+            self.shared().running.insert(
+                id.clone(),
+                Running {
+                    project: sched.project.clone(),
+                    kind: sched.kind.clone(),
+                    script: sched.script.clone(),
+                    since: s.now(),
+                    started: Instant::now(),
+                },
+            );
+            let (shared, cancel, store, who) = (
+                Arc::clone(&self.shared),
+                self.cancel.clone(),
+                s.clone(),
+                actor.to_string(),
+            );
+            let job = sched.clone();
+            let spawned = std::thread::Builder::new()
+                .name(format!("schedule-{id}"))
+                .spawn(move || {
+                    let line = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        run_one(&store, &who, &job, &cancel)
+                    }))
+                    .unwrap_or_else(|panic| {
+                        format!(
+                            "schedule {} ({}): the script runner stopped: {}",
+                            job.id,
+                            job.project,
+                            crate::daemon::panic_message(&panic)
+                        )
+                    });
+                    let mut shared = shared.lock().unwrap_or_else(|e| e.into_inner());
+                    shared.running.remove(&job.id);
+                    shared.lines.push(line);
+                });
+            match spawned {
+                Ok(handle) => {
+                    self.threads
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push(handle);
+                    lines.push(format!(
+                        "schedule {id} ({}): {} {} started off the loop",
+                        sched.project, sched.kind, sched.script
+                    ));
+                }
+                Err(e) => {
+                    self.shared().running.remove(&id);
+                    lines.push(format!(
+                        "schedule {id} ({}): could not start {}: {e}",
+                        sched.project, sched.script
+                    ));
+                }
+            }
+        }
+        lines
+    }
+
+    /// The lines of the runs that ended since the last call.
+    pub(crate) fn drain(&self) -> Vec<String> {
+        self.threads
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|t| !t.is_finished());
+        std::mem::take(&mut self.shared().lines)
+    }
+
+    /// How many scripts run now.
+    pub(crate) fn busy(&self) -> usize {
+        self.shared().running.len()
+    }
+
+    /// The running scripts for the heartbeat (`scripts`), longest running
+    /// first; None when none runs.
+    pub(crate) fn beat(&self) -> Option<serde_json::Value> {
+        let shared = self.shared();
+        if shared.running.is_empty() {
+            return None;
+        }
+        let mut running: Vec<(&String, &Running)> = shared.running.iter().collect();
+        running.sort_by(|a, b| a.1.since.cmp(&b.1.since).then_with(|| a.0.cmp(b.0)));
+        Some(serde_json::Value::Array(
+            running
+                .into_iter()
+                .map(|(id, r)| {
+                    json!({
+                        "schedule": id,
+                        "project": r.project,
+                        "kind": r.kind,
+                        "script": r.script,
+                        "since": r.since,
+                        "seconds": r.started.elapsed().as_secs(),
+                    })
+                })
+                .collect(),
+        ))
+    }
+
+    /// Ends the scripts with the daemon. With `finish` (a bounded daemon
+    /// whose loops are done) they run to their end within `bound`; else, or
+    /// once `bound` is up, they are cancelled - their process group is
+    /// killed and the run is not recorded, so the schedule stays due for the
+    /// next daemon. `beat` is called while it waits. Returns the last lines.
+    pub(crate) fn close(&self, finish: bool, bound: Duration, beat: &dyn Fn()) -> Vec<String> {
+        let mut deadline = Instant::now() + if finish { bound } else { Duration::ZERO };
+        let mut cancelled = false;
+        loop {
+            let done = self
+                .threads
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .all(|t| t.is_finished());
+            if done {
+                break;
+            }
+            if Instant::now() >= deadline {
+                if cancelled {
+                    break;
+                }
+                self.cancel.cancel();
+                cancelled = true;
+                deadline = Instant::now() + CLOSE_GRACE;
+            }
+            beat();
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        self.cancel.cancel();
+        for t in std::mem::take(&mut *self.threads.lock().unwrap_or_else(|e| e.into_inner())) {
+            if t.is_finished() {
+                let _ = t.join();
+            }
+        }
+        self.drain()
+    }
+}
+
+/// How long a cancelled script gets to stop and remove its worktree.
+const CLOSE_GRACE: Duration = Duration::from_secs(30);
+
+/// The longest a script run may take: its budget plus, for a check under
+/// `verify.lock`, the wait for the lock.
+pub(crate) fn run_bound(s: &hive_store::Store, project: &str) -> Duration {
+    let (_, budget) = script_budget(s);
+    budget
+        + lock_wait(s, project)
+            .map(|(_, wait)| wait)
+            .unwrap_or_default()
+}
+
+/// The verify lock a check of `project` takes and how long it may wait for
+/// it (`minutes_per_job`, as every verification waits); None while
+/// `verify.lock` is off.
+fn lock_wait(s: &hive_store::Store, project: &str) -> Option<((String, i64), Duration)> {
+    let name = crate::verify_lock::lock_name(s, project)?;
+    let minutes = i64::from(crate::util::setting_int(s, "minutes_per_job")).max(1);
+    Some((
+        (name, minutes),
+        Duration::from_secs(minutes.unsigned_abs() * 60),
+    ))
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 /// Where the script ran and what it did; `rc` is `None` when it could not be
@@ -75,6 +332,9 @@ struct Ran {
     seconds: f64,
     stdout: String,
     output: String,
+    /// The daemon stopped the run before it ended: nothing is recorded and
+    /// the schedule stays due.
+    cancelled: bool,
 }
 
 /// The per-schedule directory a script keeps between runs (cursors, last
@@ -178,7 +438,12 @@ fn join_output(stdout: &str, stderr: &str) -> String {
 }
 
 /// Makes the worktree, runs the script in it, removes the worktree.
-fn run_script(s: &hive_store::Store, sched: &Schedule, project: &crate::util::Row) -> Ran {
+fn run_script(
+    s: &hive_store::Store,
+    sched: &Schedule,
+    project: &crate::util::Row,
+    cancel: &hive_bus::CancellationToken,
+) -> Ran {
     let repo = project.str("path");
     let branch = {
         let d = project.str("default_branch");
@@ -194,6 +459,7 @@ fn run_script(s: &hive_store::Store, sched: &Schedule, project: &crate::util::Ro
         seconds: 0.0,
         stdout: String::new(),
         output: String::new(),
+        cancelled: false,
     };
     let could_not = |ran: &mut Ran, what: String| {
         ran.output =
@@ -258,19 +524,53 @@ fn run_script(s: &hive_store::Store, sched: &Schedule, project: &crate::util::Ro
         ran.rc = Some(NOT_FOUND_RC);
         ran.output = format!("{}: no such file on {}\n", sched.script, ran.tree.at());
     } else {
-        let argv = if is_executable(&script) {
+        let mut argv = if is_executable(&script) {
             vec![script.display().to_string()]
         } else {
             vec!["sh".to_string(), script.display().to_string()]
         };
-        match crate::proc::run_group(
-            &hive_bus::CancellationToken::new(),
-            &argv,
-            &wt_text,
-            &env,
-            b"",
-            budget,
-        ) {
+        // A check is a verification like a commit hook's or a landing's:
+        // under `verify.lock` it takes its turn on the same lock, so a
+        // whole-suite check never runs beside another one on a shared
+        // build cache. Its time limit grows by the longest wait for the
+        // lock, so a check that waited its turn is not cut short for it.
+        let mut budget = budget;
+        let locked = if sched.kind == "check" {
+            lock_wait(s, &sched.project)
+        } else {
+            None
+        };
+        if let Some(((name, wait_minutes), wait)) = &locked {
+            let cmd = format!(
+                "exec {}",
+                argv.iter()
+                    .map(|a| shell_quote(a))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+            argv = vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                crate::verify_lock::wrap_with_lock(&cmd, name, *wait_minutes),
+            ];
+            budget += *wait;
+        }
+        match crate::proc::run_group(cancel, &argv, &wt_text, &env, b"", budget) {
+            Ok(_) if cancel.is_cancelled() => {
+                ran.output = format!("`{}` stopped with the daemon\n", sched.script);
+                ran.cancelled = true;
+            }
+            Ok(out)
+                if locked.is_some()
+                    && !out.timeout
+                    && out.exit_code == crate::verify_lock::GAVE_UP_EXIT
+                    && out.stderr.contains("this verification did not run") =>
+            {
+                // The lock prelude's own exit: the check did not run, which
+                // says nothing about the tree.
+                ran.output = crate::executor::tail(out.stderr.trim(), schedules::OUTPUT_TAIL);
+                ran.output.push('\n');
+            }
             Ok(out) => {
                 ran.timeout = out.timeout;
                 ran.rc = Some(if out.timeout { -1 } else { out.exit_code });
@@ -420,7 +720,12 @@ fn finding(
 
 /// Runs one due schedule's script, acts on the verdict and records the run;
 /// returns the daemon's log line.
-fn run_one(s: &hive_store::Store, actor: &str, sched: &Schedule) -> String {
+fn run_one(
+    s: &hive_store::Store,
+    actor: &str,
+    sched: &Schedule,
+    cancel: &hive_bus::CancellationToken,
+) -> String {
     let project = match s.conn() {
         Ok(conn) => crate::board::project_by_slug(&conn, sched.project.clone()),
         Err(e) => {
@@ -432,12 +737,18 @@ fn run_one(s: &hive_store::Store, actor: &str, sched: &Schedule) -> String {
             );
         }
     };
-    let ran = run_script(s, sched, &project);
+    let ran = run_script(s, sched, &project, cancel);
     let at = s.now();
     let head = format!(
         "schedule {} ({}): {} {}",
         sched.id, sched.project, sched.kind, sched.script
     );
+    if ran.cancelled {
+        return format!(
+            "{head} stopped with the daemon after {:.1}s; not recorded, due again on the next start",
+            ran.seconds
+        );
+    }
     let Some(rc) = ran.rc else {
         let run = ScriptRun {
             rc: None,
@@ -1347,5 +1658,242 @@ mod tests {
         );
         assert_eq!(jobs(&s, &sc).len(), 1);
         assert_eq!(jobs(&s, &llm).len(), 1);
+    }
+
+    /// Makes `sc` due at the store's clock.
+    fn due_now(s: &hive_store::Store, sc: &Schedule) {
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE schedules SET next_at = ? WHERE id = ?",
+                rusqlite::params![TEST_NOW, sc.id],
+            )
+            .unwrap();
+    }
+
+    /// TASK-199: a check that runs for a minute no longer holds the daemon's
+    /// loop. It starts off the loop, the heartbeat names it, and a job queued
+    /// while it runs is leased within one cadence. A daemon that stops kills
+    /// it and leaves the schedule due.
+    #[test]
+    fn a_check_that_sleeps_a_minute_leaves_the_daemon_leasing_within_one_cadence() {
+        let _serial = crate::test_helpers::serial();
+        hive_bus::reset_default();
+        let _login = crate::login_gate::swap_login_gate(Box::new(|_| String::new()));
+        let _calm = crate::daemon_load::pin_pressure(crate::daemon_load::CALM);
+        let s = new_store();
+        let (_proj, dir) = new_bare_repo(&s);
+        join(&s, "aurora");
+        join(&s, "borealis");
+        commit_script(
+            &dir,
+            ".hive/automations/suite.sh",
+            "echo the whole suite\nsleep 60\necho done\n",
+            false,
+        );
+        let sc = add(&s, "check", ".hive/automations/suite.sh", "task");
+        due_now(&s, &sc);
+        for (k, v) in [
+            ("capacity", "2"),
+            ("daemon.min_free_mb", "0"),
+            ("daemon.setup_mb", "0"),
+            ("jobs_per_day", "none"),
+        ] {
+            set_setting(&s, k, v);
+        }
+        crate::capacity::pin_per_project(&s, 2);
+        crate::test_helpers::seed_sweep_off(&s);
+        let cadence = Duration::from_secs(10);
+        let out = OutBuf::new();
+        let opts = crate::daemon::DaemonOpts {
+            interval: cadence.as_secs() as i32,
+            out: Some(out.writer()),
+            worker_cmd: "sh -c 'echo SUMMARY: ok'".into(),
+            ..Default::default()
+        };
+        let s_daemon = s.clone();
+        let cancel = hive_bus::CancellationToken::new();
+        let cancel_daemon = cancel.clone();
+        let (done_tx, done_rx) = crossbeam_channel::bounded(1);
+        std::thread::spawn(move || {
+            let _ = done_tx.send(crate::daemon::daemon(&cancel_daemon, &s_daemon, opts));
+        });
+        let wait_for = |want: &dyn Fn(&str) -> bool, within: Duration, what: &str| {
+            let since = Instant::now();
+            loop {
+                let text = out.string();
+                if want(&text) {
+                    return since.elapsed();
+                }
+                assert!(
+                    since.elapsed() < crate::test_helpers_daemon::test_wait(within),
+                    "{what} never came within {within:?}:\n{text}"
+                );
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            wait_for(
+                &|t| {
+                    t.contains("schedule SCHED-001 (proj): check .hive/automations/suite.sh started off the loop")
+                },
+                Duration::from_secs(60),
+                "the check's start",
+            );
+            crate::test_helpers::task_for_source(&s, "proj", "test");
+            let (job, _) = crate::jobs::add_job(
+                &s,
+                "proj".into(),
+                "task".into(),
+                "Queued while the check runs".into(),
+                "fake worker only".into(),
+                0,
+                100,
+                "test".into(),
+                hive_store::HUMAN_AGENT.into(),
+                false,
+            )
+            .unwrap();
+            let job = job.str("id");
+            let took = wait_for(
+                &|t| t.contains(&format!("leased {job}")),
+                cadence,
+                "the lease of the job queued while the check runs",
+            );
+            let text = out.string();
+            assert!(
+                !text.contains("check .hive/automations/suite.sh green")
+                    && !text.contains("check .hive/automations/suite.sh red"),
+                "the check had ended by the lease ({took:?}), so it proves nothing:\n{text}"
+            );
+            assert_eq!(schedules::get(&s, &sc.id).unwrap().runs, 0, "{text}");
+            // The heartbeat names the check that runs and for how long.
+            let since = Instant::now();
+            loop {
+                let (raw, _) = s.meta("daemon").unwrap();
+                let beat: serde_json::Value = serde_json::from_str(&raw).unwrap();
+                if beat["scripts"][0]["schedule"] == "SCHED-001" {
+                    assert_eq!(beat["scripts"][0]["kind"], "check", "{beat}");
+                    assert_eq!(
+                        beat["scripts"][0]["script"], ".hive/automations/suite.sh",
+                        "{beat}"
+                    );
+                    break;
+                }
+                assert!(
+                    since.elapsed() < crate::test_helpers_daemon::test_wait(cadence * 2),
+                    "the heartbeat never named the running check: {beat}"
+                );
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }));
+        cancel.cancel();
+        let ended = done_rx.recv_timeout(crate::test_helpers_daemon::test_wait(
+            Duration::from_secs(45),
+        ));
+        if let Err(panic) = result {
+            panic!("{}\n{}", crate::daemon::panic_message(&panic), out.string());
+        }
+        let text = out.string();
+        assert!(
+            ended.is_ok(),
+            "the daemon did not stop beside its check:\n{text}"
+        );
+        assert!(
+            text.contains("schedule SCHED-001 (proj): check .hive/automations/suite.sh stopped with the daemon after "),
+            "{text}"
+        );
+        let got = schedules::get(&s, &sc.id).unwrap();
+        assert_eq!(got.runs, 0, "a stopped check is not a run:\n{text}");
+        assert_eq!(got.next_at, TEST_NOW, "it stays due for the next daemon");
+    }
+
+    /// TASK-199: under `verify.lock` a check is a verification like any
+    /// other - it waits while another one holds the project's lock, then
+    /// runs, and leaves the lock free.
+    #[test]
+    #[cfg(unix)]
+    fn a_check_waits_for_the_verify_lock_another_verification_holds() {
+        let _serial = crate::test_helpers::serial();
+        let _calm = crate::daemon_load::pin_pressure(crate::daemon_load::CALM);
+        let s = new_store();
+        let (_proj, dir) = new_bare_repo(&s);
+        join(&s, "aurora");
+        commit_script(
+            &dir,
+            ".hive/automations/suite.sh",
+            "echo ran > \"$HIVE_STATE_DIR/ran\"\necho suite passed\n",
+            false,
+        );
+        let sc = add(&s, "check", ".hive/automations/suite.sh", "task");
+        due_now(&s, &sc);
+        set_setting(&s, crate::verify_lock::SETTING, crate::verify_lock::PROJECT);
+        // Another verification of the project holds the lock: this test's
+        // own pid, alive for as long as the test runs.
+        let locks = Path::new(&s.home).join("locks");
+        std::fs::create_dir_all(&locks).unwrap();
+        let lock = locks.join("verify-proj.lock");
+        std::os::unix::fs::symlink(std::process::id().to_string(), &lock).unwrap();
+        let marker = state_dir(&s.home, &sc.id).join("ran");
+        let scripts = Scripts::default();
+        let lines = scripts.start_due(&s, TEST_NOW, "daemon", &slugs());
+        assert_eq!(
+            lines,
+            vec![
+                "schedule SCHED-001 (proj): check .hive/automations/suite.sh started off the loop"
+                    .to_string()
+            ]
+        );
+        std::thread::sleep(Duration::from_secs(2));
+        assert_eq!(scripts.busy(), 1, "the check ended while the lock was held");
+        assert!(
+            !marker.exists(),
+            "the check ran beside the other verification"
+        );
+        assert!(scripts.drain().is_empty());
+        assert_eq!(schedules::get(&s, &sc.id).unwrap().runs, 0);
+        // Not started twice while it waits.
+        assert!(
+            scripts
+                .start_due(&s, TEST_NOW, "daemon", &slugs())
+                .is_empty()
+        );
+
+        // The other verification ends: the check takes its turn.
+        std::fs::remove_file(&lock).unwrap();
+        let since = Instant::now();
+        while scripts.busy() > 0 {
+            assert!(
+                since.elapsed() < crate::test_helpers_daemon::test_wait(Duration::from_secs(30)),
+                "the check never ran after the lock was released"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let lines = scripts.drain();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].starts_with(
+                "schedule SCHED-001 (proj): check .hive/automations/suite.sh green (exit 0, "
+            ),
+            "{lines:?}"
+        );
+        assert!(marker.exists());
+        let got = schedules::get(&s, &sc.id).unwrap();
+        assert_eq!(got.runs, 1);
+        assert!(
+            got.last_output.contains("another verification holds")
+                && got.last_output.contains("hive: verification ran"),
+            "{}",
+            got.last_output
+        );
+        assert!(
+            std::fs::symlink_metadata(&lock).is_err(),
+            "the check left the verify lock behind"
+        );
+        assert!(
+            scripts
+                .close(true, Duration::from_secs(1), &|| {})
+                .is_empty()
+        );
     }
 }
