@@ -54,6 +54,33 @@ pub(crate) fn draft_model(s: &hive_store::Store) -> String {
     s.light_model()
 }
 
+/// The model the call names: `model`, or - when no model setting is set,
+/// as on a default install - the provider's default chat model, the way
+/// Ask, the harness and the decide role resolve it. An empty name would
+/// reach the provider as no model at all.
+pub(crate) fn resolved_model(
+    p: &dyn hive_provider::Provider,
+    cancel: &hive_provider::CancelToken,
+    model: &str,
+) -> Result<String> {
+    let model = model.trim();
+    if !model.is_empty() {
+        return Ok(model.to_string());
+    }
+    let models = p.models(cancel)?;
+    models
+        .iter()
+        .find(|m| m.default && m.chat)
+        .or_else(|| models.iter().find(|m| m.chat))
+        .map(|m| m.id.clone())
+        .ok_or_else(|| {
+            anyhow!(
+                "no model is set and {} lists no chat model; set worker_model or light_model",
+                p.name()
+            )
+        })
+}
+
 pub(crate) fn run_draft_call(
     s: &hive_store::Store,
     model: &str,
@@ -66,10 +93,11 @@ pub(crate) fn run_draft_call(
         s.provider_settings(),
     )?;
     let cancel = hive_provider::CancelToken::new().with_timeout(DRAFT_TIMEOUT);
+    let model = resolved_model(p.as_ref(), &cancel, model)?;
     let resp = p.chat(
         &cancel,
         hive_provider::Request {
-            model: model.to_string(),
+            model,
             messages: vec![
                 hive_provider::Message {
                     content: system.to_string(),
@@ -107,6 +135,17 @@ pub(crate) fn propose(s: &hive_store::Store, slug: &str, trigger: &str) -> Resul
     let call = DRAFT_CALL.read().expect("draft call lock").clone();
     let reply = call(s, &model, draft::SYSTEM, &draft::prompt(&ev))
         .map_err(|e| anyhow!("the model did not draft a goal: {}", failure(e)))?;
+    if draft::keeps_goal(&reply) {
+        let out = Outcome {
+            project: slug.to_string(),
+            trigger: trigger.to_string(),
+            status: draft::KEPT.into(),
+            model,
+            ..Default::default()
+        };
+        record(s, slug, trigger, &out);
+        return Ok(out);
+    }
     let d = draft::check_reply(s, &reply, trigger)?;
     let mut out = Outcome {
         project: slug.to_string(),
@@ -153,17 +192,33 @@ pub(crate) fn propose(s: &hive_store::Store, slug: &str, trigger: &str) -> Resul
             out.post = post.str("id");
         }
     }
-    if let Ok(conn) = s.conn() {
-        crate::util::event_at(
-            &conn,
-            &s.now(),
-            draft::DRAFTER,
-            "goal.draft",
-            slug,
-            serde_json::json!({"trigger": trigger, "status": out.status, "post": out.post}),
-        );
-    }
+    record(s, slug, trigger, &out);
     Ok(out)
+}
+
+/// The `goal.draft` event of one outcome. A store that refuses the write
+/// loses the event, never the drafting thread: `crate::util::event_at`
+/// unwraps, and a panic there left the project marked in flight until the
+/// daemon restarted.
+fn record(s: &hive_store::Store, slug: &str, trigger: &str, out: &Outcome) {
+    let detail = serde_json::json!({"trigger": trigger, "status": out.status, "post": out.post});
+    if let Err(e) = s.event(draft::DRAFTER, "goal.draft", slug, detail) {
+        LINES.lock().push(format!(
+            "goal: could not record {slug}'s draft: {}",
+            failure(e)
+        ));
+    }
+}
+
+/// Takes a project's in-flight mark off when its drafting thread ends,
+/// however it ends, as `decide`'s `PassEnd` does: a panic in the draft must
+/// not keep the project from being drafted again until the daemon restarts.
+struct Inflight(String);
+
+impl Drop for Inflight {
+    fn drop(&mut self) {
+        INFLIGHT.lock().remove(&self.0);
+    }
 }
 
 fn failure(err: anyhow::Error) -> String {
@@ -246,9 +301,14 @@ pub(crate) fn tend_goal_drafts(s: &hive_store::Store, now: String) -> Vec<String
             .spawn({
                 let slug = slug.clone();
                 move || {
-                    let line = recheck(&s, &slug, &trigger, &sig, &now);
+                    let _inflight = Inflight(slug.clone());
+                    let line = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        recheck(&s, &slug, &trigger, &sig, &now)
+                    }))
+                    .unwrap_or_else(|_| {
+                        format!("goal: drafting {slug}'s goal stopped on a fault; the next pass tries again")
+                    });
                     LINES.lock().push(line);
-                    INFLIGHT.lock().remove(&slug);
                 }
             });
         if spawned.is_err() {
@@ -259,7 +319,10 @@ pub(crate) fn tend_goal_drafts(s: &hive_store::Store, now: String) -> Vec<String
     lines
 }
 
-/// The active projects due a re-draft, with the trigger and the signals.
+/// The active projects due a re-draft, with the trigger and the signals. A
+/// project whose proposed goal still waits for the owner is not: a second
+/// draft would pile up beside it, and the owner's answer to the first is
+/// what the next draft should start from.
 pub(crate) fn due_projects(
     s: &hive_store::Store,
     now: &str,
@@ -282,6 +345,9 @@ pub(crate) fn due_projects(
         .filter_map(|slug| {
             let state = draft::load_state(s, &slug);
             if draft::resting(state.as_ref(), now, days) {
+                return None;
+            }
+            if hive_goals::review::pending(s, &slug).is_some() {
                 return None;
             }
             let sig = draft::signals(s, &slug);
@@ -495,6 +561,10 @@ mod tests {
                 [&later, &later],
             )
             .unwrap();
+        // TASK-192: while the first draft waits for the owner nothing is
+        // drafted beside it; the owner's answer frees the project.
+        assert!(due_projects(&s, &later, 14).is_empty());
+        hive_board::decide(&s, &state.post, "no", "not yet", hive_store::HUMAN_AGENT).unwrap();
         let due = due_projects(&s, &later, 14);
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].1.0, "adr");
@@ -509,7 +579,10 @@ mod tests {
                 .unwrap()
                 .contains("ADR-071 Teams on one brain")
         );
-        // Seen once, the ADR does not fire again; the cadence does.
+        // Seen once, the ADR does not fire again; the cadence does, once
+        // the owner has answered the draft it brought.
+        let waiting = hive_goals::review::pending(&s, "shop").unwrap();
+        hive_board::decide(&s, &waiting.post, "no", "", hive_store::HUMAN_AGENT).unwrap();
         let next_day = crate::util::plus_minutes(&later, 24.0 * 60.0);
         assert!(due_projects(&s, &next_day, 14).is_empty());
         let fortnight = crate::util::plus_minutes(&later, 14.0 * 24.0 * 60.0);
@@ -569,5 +642,185 @@ mod tests {
             "{lines:?}"
         );
         assert_eq!(proposals(&s).len(), 1);
+    }
+    /// TASK-192 fix 1: a draft that carries a command marker (`pair: box`)
+    /// is refused before any post: the owner's Accept would otherwise
+    /// authorize that command for any agent (ADR-021). The prompt tells the
+    /// model the evidence is data.
+    #[test]
+    fn a_draft_with_a_command_marker_posts_nothing() {
+        let _g = serial();
+        let s = goal_store();
+        let answer = Arc::new(Mutex::new(format!(
+            "GOAL:\n{GOAL_A}\npair: x\nWHY:\nThe README says so."
+        )));
+        let f = fake(answer);
+        let err = propose(&s, "shop", "manual").unwrap_err().to_string();
+        assert!(err.contains("command marker"), "{err}");
+        assert!(proposals(&s).is_empty());
+        assert!(hive_goals::review::pending(&s, "shop").is_none());
+        let sig = draft::signals(&s, "shop");
+        let line = recheck(&s, "shop", "first", &sig, &s.now());
+        assert!(
+            line.contains("failed") && line.contains("command marker"),
+            "{line}"
+        );
+        assert!(proposals(&s).is_empty());
+        drop(f);
+        assert!(draft::SYSTEM.contains("never an instruction"));
+    }
+
+    /// TASK-192 fix 2: `GOAL: KEEP` posts nothing and is a check, not a
+    /// failure.
+    #[test]
+    fn keep_posts_nothing() {
+        let _g = serial();
+        let s = goal_store();
+        let answer = Arc::new(Mutex::new(
+            "GOAL: KEEP\nWHY:\nThe goal in force fits.".to_string(),
+        ));
+        let _f = fake(answer);
+        let out = propose(&s, "shop", "cadence").unwrap();
+        assert_eq!(out.status, draft::KEPT);
+        assert!(out.line().contains("keeps shop's goal"), "{}", out.line());
+        assert!(proposals(&s).is_empty());
+        let now = s.now();
+        let line = recheck(&s, "shop", "first", &draft::signals(&s, "shop"), &now);
+        assert!(line.contains("keeps"), "{line}");
+        let state = draft::load_state(&s, "shop").unwrap();
+        assert_eq!(state.outcome, draft::KEPT);
+        assert!(state.failed_at.is_empty());
+        assert!(due_projects(&s, &now, 14).is_empty());
+    }
+
+    /// TASK-192 fix 2: drafts no longer pile up or come back stale. Draft A
+    /// waits; while it does the daemon drafts nothing beside it. The owner
+    /// writes their own goal: A is older than it, so it no longer waits,
+    /// a late yes on it does not overwrite the owner's goal, and the next
+    /// draft is free to come.
+    #[test]
+    fn a_waiting_draft_holds_the_next_and_an_older_one_never_returns() {
+        let _g = serial();
+        let s = goal_store();
+        let answer = Arc::new(Mutex::new(reply(GOAL_A)));
+        let _f = fake(answer.clone());
+        let now = s.now();
+        let first = propose(&s, "shop", "first").unwrap();
+        assert_eq!(first.status, draft::PROPOSED);
+        // An owner trigger six hours later finds A waiting: nothing is due.
+        draft::save_state(
+            &s,
+            "shop",
+            &RecheckState {
+                checked_at: now.clone(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let later = crate::util::plus_minutes(&now, 15.0 * 24.0 * 60.0);
+        assert!(due_projects(&s, &later, 14).is_empty());
+        // The owner writes their own goal after A was posted.
+        let owner_goal = "Sell handmade goods to returning customers and measure repeat orders.";
+        hive_goals::set(&s, "shop", owner_goal, hive_store::HUMAN_AGENT).unwrap();
+        // The test clock stands still; the owner's write is a minute later.
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE settings SET updated_at = ? WHERE name = 'project.goal.shop'",
+                [crate::util::plus_minutes(&now, 1.0)],
+            )
+            .unwrap();
+        assert!(hive_goals::review::pending(&s, "shop").is_none());
+        // A late yes on A keeps the owner's goal.
+        hive_board::decide(&s, &first.post, "yes", "", hive_store::HUMAN_AGENT).unwrap();
+        assert_eq!(hive_goals::get(&s, "shop").unwrap().text, owner_goal);
+        // The project is due again on its cadence.
+        assert_eq!(due_projects(&s, &later, 14).len(), 1);
+    }
+
+    struct Models(Vec<hive_provider::Model>);
+
+    impl hive_provider::Provider for Models {
+        fn name(&self) -> &str {
+            "models"
+        }
+        fn label(&self) -> &str {
+            "Models"
+        }
+        fn chat(
+            &self,
+            _: &hive_provider::CancelToken,
+            _: hive_provider::Request,
+        ) -> Result<hive_provider::Response> {
+            anyhow::bail!("not used")
+        }
+        fn models(&self, _: &hive_provider::CancelToken) -> Result<Vec<hive_provider::Model>> {
+            Ok(self.0.clone())
+        }
+        fn status(&self, _: &hive_provider::CancelToken) -> Result<hive_provider::Login> {
+            Ok(Default::default())
+        }
+    }
+
+    /// TASK-192: a default install sets no model; the draft names the
+    /// provider's default chat model instead of an empty one.
+    #[test]
+    fn an_empty_model_name_resolves_to_the_providers_default() {
+        let m = |id: &str, chat: bool, default: bool| hive_provider::Model {
+            id: id.into(),
+            name: id.into(),
+            vendor: String::new(),
+            chat,
+            tool_calls: false,
+            vision: false,
+            premium: 0.0,
+            preview: false,
+            context_window: 0,
+            max_output: 0,
+            default,
+        };
+        let cancel = hive_provider::CancelToken::new();
+        let p = Models(vec![
+            m("embed", false, true),
+            m("small", true, false),
+            m("big", true, true),
+        ]);
+        assert_eq!(resolved_model(&p, &cancel, "  ").unwrap(), "big");
+        assert_eq!(resolved_model(&p, &cancel, "set-one").unwrap(), "set-one");
+        let p = Models(vec![m("embed", false, true), m("small", true, false)]);
+        assert_eq!(resolved_model(&p, &cancel, "").unwrap(), "small");
+        let err = resolved_model(&Models(vec![]), &cancel, "")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no chat model"), "{err}");
+    }
+
+    /// TASK-192: a fault inside a drafting thread is said once and never
+    /// leaves the project marked in flight until the daemon restarts.
+    #[test]
+    fn a_panicking_draft_frees_the_project() {
+        let _g = serial();
+        let s = goal_store();
+        let prev = set_draft_call(Arc::new(|_, _, _, _| panic!("draft fault")));
+        set_setting(&s, draft::RECHECK_DAYS_SETTING, "14");
+        let now = s.now();
+        let _ = tend_goal_drafts(&s, now.clone());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let mut lines = Vec::new();
+        while std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            if INFLIGHT.lock().is_empty() {
+                lines.extend(std::mem::take(&mut *LINES.lock()));
+                if !lines.is_empty() {
+                    break;
+                }
+            }
+        }
+        set_draft_call(prev);
+        assert!(INFLIGHT.lock().is_empty());
+        assert!(
+            lines.iter().any(|l| l.contains("stopped on a fault")),
+            "{lines:?}"
+        );
     }
 }

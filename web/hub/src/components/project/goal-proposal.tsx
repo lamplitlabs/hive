@@ -17,7 +17,7 @@ import { num } from "@/lib/format";
 import { hrefs } from "@/lib/nav";
 import { invalidate, useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
-import { editThenUse, GOAL_PROPOSAL_ANCHOR, GOAL_PROPOSAL_LABELS as L, GOAL_PROPOSAL_TITLE, goalAnswers, goalProposalView, MAX_GOAL_CHARS, type GoalAnswers } from "./goal-proposal-state";
+import { applyEdit, editThenUse, GOAL_PROPOSAL_ANCHOR, GOAL_PROPOSAL_LABELS as L, GOAL_PROPOSAL_TITLE, goalAnswers, goalProposalView, MAX_GOAL_CHARS, type GoalAnswers } from "./goal-proposal-state";
 
 // A proposed project goal waiting for the owner (TASK-117), wherever it
 // shows: the project's Overview (its own panel) and the Sessions strip of
@@ -123,25 +123,18 @@ function EditThenUse({ slug, g, onClose }: { slug: string; g: GoalProposal; onCl
     }
     setBusy(true);
     const notice = toast.loading("Setting the goal…");
-    try {
-      await writes.decide(g.post, "yes", plan.words);
-    } catch (error) {
-      toast.dismiss(notice);
-      showApiError(error, "The goal wasn't set");
-      setBusy(false);
-      return;
-    }
-    try {
-      if (plan.edited) await writes.setProjectGoal(slug, plan.text);
+    // The edit goes first (applyEdit): words the server refuses leave the
+    // proposal waiting and the goal unchanged, never the unedited draft in force.
+    const done = await applyEdit(plan, slug, g.post, writes);
+    invalidate(goalViews);
+    setBusy(false);
+    if (done.ok) {
       toast.success("Goal set. Agents read it from their next run.", { id: notice });
       onClose();
-    } catch (error) {
-      toast.dismiss(notice);
-      showApiError(error, "The proposed goal was used, but your edits weren't saved; edit the goal again");
-    } finally {
-      invalidate(goalViews);
-      setBusy(false);
+      return;
     }
+    toast.dismiss(notice);
+    showApiError(done.error, done.title);
   };
 
   return (
