@@ -127,9 +127,13 @@ export function TaskDeliveryLine({ delivery, taskId, className }: { delivery: Ta
             open={merge}
             onOpenChange={setMerge}
             title={"Merge " + number + " into " + (delivery?.base || "the default branch") + "?"}
-            description="The daemon merges it on GitHub as you."
+            description={
+              delivery?.head_sha
+                ? "The daemon merges commit " + delivery.head_sha.slice(0, 12) + " on GitHub as you - only that commit: if a newer one reaches the pull request first, nothing is merged and you are asked again."
+                : "The daemon merges it on GitHub as you."
+            }
             action="Merge"
-            onConfirm={() => writes.mergeTaskPr(taskId)}
+            onConfirm={() => writes.mergeTaskPr(taskId, delivery?.head_sha)}
             success={"Merging " + number + "\u2026"}
             invalidates={(p) => p.startsWith("tasks") || p.startsWith("chat") || p.startsWith("events")}
           />

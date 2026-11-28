@@ -4128,7 +4128,10 @@ fn merge_base_into_head(
                 up.name()
             ))
         } else {
-            push_rev(s, root, up, &tip, head, Some(&remote_sha)).map(|()| Refreshed::Pushed(tip))
+            push_rev(s, root, up, &tip, head, Some(&remote_sha)).map(|()| {
+                follow_pushed_head(root, up, head, &remote_sha, &tip);
+                Refreshed::Pushed(tip)
+            })
         }
     } else {
         let unmerged: Vec<String> = in_wt(&["diff", "--name-only", "--diff-filter=U"])
@@ -4150,6 +4153,29 @@ fn merge_base_into_head(
     };
     let _ = git(&["worktree", "remove", "--force", &wt_path]);
     result
+}
+
+/// After a push of `tip` onto the pull request's `head` (it was at `was`),
+/// the checkout follows: the remote-tracking ref names the new tip, and the
+/// local branch of that name, when there is one at `was` (or behind it)
+/// and no worktree has it checked out, moves to it. A push by url updates
+/// neither, and `hive review checkout` reads the head from the checkout:
+/// left behind, it asked the upstream from inside the job and was refused.
+fn follow_pushed_head(root: &str, up: &Upstream, head: &str, was: &str, tip: &str) {
+    let git = |args: &[&str]| crate::util::git_timeout(root, Duration::from_secs(30), args);
+    let _ = git(&[
+        "update-ref",
+        &format!("refs/remotes/{}/{head}", up.remote),
+        tip,
+    ]);
+    let local = format!("refs/heads/{head}");
+    let at = rev(root, &local);
+    if at.is_empty() || at == tip || worktree_branches(root).iter().any(|b| b == head) {
+        return;
+    }
+    if at == was || git(&["merge-base", "--is-ancestor", &at, tip]).ok() {
+        let _ = git(&["update-ref", &local, tip, &at]);
+    }
 }
 
 /// The checks on the pull request's head failed: recorded once for this
@@ -9794,6 +9820,72 @@ exit 0
                 .unwrap_err()
                 .contains("is not in")
         );
+    }
+
+    /// TASK-147: delivery merges main into a proposed pull request's head
+    /// and pushes it by url. The checkout follows the push - the local
+    /// branch and its remote-tracking ref name the new tip - so a review
+    /// run checks the head out from the checkout, with no upstream to ask
+    /// (the job is refused the upstream's credentials, ADR-041 D4; here the
+    /// upstream has no `refs/pull/N/head` to fetch either).
+    #[test]
+    fn a_refreshed_proposed_pull_request_is_checked_out_by_its_review() {
+        let _serial = crate::test_helpers::serial();
+        let _env = hive_testutil::env_lock();
+        let gh = fake_gh();
+        let s = new_store();
+        let (proj, repo, bare) = push_fixture(&s);
+        gh.track_remote(&bare);
+        run(&repo, &["git", "branch", "feat/by-hand", "main"]);
+        let first = commit_on(&repo, "feat/by-hand", "hand.txt");
+        let d = propose_branch(&s, &proj, "feat/by-hand", TEST_NOW).unwrap();
+        assert_eq!((d.number, d.opened), (7, true));
+
+        let base = move_base_on_forge(&repo, &bare, "elsewhere.txt");
+        gh.set_mergeable(7, "CONFLICTING");
+        let lines = tend_proj(&s, &proj, TEST_NOW);
+        let tip = bare_ref(&bare, "refs/heads/feat/by-hand");
+        assert_ne!(tip, first, "{lines:?}");
+        assert_eq!(events(&s, "land.pr-refreshed"), 1, "{lines:?}");
+        let parents = run(&repo, &["git", "rev-list", "--parents", "-1", &tip]);
+        assert_eq!(
+            parents.split_whitespace().skip(1).collect::<Vec<_>>(),
+            [first.as_str(), base.as_str()]
+        );
+        assert_eq!(ref_of(&repo, "refs/heads/feat/by-hand"), tip);
+        assert_eq!(ref_of(&repo, "refs/remotes/origin/feat/by-hand"), tip);
+
+        let clone = std::path::Path::new(&s.home).join("tmp").join("clone-pr7");
+        let clone = clone.display().to_string();
+        run(".", &["git", "clone", "-q", &repo, &clone]);
+        run(&clone, &["git", "remote", "remove", "origin"]);
+        let view = crate::review::PrView {
+            number: 7,
+            head: "feat/by-hand".into(),
+            head_sha: tip.clone(),
+            state: "OPEN".into(),
+            url: "https://github.com/o/r/pull/7".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            crate::review::checkout_into(&s, &proj, &view, &clone).unwrap(),
+            tip
+        );
+        assert_eq!(ref_of(&clone, "HEAD"), tip);
+
+        // A local branch left behind (a checkout from before this fix):
+        // the remote-tracking ref holds the head, and the review reads it.
+        run(
+            &repo,
+            &["git", "update-ref", "refs/heads/feat/by-hand", &first],
+        );
+        run(&clone, &["git", "checkout", "-q", "--detach"]);
+        run(&clone, &["git", "branch", "-D", "review/pr-7"]);
+        assert_eq!(
+            crate::review::checkout_into(&s, &proj, &view, &clone).unwrap(),
+            tip
+        );
+        assert_eq!(ref_of(&clone, "HEAD"), tip);
     }
 
     /// `hive land --branch` on a job branch forked before main was squashed

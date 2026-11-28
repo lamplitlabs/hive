@@ -96,6 +96,7 @@ export const VERB: Record<string, string> = {
   "review.failed": "could not finish a pull request's review",
   "review.owner": "asked you to decide on a pull request",
   "review.merge-wait": "kept an approved pull request's merge waiting",
+  "review.check": "ran the check of a pull request's head",
   "hook.failed": "had a check fail",
   "project.add": "added the project",
   "project.removed": "removed the project",
@@ -399,6 +400,7 @@ export function eventDetailText(e: Pick<StoreEvent, "action" | "detail">): strin
   }
   if (a === "review.failed" && str(o.error)) return str(o.error);
   if (a === "review.merge-wait" && str(o.note)) return str(o.note);
+  if (a === "review.check" && str(o.note)) return str(o.note);
   if (a === "project.hook_failed" && str(o.error)) return str(o.error);
   if (a === "project.moved" && str(o.to)) return "Now in " + str(o.to);
   // A changed tool connection or skill names what changed.

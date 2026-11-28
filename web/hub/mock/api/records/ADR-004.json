@@ -12,6 +12,15 @@
     "tier": 2,
     "title": "Version the client API with a v2 package"
   },
+  "merged_work": [
+    {
+      "at": "2026-09-02T10:14:00Z",
+      "head": "hive/task-TASK-012",
+      "number": 41,
+      "task": "TASK-012",
+      "url": "https://github.com/demo/demo-lib/pull/41"
+    }
+  ],
   "record": {
     "areas": [
       "api"
