@@ -407,8 +407,8 @@ Each section below is one family: the settings that share the part of their name
 | --- | --- | --- |
 | `schedule.max_per_project` | `10` | active or paused schedules one project may hold at once; 0 turns the cap off |
 | `schedule.min_minutes` | `30` | the shortest cadence a schedule may have (`hive schedule add --every`); a standing job that runs more often than this is a loop, not a schedule |
-| `schedule.script_timeout_minutes` | `20` | minutes a check or watch script (`hive schedule add --kind check\|watch --script`) may run before the daemon kills it and counts the run as a failure (a red check, a broken watcher) |
-| `schedule.scripts_per_tick` | `2` | check and watch scripts the daemon runs in one tick, the longest overdue first; the rest wait for the next tick, and none runs while the machine is saturated |
+| `schedule.script_timeout_minutes` | `20` | minutes a check or watch script (`hive schedule add --kind check\|watch --script`) may run before the daemon kills it and counts the run as a failure (a red check, a broken watcher); under verify.lock a check also waits up to minutes_per_job for the lock first |
+| `schedule.scripts_per_tick` | `2` | check and watch scripts the daemon runs at once, off its loop, the longest overdue first; the rest wait until one ends, and none starts while the machine is saturated |
 
 ## toolkit
 
