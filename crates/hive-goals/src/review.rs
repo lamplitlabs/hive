@@ -708,7 +708,8 @@ fn lead_reading(conn: &Connection, slug: &str, since: &str) -> Option<LeadReadin
 }
 
 /// The proposed goal that waits for the owner on a project, if any: the
-/// newest undecided `goal/amend` opinion whose body parses as a proposal.
+/// newest undecided `goal/amend` opinion whose body parses as a proposal
+/// and that is not older than the goal in force ([`stale_proposal`]).
 /// The console's Sessions strip (a goal change is a hard stop) and the
 /// project's Overview read it from the org rows; None when the store cannot
 /// be read.
@@ -717,7 +718,32 @@ pub fn pending(s: &hive_store::Store, slug: &str) -> Option<Proposal> {
     open_proposal(&conn, slug)
 }
 
+/// When the project's goal row was last written, or None when the project
+/// has no row (its goal is the generated template, never saved).
+fn goal_changed_at(conn: &Connection, slug: &str) -> Option<DateTime<Utc>> {
+    let at: String = conn
+        .query_row(
+            "SELECT updated_at FROM settings WHERE name = ?",
+            [format!("{}{slug}", crate::KEY_PREFIX)],
+            |r| r.get(0),
+        )
+        .ok()?;
+    parse_time(&at)
+}
+
+/// Whether a proposal dated `date` was posted before the goal in force was
+/// set (`goal_changed`): the owner has since accepted, edited or reset the
+/// goal, so the proposal answers a goal that is gone and is not offered
+/// again. An unreadable date is not stale.
+pub fn stale_proposal(date: &str, goal_changed: Option<DateTime<Utc>>) -> bool {
+    match (parse_time(date), goal_changed) {
+        (Some(posted), Some(changed)) => posted < changed,
+        _ => false,
+    }
+}
+
 pub(crate) fn open_proposal(conn: &Connection, slug: &str) -> Option<Proposal> {
+    let changed = goal_changed_at(conn, slug);
     let mut st = conn
         .prepare(
             "SELECT p.id, p.agent, p.date, p.body FROM posts p WHERE p.project = ? AND p.area = ? AND p.thread = ? AND p.kind = 'opinion' AND p.resolution = '' AND NOT EXISTS (SELECT 1 FROM decisions d WHERE d.post_id = p.id) ORDER BY p.date DESC, p.id DESC LIMIT 10",
@@ -734,6 +760,10 @@ pub(crate) fn open_proposal(conn: &Connection, slug: &str) -> Option<Proposal> {
         })
         .ok()?;
     for (post, agent, date, body) in rows.flatten() {
+        if stale_proposal(&date, changed) {
+            // Newest first: every later row is older still.
+            break;
+        }
         if let Some((text, why)) = parse_proposal(&body) {
             return Some(Proposal {
                 post,
@@ -955,7 +985,10 @@ pub fn lead_brief(r: &Review) -> String {
 /// Applies a decided goal proposal: a yes from the owner on a post whose
 /// body is a proposal sets the project's goal to the proposed text. Returns
 /// the new goal, or None when the post is not a proposal or the answer is
-/// no. A proposal that fails the goal rules is recorded as not applied.
+/// no. A proposal that fails the goal rules is recorded as not applied, and
+/// so is a stale one ([`stale_proposal`]): a yes on a proposal older than
+/// the goal in force never overwrites the newer goal (the console's "Edit
+/// then use" saves the owner's words first, then says yes).
 pub fn apply_decision(
     s: &hive_store::Store,
     post_id: &str,
@@ -965,6 +998,29 @@ pub fn apply_decision(
     decided_by: &str,
 ) -> Result<Option<Goal>> {
     if answer != "yes" || !is_proposal(body) {
+        return Ok(None);
+    }
+    let posted: Option<String> = s.conn().ok().and_then(|conn| {
+        conn.query_row("SELECT date FROM posts WHERE id = ?", [post_id], |r| {
+            r.get(0)
+        })
+        .ok()
+    });
+    if let Some(date) = posted
+        && stale_proposal(
+            &date,
+            s.conn().ok().and_then(|c| goal_changed_at(&c, project)),
+        )
+    {
+        s.event(
+            decided_by,
+            AMEND_ACTION,
+            project,
+            hive_store::Detail::json(serde_json::json!({
+                "project": project, "post": post_id, "applied": false,
+                "why": "the goal changed after this proposal was posted"
+            }))?,
+        )?;
         return Ok(None);
     }
     let Some((text, _why)) = parse_proposal(body) else {
@@ -1347,6 +1403,8 @@ mod tests {
             "human",
         )
         .unwrap();
+        // The goal was set before the readings and the proposal below.
+        backdate_goal(&s, "2026-10-18T00:00:00Z");
         for i in 0..4 {
             task(
                 &s,
@@ -1457,6 +1515,86 @@ mod tests {
         s.conn().unwrap().execute("INSERT INTO decisions (post_id, project, answer, decided_at) VALUES ('P-2', 'shop', 'yes', ?)", [NOW]).unwrap();
         let r = review(&s, "shop").unwrap();
         assert!(r.proposal.is_none());
+    }
+
+    fn backdate_goal(s: &Store, at: &str) {
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE settings SET updated_at = ? WHERE name = 'project.goal.shop'",
+                [at],
+            )
+            .unwrap();
+    }
+
+    /// TASK-192: a proposal posted before the goal in force was set (the
+    /// owner accepted another draft, or wrote their own) no longer waits,
+    /// and a late yes on it never overwrites the newer goal.
+    #[test]
+    fn a_proposal_older_than_the_goal_no_longer_waits_and_is_not_applied() {
+        let (_g, _h, s) = store();
+        let body =
+            "goal: amend\nMeasure cart abandonment weekly and cut it by a fifth.\nWhy: draft A.";
+        post(
+            &s,
+            "P-A",
+            AREA,
+            AMEND_THREAD,
+            "opinion",
+            "2026-10-10T00:00:00Z",
+            "proposed goal: A",
+            body,
+        );
+        // The generated goal has no row yet: the draft waits.
+        assert_eq!(pending(&s, "shop").unwrap().post, "P-A");
+        // The owner sets a goal after it: draft A is stale.
+        crate::set(&s, "shop", "Make checkout finish in two taps.", "human").unwrap();
+        assert!(pending(&s, "shop").is_none());
+        assert!(review(&s, "shop").unwrap().proposal.is_none());
+        assert!(
+            apply_decision(&s, "P-A", "shop", body, "yes", "human")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            crate::get(&s, "shop").unwrap().text,
+            "Make checkout finish in two taps."
+        );
+        let why: String = s
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT json_extract(detail, '$.why') FROM events WHERE action = ? ORDER BY rowid DESC LIMIT 1",
+                [AMEND_ACTION],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(why.contains("goal changed"), "{why}");
+        // A newer proposal waits again; a newer one wins over the stale.
+        post(
+            &s,
+            "P-B",
+            AREA,
+            AMEND_THREAD,
+            "opinion",
+            "2026-10-20T12:00:00Z",
+            "proposed goal: B",
+            "goal: amend\nShip the cart.\nWhy: B.",
+        );
+        assert_eq!(pending(&s, "shop").unwrap().post, "P-B");
+        assert!(stale_proposal(
+            "2026-10-01T00:00:00Z",
+            parse_time("2026-10-02T00:00:00Z")
+        ));
+        assert!(!stale_proposal(
+            "2026-10-02T00:00:00Z",
+            parse_time("2026-10-02T00:00:00Z")
+        ));
+        assert!(!stale_proposal(
+            "not a date",
+            parse_time("2026-10-02T00:00:00Z")
+        ));
+        assert!(!stale_proposal("2026-10-01T00:00:00Z", None));
     }
 
     #[test]

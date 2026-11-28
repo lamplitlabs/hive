@@ -8,6 +8,7 @@ import { test } from "node:test";
 register("./tsx-test-loader.mjs", import.meta.url);
 
 const {
+  applyEdit,
   GOAL_HARD_STOP,
   GOAL_PROPOSAL_LABELS,
   GOAL_PROPOSAL_TITLE,
@@ -121,7 +122,7 @@ test("on the Sessions strip a proposed goal is a goal hard stop with its card op
   assert.equal(HARD_STOP_LABEL.goal, "Project goal");
 });
 
-test("Edit then use: unchanged words need only the yes; edits are saved after it; bad text writes nothing", () => {
+test("Edit then use: unchanged words need only the yes; bad text writes nothing", () => {
   const t = goal().text;
   assert.deepEqual(editThenUse(t, "  " + t + "\n"), { ok: true, text: t, edited: false, words: "Used as proposed." });
   const e = editThenUse(t, t + " Measured by teams onboarded.");
@@ -133,6 +134,46 @@ test("Edit then use: unchanged words need only the yes; edits are saved after it
   assert.equal(long.ok, false);
   assert.match(long.error, /4,001 characters/);
   assert.deepEqual(editThenUse(t, "a\r\nb"), { ok: true, text: "a\nb", edited: true, words: "Used with my edits." });
+});
+
+test("Edit then use saves the owner's words before the yes; a refused edit says no yes", async () => {
+  const t = goal().text;
+  const recorder = (fail = {}) => {
+    const calls = [];
+    return {
+      calls,
+      setProjectGoal: async (slug, text) => {
+        calls.push(["goal", slug, text]);
+        if (fail.goal) throw new Error("refused");
+      },
+      decide: async (id, answer, words) => {
+        calls.push(["decide", id, answer, words]);
+        if (fail.decide) throw new Error("down");
+      },
+    };
+  };
+  const edited = editThenUse(t, t + " Measured by teams onboarded.");
+  const w = recorder();
+  assert.deepEqual(await applyEdit(edited, "hive", "P-7", w), { ok: true });
+  assert.deepEqual(w.calls, [
+    ["goal", "hive", t + " Measured by teams onboarded."],
+    ["decide", "P-7", "yes", "Used with my edits."],
+  ]);
+  // The server refuses the words: no yes follows, the draft still waits.
+  const refused = recorder({ goal: true });
+  const r = await applyEdit(edited, "hive", "P-7", refused);
+  assert.equal(r.ok, false);
+  assert.equal(r.goalSet, false);
+  assert.match(r.title, /still waits/);
+  assert.deepEqual(refused.calls.map((c) => c[0]), ["goal"]);
+  // Saved, but the yes failed: the goal is the owner's words all the same.
+  const late = await applyEdit(edited, "hive", "P-7", recorder({ decide: true }));
+  assert.equal(late.ok, false);
+  assert.equal(late.goalSet, true);
+  // Unchanged words: the yes alone.
+  const plain = recorder();
+  assert.deepEqual(await applyEdit(editThenUse(t, t), "hive", "P-7", plain), { ok: true });
+  assert.deepEqual(plain.calls, [["decide", "P-7", "yes", "Used as proposed."]]);
 });
 
 test("the project's proposal is read from its own org row", () => {

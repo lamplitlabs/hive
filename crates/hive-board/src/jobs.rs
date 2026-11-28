@@ -1549,7 +1549,7 @@ fn decision_decider(
             "compute is money: it waits for the owner; compute.auto_approve and the caps pre-authorize it",
         ));
     }
-    if decision_marker_re().is_match(&target.body) {
+    if authorizes_command(&target.body) {
         return Err(refuse(
             2,
             "a proposal that authorizes a command waits for the human (ADR-021)",
@@ -1621,14 +1621,7 @@ fn agent_by_name_conn(conn: &Connection, name: &str) -> Result<Option<hive_store
 /// command (`pair:`, `onboard:`, `lead-role:`, `toolkit:`, `goal:`): such a
 /// proposal waits for the human (ADR-021).
 pub fn authorizes_command(body: &str) -> bool {
-    decision_marker_re().is_match(body)
-}
-
-fn decision_marker_re() -> &'static regex::Regex {
-    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    RE.get_or_init(|| {
-        regex::Regex::new(r"(?m)^[ \t]*(pair|onboard|lead-role|toolkit|goal):[ \t]*\S").unwrap()
-    })
+    hive_store::command_marker(body).is_some()
 }
 
 /// The improvement loop's stop, or its flat-fixture pause: the owner's
@@ -1666,10 +1659,7 @@ fn decision_job_conn(
             |r| r.get(0),
         )
         .optional()?;
-    if project_exists.is_none()
-        || decision_marker_re().is_match(&target.body)
-        || is_stop_question(target)
-    {
+    if project_exists.is_none() || authorizes_command(&target.body) || is_stop_question(target) {
         return Ok(None);
     }
     let with_words = if words.is_empty() {
@@ -1751,7 +1741,7 @@ fn pick_job_conn(
         )
         .optional()?;
     if project_exists.is_none()
-        || decision_marker_re().is_match(&target.body)
+        || authorizes_command(&target.body)
         || is_stop_question(target)
         || crate::owner_asks::is_lapsed_merge_question(conn, &target.id)
     {
