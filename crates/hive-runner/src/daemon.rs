@@ -2224,6 +2224,9 @@ pub(crate) fn daemon(
         let mut owner_slot_idle = false;
         // The daemon-wide holds this tick's dispatch saw (idle_hold.rs).
         let mut holds_seen: Vec<crate::idle_hold::Hold> = Vec::new();
+        // What this tick put ahead of a waiting review: its local leases
+        // and the disk headroom (owner_wait.rs Ahead, TASK-186).
+        let mut review_ahead = crate::owner_wait::Ahead::default();
         // A panic in the tick body becomes the idle reason, not the daemon's end.
         let tick = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             if now[..10.min(now.len())] != last_prune_day {
@@ -3013,6 +3016,7 @@ pub(crate) fn daemon(
                                 Some(h) => held = h,
                                 None => {
                                     disk_trimmed += 1;
+                                    review_ahead.disk = true;
                                     disk_room_note = adm.note();
                                     reasons.insert(disk_room_note.clone(), true);
                                     continue;
@@ -3107,6 +3111,11 @@ pub(crate) fn daemon(
                         };
                         if slot == crate::executor::LOCAL_EXECUTOR {
                             local_leased += 1;
+                            review_ahead.leased.push(crate::owner_wait::Leased {
+                                job: job.str("id"),
+                                kind: job.str("kind"),
+                                kept_slot: keep_slot,
+                            });
                             if owner_only {
                                 owner_slot_idle = false;
                             }
@@ -3467,7 +3476,7 @@ pub(crate) fn daemon(
                     cap_was_holding == Some(true),
                     &reason,
                 );
-                for line in owner_waits.tend(s, &reasons, &now, &actor) {
+                for line in owner_waits.tend_with(s, &reasons, &review_ahead, &now, &actor) {
                     say(&o, line);
                 }
             }
