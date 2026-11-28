@@ -877,20 +877,25 @@ pub(crate) fn lease_job(
             sql.push_str(&format!(" AND j.kind IN ({})", no_code_kinds_sql()));
         }
         // The work this agent holds first - its clone and conversation carry
-        // on only under it; then the owner's work; then the jobs that need
-        // this kind of machine (fewer machines can take them, so the ones
-        // that can do, and the plain jobs go to the others); then the work
-        // class, on a slot kept for it or once a work job has waited
+        // on only under it; then the owner's work; then a review, on every
+        // slot, work-first ones too (TASK-186: nothing a work job makes lands
+        // before the pull requests ahead of it are reviewed, one review per
+        // project is queued at a time so it cannot crowd the work out, and
+        // it leases on this machine alone, STORE_KINDS); then the jobs that
+        // need this kind of machine (fewer machines can take them, so the
+        // ones that can do, and the plain jobs go to the others); then the
+        // work class, on a slot kept for it or once a work job has waited
         // WORK_WAITED_HOURS; then the project that waited longest (fairness
         // between projects); then priority and age.
         let work_class = work_class_sql();
+        let review = crate::review::KIND;
         let work_waited = if o.work_first {
             "1".to_string()
         } else {
             "j.created_at <= ?".to_string()
         };
         sql.push_str(&format!(
-            " ORDER BY CASE WHEN EXISTS (SELECT 1 FROM harness_sessions h WHERE h.job_id = j.id AND h.status = 'held' AND h.agent = ?) THEN 0 ELSE 1 END, CASE WHEN {OWNER_DRIVEN_SQL} THEN 0 ELSE 1 END, CASE WHEN j.needs != '' THEN 0 ELSE 1 END, CASE WHEN j.kind IN ({work_class}) AND {work_waited} THEN 0 ELSE 1 END, MAX(COALESCE((SELECT MAX(r.started_at) FROM runs r WHERE r.project = j.project), ''), COALESCE((SELECT MAX(e.at) FROM jobs k JOIN events e ON e.subject = k.id AND e.action = 'job.lease' WHERE k.project = j.project AND k.status = 'leased'), '')) ASC, j.priority DESC, j.created_at LIMIT 1"
+            " ORDER BY CASE WHEN EXISTS (SELECT 1 FROM harness_sessions h WHERE h.job_id = j.id AND h.status = 'held' AND h.agent = ?) THEN 0 ELSE 1 END, CASE WHEN {OWNER_DRIVEN_SQL} THEN 0 ELSE 1 END, CASE WHEN j.kind = '{review}' THEN 0 ELSE 1 END, CASE WHEN j.needs != '' THEN 0 ELSE 1 END, CASE WHEN j.kind IN ({work_class}) AND {work_waited} THEN 0 ELSE 1 END, MAX(COALESCE((SELECT MAX(r.started_at) FROM runs r WHERE r.project = j.project), ''), COALESCE((SELECT MAX(e.at) FROM jobs k JOIN events e ON e.subject = k.id AND e.action = 'job.lease' WHERE k.project = j.project AND k.status = 'leased'), '')) ASC, j.priority DESC, j.created_at LIMIT 1"
         ));
         vals.push(Box::new(agent.clone()));
         if !o.work_first {
@@ -2683,6 +2688,84 @@ mod tests {
             crate::util::plus_minutes(crate::test_helpers::TEST_NOW, super::WORK_WAITED_HOURS * 60);
         let waited = lease("dusk", &later, false);
         assert_eq!(waited.str("id"), improve, "{waited:?}");
+    }
+
+    /// TASK-186: a queued review goes before the project's work jobs, even
+    /// a task job that has waited three hours (past WORK_WAITED_HOURS) and
+    /// one that needs this kind of machine, on a plain slot and on a slot
+    /// kept for the work class alike. On 27 November the review of pull
+    /// request 307 waited 40 minutes while six task jobs leased before it.
+    #[test]
+    fn a_queued_review_leases_before_work_that_waited_on_any_slot() {
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        for name in ["aurora", "borealis", "cinder", "dusk"] {
+            join(&s, name);
+        }
+        let work = queue(&s, "proj", "task", "task:TASK-1", 80);
+        let review = queue(&s, "proj", crate::review::KIND, "review:proj:307", 60);
+        let later = crate::util::plus_minutes(crate::test_helpers::TEST_NOW, 3 * 60);
+        let lease = |agent: &str, work_first: bool| {
+            super::lease_job(
+                &s,
+                agent.into(),
+                later.clone(),
+                super::LeaseOpts {
+                    any_proj: true,
+                    work_first,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        let requeue = |id: &str| {
+            crate::util::exec1(
+                &*s.conn().unwrap(),
+                "UPDATE jobs SET status = 'queued', lease_agent = '', lease_until = '' WHERE id = ?",
+                &[&id],
+            );
+        };
+        // One free plain slot: the review, though the task job waited three
+        // hours and carries the higher priority.
+        let first = lease("aurora", false);
+        assert_eq!(first.str("id"), review, "{first:?}");
+        requeue(&review);
+        // A slot kept for the work class takes the review first too.
+        let kept = lease("borealis", true);
+        assert_eq!(kept.str("id"), review, "{kept:?}");
+        // The work job is next, not held back by the review.
+        let next = lease("cinder", true);
+        assert_eq!(next.str("id"), work, "{next:?}");
+        requeue(&review);
+        requeue(&work);
+        // A work job that needs this kind of machine does not pass it either.
+        crate::util::exec1(
+            &*s.conn().unwrap(),
+            "UPDATE jobs SET needs = 'macos' WHERE id = ?",
+            &[&work],
+        );
+        let needs = lease("dusk", true);
+        assert_eq!(needs.str("id"), review, "{needs:?}");
+        requeue(&review);
+        // The express slot over the load line (the owner lane) takes the
+        // owner's work alone, and the review first among it: a review
+        // passes the load line there (docs/runner.md).
+        join(&s, "ember");
+        let express = super::lease_job(
+            &s,
+            "ember".into(),
+            later.clone(),
+            super::LeaseOpts {
+                any_proj: true,
+                work_first: true,
+                keep_slot: true,
+                fits: super::owner_lane_fits(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(express.str("id"), review, "{express:?}");
     }
 
     fn fake_probe_ssh(

@@ -89,14 +89,83 @@ fn add_reason(out: &mut Vec<String>, r: String) {
     }
 }
 
+/// What one tick put ahead of a waiting review (TASK-186): the jobs it
+/// leased on this machine's slots while the review stayed queued, and
+/// whether the disk headroom closed a local slot. A review runs on this
+/// machine alone (jobs.rs `STORE_KINDS`), so a lease on a hand is not ahead
+/// of it. On 27 November the wait event of a review queued 40 minutes had
+/// an empty reasons list while six work jobs were leased before it.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct Ahead {
+    /// The local leases of the tick, in lease order.
+    pub(crate) leased: Vec<Leased>,
+    /// A local slot waited for disk headroom this tick.
+    pub(crate) disk: bool,
+}
+
+/// One local lease of a tick, as a waiting review's reason names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Leased {
+    pub(crate) job: String,
+    pub(crate) kind: String,
+    /// It took the machine's last free slot, the one kept back from the
+    /// owner's work past its share for a lead's sitting, an answer or a
+    /// review (jobs.rs `LeaseOpts::keep_slot`).
+    pub(crate) kept_slot: bool,
+}
+
+/// How many leased jobs a review's reason names before "and N more".
+const AHEAD_NAMED: usize = 3;
+
+/// The short reason for the jobs leased ahead of a review: "leased first:
+/// job-a (task), job-b (lead sitting, kept slot) and 2 more".
+fn leased_first(ahead: &[Leased]) -> String {
+    if ahead.is_empty() {
+        return String::new();
+    }
+    let named = ahead
+        .iter()
+        .take(AHEAD_NAMED)
+        .map(|l| {
+            let kind = if l.kind == crate::lead::LEAD_KIND {
+                "lead sitting"
+            } else {
+                l.kind.as_str()
+            };
+            let kept = if l.kept_slot { ", kept slot" } else { "" };
+            format!("{} ({kind}{kept})", l.job)
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    match ahead.len().saturating_sub(AHEAD_NAMED) {
+        0 => format!("leased first: {named}"),
+        more => format!("leased first: {named} and {more} more"),
+    }
+}
+
+/// The reason a review waited for disk headroom.
+const DISK_HEADROOM: &str = "disk headroom";
+
 #[derive(Debug, Default)]
 struct Seen {
     /// When the job was queued; a new queuing is a new wait.
     since: String,
     /// The reasons seen while it waited, first seen first.
     reasons: Vec<String>,
+    /// The jobs leased ahead of it while it waited (reviews only), first
+    /// leased first.
+    ahead: Vec<Leased>,
     /// The event is written (or found already written).
     told: bool,
+}
+
+impl Seen {
+    /// The reasons the event names: the holds, then what was leased first.
+    fn all_reasons(&self) -> Vec<String> {
+        let mut out = self.reasons.clone();
+        add_reason(&mut out, leased_first(&self.ahead));
+        out
+    }
 }
 
 /// The daemon's memory of the owner's queued jobs, tick to tick.
@@ -109,10 +178,25 @@ impl OwnerWaits {
     /// One tick after dispatch: `reasons` are the tick's ([`tick_reasons`]).
     /// Writes the event for every owner-driven job queued past the line not
     /// yet told, and returns the lines to log.
+    #[cfg(test)]
     pub(crate) fn tend(
         &mut self,
         s: &hive_store::Store,
         reasons: &[String],
+        now: &str,
+        actor: &str,
+    ) -> Vec<String> {
+        self.tend_with(s, reasons, &Ahead::default(), now, actor)
+    }
+
+    /// [`Self::tend`] with what the tick put ahead of a waiting review
+    /// ([`Ahead`]): the jobs it leased first and the disk headroom join the
+    /// review's reasons, so its wait says what went before it.
+    pub(crate) fn tend_with(
+        &mut self,
+        s: &hive_store::Store,
+        reasons: &[String],
+        ahead: &Ahead,
         now: &str,
         actor: &str,
     ) -> Vec<String> {
@@ -144,11 +228,29 @@ impl OwnerWaits {
                     seen.reasons.push(r.clone());
                 }
             }
+            if job.str("kind") == crate::review::KIND {
+                if ahead.disk {
+                    add_reason(&mut seen.reasons, DISK_HEADROOM.into());
+                }
+                for leased in &ahead.leased {
+                    if leased.job != id && !seen.ahead.contains(leased) {
+                        seen.ahead.push(leased.clone());
+                    }
+                }
+            }
             let waited = crate::jobs::job_wait_seconds(&*conn, job, now);
             if !seen.told && waited >= hive_tasks::OWNER_WAIT_MINUTES * 60 {
                 seen.told = true;
                 if !told_already(&conn, &id, &since) {
-                    lines.push(tell(&conn, job, &since, waited, &seen.reasons, now, actor));
+                    lines.push(tell(
+                        &conn,
+                        job,
+                        &since,
+                        waited,
+                        &seen.all_reasons(),
+                        now,
+                        actor,
+                    ));
                 }
             }
             keep.insert(id, seen);
@@ -377,5 +479,79 @@ mod tests {
             )]
         );
         assert_eq!(waits_of(&s), 2);
+    }
+
+    /// TASK-186: a review that waits names what went before it - the jobs
+    /// the ticks leased on this machine (the kept slot marked), the disk
+    /// headroom - where the event of 27 November had an empty list. The
+    /// owner's other jobs keep their holds alone.
+    #[test]
+    fn a_waiting_review_names_what_is_ahead_of_it() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        new_bare_repo(&s);
+        let task = owner_job(&s, "Owner step", "task:TASK-1");
+        let review = "job-review".to_string();
+        crate::util::exec1(
+            &s.conn().unwrap(),
+            "INSERT INTO jobs (id, project, kind, title, source, status, created_at) VALUES (?, 'proj', 'review', 'Review PR #307', 'review:proj:307', 'queued', ?)",
+            &[&review, &crate::test_helpers::TEST_NOW],
+        );
+        let leased = |job: &str, kind: &str, kept_slot: bool| Leased {
+            job: job.into(),
+            kind: kind.into(),
+            kept_slot,
+        };
+        let mut waits = OwnerWaits::default();
+        let first = Ahead {
+            leased: vec![
+                leased("job-w1", "task", false),
+                leased("job-lead", crate::lead::LEAD_KIND, true),
+            ],
+            disk: false,
+        };
+        assert!(
+            waits
+                .tend_with(&s, &[], &first, &at(2.0), "daemon")
+                .is_empty()
+        );
+        let second = Ahead {
+            leased: vec![
+                leased("job-w2", "task", false),
+                leased("job-w1", "task", false),
+                leased("job-w3", "improve", false),
+                // Its own lease is not ahead of it.
+                leased(&review, "review", false),
+            ],
+            disk: true,
+        };
+        let lines = waits.tend_with(&s, &[], &second, &at(11.0), "daemon");
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        let reasons_of = |job: &str| {
+            let row = crate::util::query_one(
+                &s.conn().unwrap(),
+                "SELECT detail FROM events WHERE action = 'job.owner-wait' AND subject = ?",
+                &[&job],
+            )
+            .unwrap()
+            .expect("one job.owner-wait event");
+            let d: serde_json::Value = serde_json::from_str(&row.str("detail")).unwrap();
+            d["reasons"].clone()
+        };
+        assert_eq!(
+            reasons_of(&review),
+            json!([
+                "disk headroom",
+                "leased first: job-w1 (task), job-lead (lead sitting, kept slot), job-w2 (task) and 1 more"
+            ])
+        );
+        assert_eq!(reasons_of(&task), json!([]));
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains(&review)
+                    && l.contains("disk headroom, leased first: job-w1 (task)")),
+            "{lines:?}"
+        );
     }
 }
