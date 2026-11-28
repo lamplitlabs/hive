@@ -118,9 +118,10 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useFollowEnd } from "@/lib/follow-end";
 import { logoFor } from "@/lib/logos";
 import { pendingChoices } from "@/lib/pending-question";
-import { BackButton, Pane, Split } from "@/components/chat/split";
+import { BackButton, Pane, PHONE_DOCK, Split } from "@/components/chat/split";
 import { CommandPalette } from "@/components/shell/command-palette";
 import { MicButton, useDictation } from "@/components/chat/mic";
 import { TaskView } from "@/components/chat/task-view";
@@ -431,7 +432,27 @@ function SessionRow({
       data-lockdown={sealed || undefined}
     >
       <SessionStateIcon state={state} />
-      {project ? (
+      {/* A lockdown marks the avatar, not a word beside the title: the row
+          is 218 px wide and a 95 px "Lockdown" pill left the title 1 px
+          (TASK-171). The row's surface and the header keep the word. */}
+      {sealed ? (
+        <span className="relative shrink-0" title={LOCKDOWN_BADGE}>
+          {project ? (
+            <ProjectAvatar slug={project} name={project} size={20} />
+          ) : (
+            <span className="inline-flex size-5 items-center justify-center rounded-[5px] border border-dashed border-border text-muted-foreground">
+              <SparklesIcon className="size-3" aria-hidden />
+            </span>
+          )}
+          <span
+            className="absolute -right-1.5 -bottom-1.5 inline-flex size-4 items-center justify-center rounded-full bg-lock text-white ring-2 ring-card"
+            data-lockdown-mark
+          >
+            <LockIcon className="size-2.5" strokeWidth={2.75} aria-hidden />
+            <span className="sr-only">{LOCKDOWN_BADGE}</span>
+          </span>
+        </span>
+      ) : project ? (
         <ProjectAvatar slug={project} name={project} size={20} />
       ) : (
         <span
@@ -1418,13 +1439,16 @@ export function ChatPageClient() {
       className={cn(
         "grid min-w-0 gap-4",
         opened
-          ? "lg:flex lg:h-[calc(100dvh-1rem)] lg:min-h-[34rem] lg:flex-col"
+          ? "lg:flex lg:h-[calc(100dvh-var(--topbar-h)-1rem)] lg:min-h-[34rem] lg:flex-col"
           : "lg:mx-auto lg:w-full lg:max-w-[1192px] lg:px-4 lg:pb-10",
       )}
     >
       <PageHeader
         title="Sessions"
-        className={opened ? "mb-0 pt-4 sm:pt-5" : "mb-2"}
+        // Proposal (TASK-171 item 5): on a phone the bar on top already
+        // names the page and "All sessions" leads back to the list and its
+        // New session button, so an open session starts at its own card.
+        className={opened ? "mb-0 pt-4 max-lg:hidden sm:pt-5" : "mb-2"}
         subtitle={
           opened ? undefined : "Ask an agent to do something and follow every step"
         }
@@ -1899,15 +1923,6 @@ function ConversationItem({
               ? c.note
               : c.project || "no project yet")
           }
-          marks={
-            sealed ? (
-              <span className="lockdown-badge" title={LOCKDOWN_BADGE}>
-                <LockIcon className="size-3" aria-hidden />
-                <span className="sr-only">{LOCKDOWN_BADGE}</span>
-                <span aria-hidden>Lockdown</span>
-              </span>
-            ) : undefined
-          }
         />
         {subs.length ? (
           <ul
@@ -2170,7 +2185,7 @@ function NewConversation({
           <HiveMascot
             mood={busy ? "busy" : text.trim() ? "curious" : "happy"}
             size={84}
-            className="float shrink-0 self-center sm:self-start"
+            className="float shrink-0 self-center max-sm:hidden sm:self-start"
             title="Pip is ready"
           />
           {/* grid-cols-1 (minmax(0,1fr)): an auto track would grow to the widest starter chip and push the card past a phone's edge. */}
@@ -2198,13 +2213,36 @@ function NewConversation({
                 }
               }}
               placeholder="For example: add a dark mode toggle to the settings page and make sure the tests still pass."
-              className="min-h-28 text-sm"
+              className="min-h-24 text-sm"
               autoFocus
               aria-label="What should the agent do"
             />
+            {/* Proposal (TASK-171 item 7): Start sits right under the box
+                to type in, so it is in view however much stands above the
+                card; the starters, the pickers and the switches follow as
+                options. The box is 4 lines (was 7), and grows as you type. */}
+            <div className="-mt-2 flex items-center gap-2">
+              <MicButton disabled={busy} onText={insertSpokenText} />
+              <Button
+                type="button"
+                className="ml-auto"
+                data-testid="new-start"
+                onClick={() => void start()}
+                disabled={!canStart}
+              >
+                {busy ? (
+                  <LoaderCircleIcon className="animate-spin" />
+                ) : (
+                  <ArrowUpIcon />
+                )}{" "}
+                Start
+                <kbd className="ml-1 hidden rounded border border-primary-foreground/30 px-1 font-mono text-xs opacity-80 sm:inline">
+                  ⌘↵
+                </kbd>
+              </Button>
+            </div>
             <ReferencePicker value={references} onChange={setReferences} />
             <div className="flex flex-wrap items-center gap-1.5">
-              <MicButton disabled={busy} onText={insertSpokenText} />
               {STARTERS.map((s) => (
                 <Button
                   key={s.text}
@@ -2290,8 +2328,9 @@ function NewConversation({
                   : "The project's lead agent plans the steps and hands each to an agent; they show under it in the list. The team uses the project's own settings."}
               </p>
             ) : null}
+            {team ? null : (
             <div className="flex flex-wrap items-end gap-x-4 gap-y-3">
-              {team ? null : (
+              {(
                 // The two switches stack on one left edge. Each label is a
                 // padded box (Lockdown's turns into the sealed surface when
                 // on), so the stack bleeds left by the box's padding and
@@ -2348,23 +2387,8 @@ function NewConversation({
                   </label>
                 </div>
               )}
-              <Button
-                type="button"
-                className="ml-auto"
-                onClick={() => void start()}
-                disabled={!canStart}
-              >
-                {busy ? (
-                  <LoaderCircleIcon className="animate-spin" />
-                ) : (
-                  <ArrowUpIcon />
-                )}{" "}
-                Start
-                <kbd className="ml-1 hidden rounded border border-primary-foreground/30 px-1 font-mono text-xs opacity-80 sm:inline">
-                  ⌘↵
-                </kbd>
-              </Button>
             </div>
+            )}
           </div>
         </div>
       </section>
@@ -2646,8 +2670,6 @@ function ConversationBody({
   const [busy, setBusy] = useState("");
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(c.title);
-  const [stick, setStick] = useState(true);
-  const scroller = useRef<HTMLDivElement | null>(null);
   const models = useApi<HarnessModelsResponse>("harness/models", {
     refresh: 60000,
   });
@@ -2724,12 +2746,11 @@ function ConversationBody({
     (live.pending?.id ?? 0) +
     ":" +
     (d.steps[d.sessionId]?.length ?? 0);
-  useEffect(() => {
-    // The transcript's own box scrolls, not the page: scrollIntoView on
-    // an end marker would also pull every overflowing ancestor along.
-    const el = scroller.current;
-    if (stick && el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-  }, [lastKey, stick]);
+  // The transcript's own box scrolls, not the page: scrollIntoView on an
+  // end marker would also pull every overflowing ancestor along. It also
+  // follows the box resizing and the lines rewrapping (the canvas opening
+  // beside it), so the session opens at its newest message (TASK-171).
+  const { box: followBox, content: followContent, away, onScroll: onFollowScroll, jump } = useFollowEnd(lastKey);
 
   const act = async (
     what: string,
@@ -2897,7 +2918,7 @@ function ConversationBody({
       <BackButton onBack={onBack} />
       <header
         className={cn(
-          "enter grid min-w-0 gap-2 rounded-lg border bg-card px-4 py-3 shadow-card transition-colors",
+          "@container/head enter grid min-w-0 gap-2 rounded-lg border bg-card px-4 py-3 shadow-card transition-colors",
           mood.tone === "wait" && "surface-you",
           running && "border-primary/40",
           sealed && "lockdown-surface lockdown-scan",
@@ -2963,7 +2984,7 @@ function ConversationBody({
                   {c.title || "Untitled"}
                 </span>
                 {sealed ? (
-                  <span className="lockdown-badge" title={LOCKDOWN_BADGE}>
+                  <span className="lockdown-badge shrink-0" title={LOCKDOWN_BADGE}>
                     <LockIcon className="size-3" aria-hidden />
                     <span className="sr-only">{LOCKDOWN_BADGE}</span>
                     <span aria-hidden>Lockdown</span>
@@ -3060,7 +3081,7 @@ function ConversationBody({
               title="Finish this session; a message reopens it"
             >
               <CircleCheckIcon />
-              <span className="sr-only sm:not-sr-only">Finish</span>
+              <span className="sr-only @2xl/head:not-sr-only">Finish</span>
             </Button>
           ) : null}
           {!archived ? (
@@ -3084,7 +3105,7 @@ function ConversationBody({
               }
             >
               <RotateCcwIcon />
-              <span className="sr-only sm:not-sr-only">Restart session</span>
+              <span className="sr-only @2xl/head:not-sr-only">Restart session</span>
             </Button>
           ) : null}
           {!archived ? (
@@ -3104,7 +3125,7 @@ function ConversationBody({
               title="Archive this session"
             >
               <ArchiveIcon />
-              <span className="sr-only sm:not-sr-only">Archive</span>
+              <span className="sr-only @2xl/head:not-sr-only">Archive</span>
             </Button>
           ) : null}
         </div>
@@ -3204,11 +3225,8 @@ function ConversationBody({
           className="pointer-events-none absolute inset-x-0 top-0 z-10 h-8 bg-gradient-to-b from-card to-transparent"
         />
         <div
-          ref={scroller}
-          onScroll={(e) => {
-            const el = e.currentTarget;
-            setStick(el.scrollHeight - el.scrollTop - el.clientHeight < 80);
-          }}
+          ref={followBox}
+          onScroll={onFollowScroll}
           className={cn(
             "relative max-h-[calc(100dvh-24rem)] min-h-[20rem] min-w-0 flex-1 overflow-y-auto px-3 py-5 sm:px-6 sm:py-6 lg:max-h-none lg:min-h-0",
             sealed && "lockdown-field",
@@ -3217,6 +3235,7 @@ function ConversationBody({
           aria-live="polite"
           aria-label="Transcript"
         >
+          <div ref={followContent} className="min-w-0">
           <Transcript d={d} loadSession={loadSession} />
           {running || live.status === "waiting" ? (
             <LiveTurn d={d} waiting={waiting} />
@@ -3267,11 +3286,12 @@ function ConversationBody({
               ))}
             </ul>
           ) : null}
+          </div>
         </div>
-        {!stick ? (
+        {away ? (
           <button
             type="button"
-            onClick={() => setStick(true)}
+            onClick={jump}
             className="pop absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full border bg-card px-3 py-1 text-xs font-medium shadow-pop hover:bg-muted/60"
           >
             <ChevronDownIcon className="mr-1 inline size-3" aria-hidden /> Jump
@@ -4213,7 +4233,7 @@ function Composer({
   const uploading = busy.startsWith("upload");
   return (
     <form
-      className="grid min-w-0 shrink-0 gap-1.5"
+      className={cn("grid min-w-0 shrink-0 gap-1.5", PHONE_DOCK)}
       onSubmit={(e) => {
         e.preventDefault();
         void send();
@@ -4447,13 +4467,13 @@ function Composer({
         ) : over ? (
           <span className="text-primary">Drop to attach</span>
         ) : (
-          <span>
+          <span className="max-sm:hidden">
             {composeKeysHint(running)} Drop or paste files to attach them, or
             press the microphone to dictate.
           </span>
         )}
         {conversation.cwd ? (
-          <span className="min-w-0 truncate" title={conversation.cwd}>
+          <span className="min-w-0 truncate max-sm:hidden" title={conversation.cwd}>
             Working in <code className="font-mono">{conversation.cwd}</code>.
           </span>
         ) : null}

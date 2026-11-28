@@ -9,7 +9,7 @@
 // lead has read it.
 
 import Link from "next/link";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { BotIcon, CheckIcon, ChevronDownIcon, ChevronRightIcon, CornerDownRightIcon, FilePenIcon, FilePlusIcon, ListChecksIcon, MessageSquareIcon, PlugIcon, RadioIcon, TerminalIcon, TriangleAlertIcon, XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -19,6 +19,7 @@ import { AnswerButton } from "@/components/hive/decide-buttons";
 import { Markdown } from "@/components/hive/markdown";
 import { Disclosure, EmptyState, ErrorNotice, SkeletonRows } from "@/components/hive/panel";
 import { Avatar, Mono, ToneBadge, When } from "@/components/hive/who";
+import { useFollowEnd } from "@/lib/follow-end";
 import { fmtDate, plural, sentence } from "@/lib/format";
 import { choiceLook, orderChoices } from "@/lib/message-choices";
 import { hrefs } from "@/lib/nav";
@@ -55,9 +56,6 @@ export function TaskActivityPane({ task, chat, footer, className, jumpOn }: { ta
   const path = "tasks/" + enc(task.id) + "/activity" + (all ? "?limit=0" : "");
   const { data, error, loading, reload } = useApi<TaskActivity>(path, { refresh: 15000 });
   const live = useLiveEvents();
-  const list = useRef<HTMLDivElement>(null);
-  const stick = useRef(true);
-  const [away, setAway] = useState(false);
   const lastEvent = useRef(0);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -109,23 +107,10 @@ export function TaskActivityPane({ task, chat, footer, className, jumpOn }: { ta
   }, [chat.messages, chat.jobs]);
 
   // Follow the end while the reader sits there; stop when they scroll up
-  // to read, like a terminal. A message just sent (`jumpOn`) pulls the
-  // view back to the end; the scroll that causes clears `away`.
+  // to read, like a terminal (lib/follow-end.ts). A message just sent
+  // (`jumpOn`) pulls the view back to the end.
   const count = (data?.items.length ?? 0) + chat.messages.length;
-  useLayoutEffect(() => {
-    const el = list.current;
-    if (el && stick.current) el.scrollTop = el.scrollHeight;
-  }, [count, data?.running]);
-  useLayoutEffect(() => {
-    stick.current = true;
-    const el = list.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [jumpOn]);
-  const jump = () => {
-    stick.current = true;
-    const el = list.current;
-    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-  };
+  const { box: followBox, content: followContent, away, onScroll: onFollowScroll, jump } = useFollowEnd(count + ":" + (data?.running ? 1 : 0), jumpOn);
 
   if (error && !data)
     return (
@@ -157,18 +142,14 @@ export function TaskActivityPane({ task, chat, footer, className, jumpOn }: { ta
         <span className="tnum">{plural(data.total, "line")}</span>
       </div>
       <div
-        ref={list}
-        onScroll={(e) => {
-          const el = e.currentTarget;
-          const near = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-          stick.current = near;
-          setAway(!near);
-        }}
+        ref={followBox}
+        onScroll={onFollowScroll}
         className={cn("scroll-thin min-h-0 flex-1 overflow-y-auto bg-background/60 px-4 py-4 sm:px-5", className)}
         role="log"
         aria-live="polite"
         aria-label="Session on this task"
       >
+        <div ref={followContent} className="min-w-0">
         {data.has_more ? (
           <div className="mb-4 flex justify-center">
             <Button type="button" size="sm" variant="outline" className="rounded-full" onClick={() => setAll(true)} disabled={loading}>
@@ -189,6 +170,7 @@ export function TaskActivityPane({ task, chat, footer, className, jumpOn }: { ta
           </EmptyState>
         ) : null}
         {footer && !data.running ? <div className="mt-4">{footer}</div> : null}
+        </div>
       </div>
       {away ? (
         <button type="button" onClick={jump} className="pop absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full border bg-card px-3 py-1 text-xs font-medium shadow-pop hover:bg-muted/60">
@@ -323,7 +305,7 @@ function Bubble({ who, at, title, note, meta, icon, body, truncated, children }:
       <div className={cn("flex min-w-0 max-w-[min(85%,40rem)] items-end gap-2", human && "flex-row-reverse")}>
         <Avatar seed={who} human={human} size={28} className="mb-0.5 shrink-0" />
         <div className={cn("flex min-w-0 flex-col", human ? "items-end" : "items-start")}>
-          <div className="mb-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 px-1 text-xs text-muted-foreground">
+          <div className="mb-1 flex min-w-0 max-w-full flex-wrap items-center gap-x-2 gap-y-0.5 px-1 text-xs text-muted-foreground">
             {icon}
             <span className="font-medium text-foreground">{whoWord(who)}</span>
             {note ? <span className="min-w-0 truncate">{note}</span> : null}

@@ -60,3 +60,35 @@ export function revealIn(
     if (left !== null) box.scrollTo({ left, behavior });
   }
 }
+
+// Following the end of a log, like a terminal: the box stays pinned to its
+// newest line while the reader sits there, and lets go when they scroll up
+// to read. Only the reader's own move up lets go: a box that grows under a
+// pinned reader (a picture loading, the canvas opening beside it and
+// rewrapping the lines, a smooth scroll still on its way down) keeps
+// following, so a page opens at its newest message whatever the window.
+export const FOLLOW_SLACK = 80;
+
+export type ScrollBox = {
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+};
+
+// How far the box's bottom edge is above the end of its content.
+export function endGap(box: ScrollBox): number {
+  return Math.max(0, box.scrollHeight - box.scrollTop - box.clientHeight);
+}
+
+// Whether to keep following after a scroll event: near the end always
+// follows; a move up away from it lets go; anything else (a programmatic
+// scroll down, a box clamping its offset) keeps what it was.
+export function followAfterScroll(
+  following: boolean,
+  prevTop: number,
+  box: ScrollBox,
+): boolean {
+  if (endGap(box) < FOLLOW_SLACK) return true;
+  if (box.scrollTop < prevTop) return false;
+  return following;
+}
