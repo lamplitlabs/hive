@@ -21,6 +21,10 @@ impl Handler {
             self.addition_job_artifacts(w, r, &parts);
             return;
         }
+        if parts.len() == 3 && parts[0] == "jobs" && parts[2] == "stop" {
+            self.addition_job_stop(w, r, &parts[1]);
+            return;
+        }
         if parts.len() != 2 || parts[0] != "jobs" || (parts[1] != "failed" && parts[1] != "repair")
         {
             crate::addition_not_found(w);
