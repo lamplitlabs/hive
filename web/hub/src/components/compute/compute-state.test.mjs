@@ -95,9 +95,9 @@ test("machineProjects: * and empty are every project", () => {
 });
 
 test("slotsMeter fills with the used slots", () => {
-  assert.deepEqual(slotsMeter({ workers: 4, running: 0, free: 4 }), { used: 0, total: 4, pct: 0, text: "4 of 4 free" });
-  assert.deepEqual(slotsMeter({ workers: 4, running: 3, free: 1 }), { used: 3, total: 4, pct: 75, text: "1 of 4 free" });
-  assert.deepEqual(slotsMeter({ workers: 2, running: 1 }), { used: 1, total: 2, pct: 50, text: "1 of 2 free" });
+  assert.deepEqual(slotsMeter({ workers: 4, running: 0, free: 4 }), { used: 0, total: 4, pct: 0, text: "0 of 4 in use" });
+  assert.deepEqual(slotsMeter({ workers: 4, running: 3, free: 1 }), { used: 3, total: 4, pct: 75, text: "3 of 4 in use" });
+  assert.deepEqual(slotsMeter({ workers: 2, running: 1 }), { used: 1, total: 2, pct: 50, text: "1 of 2 in use" });
   assert.deepEqual(slotsMeter({ workers: 0 }), { used: 0, total: 0, pct: null, text: "No slots" });
 });
 

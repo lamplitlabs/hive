@@ -127,9 +127,12 @@ function Step({ s, last }: { s: StepView; last: boolean }) {
         />
         {!last ? <span className="absolute top-5 bottom-0 w-px bg-border" aria-hidden /> : null}
       </span>
-      <div className={cn("grid min-w-0 gap-1 pb-4", s.state === "ahead" && "opacity-70")}>
+      {/* A phase ahead says what comes next, so its words stay at full
+          strength (TASK-173: 70% opacity put them at 3.05 to 4.15:1); its
+          hollow grey mark and grey name say it has not started. */}
+      <div className="grid min-w-0 gap-1 pb-4">
         <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
-          <span className={cn("text-[13px] font-semibold", current ? "text-foreground" : "text-foreground/85")}>{s.label}</span>
+          <span className={cn("text-[13px] font-semibold", current ? "text-foreground" : s.state === "ahead" ? "text-muted-foreground" : "text-foreground/85")}>{s.label}</span>
           <span className={cn("text-xs", current ? "font-medium text-primary" : "text-muted-foreground")}>{s.stateWord}</span>
           {s.at ? <When d={s.at} className="text-xs text-muted-foreground" /> : null}
         </div>
@@ -144,7 +147,7 @@ function Step({ s, last }: { s: StepView; last: boolean }) {
         )}
         {s.gate && s.state !== "skipped" ? (
           <p className="text-xs leading-relaxed text-muted-foreground">
-            <span className="font-medium text-foreground/70">{s.state === "passed" ? "Passed when " : "Passes when "}</span>
+            <span className="font-medium text-foreground/80">{s.state === "passed" ? "Passed when " : "Passes when "}</span>
             {s.gate}
           </p>
         ) : null}
