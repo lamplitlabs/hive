@@ -7567,6 +7567,7 @@ mod tests {
                 ),
             )
             .unwrap();
+            #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
                 std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
