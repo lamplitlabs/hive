@@ -926,6 +926,7 @@ pub(crate) fn lead_due(
         }
         due.push(DueTask { detail: format!("{} {} failed and none runs: {}. Re-plan it: queue a corrected job, or send it to review with the reason when only the owner can decide.", tally.failed, plural(tally.failed, "job"), tally.details.join("; ")), why: "failed".into(), task: t });
     }
+    owner_changed_due(s, &slug, &lead, &mut due)?;
     due.sort_by(|a, b| {
         b.task
             .priority
@@ -954,6 +955,152 @@ pub(crate) fn lead_due(
         }
     }
     Ok((owner, due, Some(a)))
+}
+
+/// The reason a planned, running or reviewed task is due again: the owner
+/// amended it or wrote on it after the lead's last sitting was queued.
+pub(crate) const OWNER_CHANGED_WHY: &str = "owner-changed";
+
+/// What changed on task `task_id` after event `since` (for the lead, the
+/// seq of its last sitting's `job.add`): its amendments by anyone but
+/// `skip_amender` (the lead does not wake for its own) as `rev N` with who
+/// wrote it when not the owner and the note, and the ids of the owner's
+/// messages on it, oldest first.
+pub(crate) fn owner_changes_after(
+    conn: &(impl crate::util::Querier + ?Sized),
+    task_id: &str,
+    since: i64,
+    skip_amender: &str,
+) -> (Vec<String>, Vec<String>) {
+    let (mut revs, mut msgs) = (Vec::new(), Vec::new());
+    for r in crate::util::must_rows(
+        conn,
+        "SELECT seq, actor, action, subject, detail FROM events WHERE action = 'task.amended' AND subject = ?3 AND seq > ?1 AND actor != ?4 UNION ALL SELECT seq, actor, action, subject, detail FROM events WHERE action = 'message.sent' AND actor = ?2 AND seq > ?1 AND json_valid(detail) AND json_extract(detail, '$.task_id') = ?3 AND COALESCE(json_extract(detail, '$.job_id'), '') = '' ORDER BY seq",
+        &[&since, &crate::util::HUMAN_AGENT, &task_id, &skip_amender],
+    ) {
+        if r.str("action") == "message.sent" {
+            msgs.push(r.str("subject"));
+            continue;
+        }
+        let d = crate::util::json_map(&r.str("detail"));
+        let mut rev = format!("rev {}", d.get("rev").and_then(|v| v.as_i64()).unwrap_or(0));
+        if r.str("actor") != crate::util::HUMAN_AGENT {
+            rev.push_str(&format!(" by {}", r.str("actor")));
+        }
+        let note = d
+            .get("note")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        revs.push(if note.is_empty() {
+            rev
+        } else {
+            format!("{rev} ({})", trunc(&note, 120))
+        });
+    }
+    (revs, msgs)
+}
+
+/// The words for what [`owner_changes_after`] found: "the task was
+/// amended (rev 3 (note)) and the owner wrote on it (message M)".
+pub(crate) fn changes_said(revs: &[String], msgs: &[String]) -> String {
+    let mut what = Vec::new();
+    if !revs.is_empty() {
+        what.push(format!("the task was amended ({})", revs.join(", ")));
+    }
+    if !msgs.is_empty() {
+        what.push(format!(
+            "the owner wrote on it (message {})",
+            msgs.join(", ")
+        ));
+    }
+    what.join(" and ")
+}
+
+/// Adds to `due` each planned, in-progress or reviewed task of `slug`
+/// amended (by anyone but `lead`) or written on by the owner after the
+/// lead's last sitting was queued: an amendment leaves the status alone and
+/// only notes itself on queued jobs, so before this the lead never re-read
+/// it and a running job worked to the old revision. The lead re-briefs, replaces or leaves the job. A task
+/// already due for another reason gets the change added to its detail. The
+/// owner's words alone make a task due only while a job of it is queued or
+/// running: they reach the lead as unread messages anyway.
+fn owner_changed_due(
+    s: &hive_store::Store,
+    slug: &str,
+    lead: &str,
+    due: &mut Vec<DueTask>,
+) -> anyhow::Result<()> {
+    let conn = s.conn()?;
+    let sitting = must_one(
+        &conn,
+        "SELECT id FROM jobs WHERE project = ? AND kind = ? AND source NOT LIKE 'lead-role:%' ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        &[&slug, &LEAD_KIND],
+    )
+    .str("id");
+    if sitting.is_empty() {
+        // No sitting yet: an open task is due as new anyway.
+        return Ok(());
+    }
+    let since = must_one(
+        &conn,
+        "SELECT COALESCE(MAX(seq), 0) AS seq FROM events WHERE action = 'job.add' AND subject = ?",
+        &[&sitting],
+    )
+    .int("seq") as i64;
+    for status in ["planned", "in_progress", "review"] {
+        for t in hive_tasks::list(s, slug, status)? {
+            let (revs, msgs) = owner_changes_after(&*conn, &t.id, since, lead);
+            if revs.is_empty() && msgs.is_empty() {
+                continue;
+            }
+            let active = task_jobs(s, &t)?
+                .into_iter()
+                .filter(|j| j.status == "queued" || j.status == "leased")
+                .collect::<Vec<_>>();
+            // The owner's words alone already reach the lead as unread
+            // messages; they make the task due only while a job of it is
+            // in flight, so the lead decides that job's fate with them.
+            if revs.is_empty() && active.is_empty() {
+                continue;
+            }
+            let what = changes_said(&revs, &msgs);
+            if let Some(d) = due.iter_mut().find(|d| d.task.id == t.id) {
+                d.detail.push_str(&format!(
+                    " Also, since your last sitting {what}: read `hive task show {}` first.",
+                    t.id
+                ));
+                continue;
+            }
+            let jobs = active
+                .into_iter()
+                .map(|j| {
+                    let state = if j.status == "leased" {
+                        "running"
+                    } else {
+                        "queued"
+                    };
+                    format!("{} ({state})", j.id)
+                })
+                .collect::<Vec<_>>();
+            let work = if jobs.is_empty() {
+                "no job of it is queued or running".to_string()
+            } else {
+                format!("its jobs {}", jobs.join(", "))
+            };
+            due.push(DueTask {
+                detail: format!(
+                    "changed while {}: since your last sitting {what}; {work}. Read `hive task show {id}` and decide: leave the job when the change does not touch it (a queued job already carries a note to re-read the task), replace it when it does (`hive job stop JOB` and queue a corrected job with `--source task:{id}`), or queue the extra work the new revision asks for. A running job is told at its next carry-on only.",
+                    t.status.replace('_', " "),
+                    id = t.id
+                ),
+                why: OWNER_CHANGED_WHY.into(),
+                task: t,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Workers' reports the lead has not read: one per finished job of an open
@@ -1699,7 +1846,10 @@ pub(crate) fn tend_lead_with(
                 json!({"job": job.str("id"), "why": t.why}),
             );
         }
+        // A failed task's job_id stays its worker's; so does that of a task
+        // whose work goes on while the lead re-reads the owner's change.
         if t.why != "failed"
+            && t.why != OWNER_CHANGED_WHY
             && let Err(e) = hive_tasks::set_lead(s, &t.task.id, &lead.name, &job.str("id"), &actor)
         {
             lines.push(format!(
@@ -3032,6 +3182,119 @@ mod tests {
             "SELECT * FROM jobs WHERE source = ? ORDER BY created_at",
             &[&accept_source(task_id)],
         )
+    }
+
+    /// TASK-196: the owner amends a task the lead already planned; its
+    /// status stays planned, so before this the lead never re-read it.
+    #[test]
+    fn a_planned_task_the_owner_amends_after_planning_is_due_for_the_lead() {
+        let _serial = serial();
+        let s = new_store();
+        new_repo(&s);
+        ensure_lead(&s, "proj".into()).unwrap();
+        let t = hive_tasks::new(
+            &s,
+            "proj",
+            "Rename",
+            "rename it",
+            50,
+            crate::util::HUMAN_AGENT,
+        )
+        .expect("task");
+        let sitting = |n: i32| -> Row {
+            let (lead, _) = crate::jobs::add_job(
+                &s,
+                "proj".into(),
+                LEAD_KIND.into(),
+                "Lead: plan".into(),
+                "plan".into(),
+                0,
+                LEAD_JOB_PRIORITY,
+                format!("lead:proj:{n}"),
+                "daemon".into(),
+                true,
+            )
+            .expect("lead job");
+            crate::util::exec1(
+                &*s.conn().unwrap(),
+                "UPDATE jobs SET status = 'done', finished_at = ?, result = 'SUMMARY: planned' WHERE id = ?",
+                &[&TEST_NOW, &lead.str("id")],
+            );
+            lead
+        };
+        let lead = sitting(1);
+        hive_tasks::set_lead(&s, &t.id, "proj-lead", &lead.str("id"), "daemon").unwrap();
+        let work = task_job(&s, "Rename it", &format!("task:{}", t.id));
+        hive_tasks::set_status(&s, &t.id, "planned", "proj-lead").unwrap();
+        let due_of = |s: &hive_store::Store| {
+            let (_, due, _) =
+                lead_due(s, "proj".into(), "proj-lead".into(), TEST_NOW.into()).unwrap();
+            due.into_iter().find(|d| d.task.id == t.id)
+        };
+        assert!(due_of(&s).is_none(), "planned and untouched: not due");
+
+        // The lead's own amendment does not wake it.
+        hive_tasks::amend(&s, &t.id, "", "", "lead note", "proj-lead").unwrap();
+        assert!(due_of(&s).is_none(), "the lead's own amendment is not due");
+
+        // The owner amends it after planning: due, whatever its status.
+        hive_tasks::amend(
+            &s,
+            &t.id,
+            "",
+            "rename it and the menu",
+            "and the menu",
+            "human",
+        )
+        .unwrap();
+        let d = due_of(&s).expect("amended planned task is due");
+        assert_eq!(d.why, OWNER_CHANGED_WHY);
+        assert_eq!(d.task.status, "planned");
+        assert!(d.detail.contains("rev 3 (and the menu)"), "{}", d.detail);
+        assert!(!d.detail.contains("rev 2"), "{}", d.detail);
+        assert!(
+            d.detail.contains(&format!("{} (queued)", work.str("id"))),
+            "{}",
+            d.detail
+        );
+        assert!(
+            d.detail.contains(&format!("hive task show {}", t.id)),
+            "{}",
+            d.detail
+        );
+
+        // The owner writes on it too: named beside the amendment.
+        let m = hive_tasks::send_message(&s, "proj", &t.id, "human", "the menu first").unwrap();
+        let d = due_of(&s).expect("still due");
+        assert!(d.detail.contains(&m.id), "{}", d.detail);
+
+        // The lead's next sitting read it: not due again.
+        sitting(2);
+        assert!(due_of(&s).is_none(), "a later sitting has seen the change");
+
+        // Once in progress, a word from the owner alone brings it back.
+        hive_tasks::set_status(&s, &t.id, "in_progress", "daemon").unwrap();
+        hive_tasks::send_message(&s, "proj", &t.id, "human", "also the icon").unwrap();
+        let d = due_of(&s).expect("owner wrote on an in-progress task");
+        assert_eq!(d.why, OWNER_CHANGED_WHY);
+        assert!(d.detail.contains("the owner wrote on it"), "{}", d.detail);
+        assert!(!d.detail.contains("was amended"), "{}", d.detail);
+
+        // With no job in flight a word alone reaches the lead as an unread
+        // message, not as a due task; an amendment still does.
+        crate::util::exec1(
+            &*s.conn().unwrap(),
+            "UPDATE jobs SET status = 'done', finished_at = ? WHERE id = ?",
+            &[&TEST_NOW, &work.str("id")],
+        );
+        assert!(due_of(&s).is_none(), "a word with no job in flight");
+        hive_tasks::amend(&s, &t.id, "", "rename all three", "and the icon", "human").unwrap();
+        let d = due_of(&s).expect("amended with no job in flight");
+        assert!(
+            d.detail.contains("no job of it is queued or running"),
+            "{}",
+            d.detail
+        );
     }
 
     /// TASK-068: a lead folded a second task into the first task's job and
