@@ -151,7 +151,50 @@ impl Restart {
     /// binary unchanged, a console drain exits when nothing is in flight or
     /// its drain is over; a restart armed by a binary that changed back is
     /// off. `idle_log` carries the stay line, said once while it holds.
+    ///
+    /// A restart the changed binary would leave on while the self-update's
+    /// build of a newer HEAD is due or runs waits for that build instead
+    /// (`selfupdate::build_goes_first`): the build installs the binary the
+    /// service is to start, and its own restart follows on the next tick
+    /// it is done. On 2026-11-28 the bound and the due build fell together
+    /// at 04:36:30Z; the daemon restarted onto the older installed build
+    /// and the newer HEAD waited a whole second cycle (TASK-198).
     pub(crate) fn tend(
+        &mut self,
+        s: &hive_store::Store,
+        changed: bool,
+        inflight: &BTreeMap<String, Dispatch>,
+        idle_log: &mut crate::idle_log::IdleLog,
+    ) -> Tend {
+        let tend = self.tend_once(s, changed, inflight, idle_log);
+        let Tend::Exits(line) = &tend else {
+            idle_log.clear("restart-build");
+            return tend;
+        };
+        if !changed
+            || self.console_drain
+            || self.forced
+            || !crate::selfupdate::build_goes_first(&s.now())
+        {
+            return tend;
+        }
+        if self.pending.is_none() {
+            // Armed here, so nothing long starts while the build runs.
+            self.anchors = inflight.keys().cloned().collect();
+            self.pending = Some(Instant::now());
+            self.since = s.now();
+        }
+        let why = line.split(';').next().unwrap_or(line);
+        Tend::Goes(idle_log.line(
+            "restart-build",
+            &format!(
+                "{why}; the self-update's build of a newer brain HEAD is due, so it goes first and this daemon restarts onto what it installs"
+            ),
+            Instant::now(),
+        ))
+    }
+
+    fn tend_once(
         &mut self,
         s: &hive_store::Store,
         changed: bool,
@@ -816,7 +859,12 @@ fn kinds_within(fits: &Fits, left: Duration) -> Vec<(String, String)> {
 /// waits for them to start; with nothing in flight the restart is at once
 /// and refuses nothing. The owner's work (`OWNER_DRIVEN_SQL`) is never
 /// among them: it starts in any window (`restart_fits`), so the build does
-/// not wait for it.
+/// not wait for it. Nor is fleet work that could not start now whatever
+/// the restart did ([`Machines::could_start`]): fleet work of a project waits
+/// while the owner's work is queued there (`yield_lane::fleet_waits_sql`),
+/// and a job whose needs no active machine meets waits for one. On
+/// 2026-11-28 the brain's weekly audit and daily check, queued behind the
+/// owner's work all night, held every build for the whole bound (TASK-198).
 pub(crate) fn refused_queued_work(
     s: &hive_store::Store,
     inflight: &BTreeMap<String, Dispatch>,
@@ -828,20 +876,25 @@ pub(crate) fn refused_queued_work(
     let Ok(conn) = s.conn() else {
         return Vec::new();
     };
+    let machines = Machines::read(s, &conn, now);
     let queued: Vec<(String, String)> = crate::util::must_rows(
         &conn,
         &format!(
-            "SELECT DISTINCT j.project, j.kind FROM jobs j JOIN projects p ON p.slug = j.project
+            "SELECT DISTINCT j.project, j.kind, j.needs FROM jobs j JOIN projects p ON p.slug = j.project
              WHERE j.status = 'queued' AND p.status = 'active' AND j.kind IN ({}, 'experiment')
-             AND NOT {}
+             AND NOT {} AND {}
              ORDER BY j.project, j.kind",
             crate::jobs::work_kinds_sql(),
-            crate::jobs::OWNER_DRIVEN_SQL
+            crate::jobs::OWNER_DRIVEN_SQL,
+            crate::yield_lane::fleet_waits_sql()
         ),
         &[],
     )
     .iter()
+    .filter(|r| machines.could_start(&r.str("project"), &r.str("needs")))
     .map(|r| (r.str("project"), r.str("kind")))
+    .collect::<BTreeSet<_>>()
+    .into_iter()
     .collect();
     if queued.is_empty() {
         return Vec::new();
@@ -858,6 +911,43 @@ pub(crate) fn refused_queued_work(
         .into_iter()
         .filter(|pair| !within.contains(pair))
         .collect()
+}
+
+/// The machines a queued job could lease on now, read once per pass:
+/// this one (unless it keeps no slots) with the projects marked unfit
+/// here, and the active paired machines.
+struct Machines {
+    local: Option<BTreeSet<String>>,
+    unfit: BTreeMap<String, String>,
+    hands: Vec<Row>,
+}
+
+impl Machines {
+    fn read(s: &hive_store::Store, conn: &rusqlite::Connection, now: &str) -> Self {
+        let local = crate::executor::local_executor_row(s);
+        Self {
+            local: (local.int("workers") > 0).then(|| crate::executor::caps(&local)),
+            unfit: crate::recipe::unfit_projects(conn, crate::executor::LOCAL_EXECUTOR, now),
+            hands: crate::util::must_rows(
+                conn,
+                "SELECT * FROM executors WHERE status = 'active'",
+                &[],
+            ),
+        }
+    }
+
+    /// Whether a queued job of `project` needing `needs` could lease on
+    /// one of them now. A job no machine can run waits for one whether or
+    /// not a restart is pending, so the build does not wait for it.
+    fn could_start(&self, project: &str, needs: &str) -> bool {
+        let here = self.local.as_ref().is_some_and(|caps| {
+            hive_store::needs::met(needs, caps) && !self.unfit.contains_key(project)
+        });
+        here || self.hands.iter().any(|r| {
+            crate::executor::executor_allows(r, project)
+                && hive_store::needs::met(needs, &crate::executor::caps(r))
+        })
+    }
 }
 
 /// Whether the owner's work (`OWNER_DRIVEN_SQL`) is queued on an active
@@ -1270,7 +1360,7 @@ mod tests {
 
     #[test]
     fn refused_queued_work_leaves_the_owner_s_work_out() {
-        let s = store_with_projects(&["brain"]);
+        let s = store_with_projects(&["brain", "other"]);
         crate::test_helpers_daemon::set_setting(&s, "minutes_per_job", "180");
         crate::test_helpers_daemon::set_setting(&s, "daemon.restart_drain_minutes", "20");
         // Ten ballots of a minute; ten tasks and ten improve runs of two and
@@ -1288,7 +1378,9 @@ mod tests {
             finished_run(&s, n, 10.0 + n as f64, "done", "real", 9000.0);
         }
         queued_job(&s, "fleet-improve", "brain", "improve", "evolve");
-        queued_job(&s, "owner-task", "brain", "task", "task:TASK-001");
+        // The owner's task on another project: on the brain it would hold
+        // the fleet's work back whatever the restart did (TASK-198).
+        queued_job(&s, "owner-task", "other", "task", "task:TASK-001");
         // A ballot in flight: its window has no room for a task or an improve
         // run on the brain. The fleet's improve job is refused; the owner's
         // task is not among the refused, since it starts in any window.
@@ -1306,6 +1398,62 @@ mod tests {
         assert_eq!(
             refused_queued_work(&s, &inflight, TEST_NOW),
             pairs("brain", &["improve", "task"])
+        );
+    }
+
+    /// TASK-198: on 2026-11-28 the brain's weekly audit and daily check,
+    /// queued behind the owner's work all night, held every build for the
+    /// whole bound. Fleet work that cannot start now - its project's owner
+    /// work is queued, or no machine meets its needs - is not what a
+    /// restart refuses, so the build does not wait for it.
+    #[test]
+    fn refused_queued_work_leaves_out_fleet_work_that_cannot_start_now() {
+        let _serial = crate::test_helpers::serial();
+        let s = store_with_projects(&["brain", "other"]);
+        crate::test_helpers_daemon::set_setting(&s, "minutes_per_job", "180");
+        crate::test_helpers_daemon::set_setting(&s, "daemon.restart_drain_minutes", "20");
+        for n in 0..10 {
+            finished_job_on(&s, n, "brain", "ballot");
+            finished_run(&s, n, 10.0 + n as f64, "done", "real", 60.0);
+        }
+        for n in 10..20 {
+            finished_job_on(&s, n, "brain", "task");
+            finished_run(&s, n, 10.0 + n as f64, "done", "real", 9000.0);
+        }
+        let mut inflight = BTreeMap::new();
+        inflight.insert(
+            "a".to_string(),
+            dispatch_of("a", "brain", "ballot", "schedule"),
+        );
+        // The weekly audit alone: the restart would refuse it, the build waits.
+        queued_job(&s, "fleet-audit", "brain", "task", "schedule");
+        assert_eq!(
+            refused_queued_work(&s, &inflight, TEST_NOW),
+            pairs("brain", &["task"])
+        );
+        // The owner's task queued on the brain: the audit waits behind it
+        // whatever the restart does, so the build no longer waits for it.
+        queued_job(&s, "owner-task", "brain", "task", "task:TASK-198");
+        assert!(
+            refused_queued_work(&s, &inflight, TEST_NOW).is_empty(),
+            "fleet work behind the owner's queued work held the build"
+        );
+        // Another project's fleet work is not behind the brain's owner work.
+        queued_job(&s, "other-task", "other", "task", "schedule");
+        assert_eq!(
+            refused_queued_work(&s, &inflight, TEST_NOW),
+            pairs("other", &["task"])
+        );
+        // A job whose needs no machine meets waits for a machine, not for
+        // the restart.
+        crate::util::exec1(
+            &*s.conn().unwrap(),
+            "UPDATE jobs SET needs = 'no-such-machine-label' WHERE id = 'other-task'",
+            &[],
+        );
+        assert!(
+            refused_queued_work(&s, &inflight, TEST_NOW).is_empty(),
+            "a job no machine can run held the build"
         );
     }
 
@@ -1646,6 +1794,92 @@ mod tests {
             restart_note(now, &BTreeMap::new(), &anchors),
             "restarting: 0 in flight"
         );
+    }
+
+    /// TASK-198: on 2026-11-28 a build of 03:06Z was installed and its
+    /// restart pending; at 04:36:30Z its bound was up and the newer HEAD's
+    /// build fell due at the same moment. The daemon restarted onto the
+    /// older build and the newer one waited a second cycle. The bound that
+    /// falls together with a due build lets the build go first; once it
+    /// failed, or while it waits on something else, the restart goes.
+    #[test]
+    fn a_bound_that_falls_together_with_a_due_build_lets_the_build_go_first() {
+        let _serial = crate::test_helpers::serial();
+        let _reset = crate::test_helpers_selfupdate::reset_guard();
+        let s = store_with_projects(&["proj"]);
+        crate::test_helpers_daemon::set_setting(&s, "daemon.restart_drain_minutes", "30");
+        crate::test_helpers_daemon::set_setting(&s, "daemon.restart_max_minutes", "90");
+        let mut inflight = BTreeMap::new();
+        inflight.insert(
+            "w".to_string(),
+            dispatch_of("local", "proj", "task", "schedule"),
+        );
+        let mut r = Restart {
+            pending: Instant::now().checked_sub(Duration::from_secs(90 * 60)),
+            since: crate::util::plus_minutes(TEST_NOW, -90.0),
+            ..Default::default()
+        };
+        r.anchor("w", &inflight["w"].job);
+        let mut log = crate::idle_log::IdleLog::default();
+        // The newer HEAD's build is due now: its waits ended this moment.
+        crate::selfupdate::SELF_UPDATE_STATE.write().unwrap().due_at = s.now();
+        match r.tend(&s, true, &inflight, &mut log) {
+            Tend::Goes(Some(line)) => assert!(
+                line.starts_with("restart pending for 1h30m0s (daemon.restart_max_minutes): nothing new starts, the owner's work included")
+                    && line.ends_with("the self-update's build of a newer brain HEAD is due, so it goes first and this daemon restarts onto what it installs"),
+                "{line}"
+            ),
+            other => panic!("the restart went before the due build: {other:?}"),
+        }
+        // Said once while it holds; the build is under way.
+        crate::selfupdate::SELF_UPDATE_STATE
+            .write()
+            .unwrap()
+            .inflight = true;
+        assert_eq!(r.tend(&s, true, &inflight, &mut log), Tend::Goes(None));
+        // With nothing in flight the build still goes first (a new reason,
+        // so said once more).
+        assert!(matches!(
+            r.tend(&s, true, &BTreeMap::new(), &mut log),
+            Tend::Goes(Some(line)) if line.starts_with("hive changed on disk and nothing is in flight; the self-update's build")
+        ));
+        // The build failed: the restart goes onto what is installed.
+        {
+            let mut st = crate::selfupdate::SELF_UPDATE_STATE.write().unwrap();
+            st.inflight = false;
+            st.last_failure_at = s.now();
+        }
+        assert!(matches!(
+            r.tend(&s, true, &inflight, &mut log),
+            Tend::Exits(_)
+        ));
+        // A build that waits for the experiment lane is no reason to stay.
+        {
+            let mut st = crate::selfupdate::SELF_UPDATE_STATE.write().unwrap();
+            st.last_failure_at.clear();
+            st.lane_wait = true;
+        }
+        assert!(matches!(
+            r.tend(&s, true, &inflight, &mut log),
+            Tend::Exits(_)
+        ));
+        // Nor is a build that waits on a clock not yet up.
+        {
+            let mut st = crate::selfupdate::SELF_UPDATE_STATE.write().unwrap();
+            st.lane_wait = false;
+            st.due_at = crate::util::plus_minutes(&s.now(), 10.0);
+        }
+        assert!(matches!(
+            r.tend(&s, true, &inflight, &mut log),
+            Tend::Exits(_)
+        ));
+        // The owner's restart now is never held for a build.
+        crate::selfupdate::SELF_UPDATE_STATE.write().unwrap().due_at = s.now();
+        r.forced = true;
+        assert!(matches!(
+            r.tend(&s, true, &inflight, &mut log),
+            Tend::Exits(_)
+        ));
     }
 
     #[test]

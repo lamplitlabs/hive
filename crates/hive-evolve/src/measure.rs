@@ -9,6 +9,169 @@ use std::time::Duration;
 
 pub(crate) type ExecutableHook = fn() -> std::io::Result<String>;
 
+/// Set while a due hive build has waited for the experiment lane past
+/// `daemon.self_update_lane_minutes` (the runner's self-update gate): a
+/// measurement then starts no further fixture run and stops with what it
+/// measured kept in its checkpoint ([`Checkpoint`]), so the build and the
+/// restart it ends in go first and the measurement carries on after them.
+static YIELD: AtomicBool = AtomicBool::new(false);
+
+/// Asks every measurement in this process to yield between two fixture
+/// runs (`true`), or lets them run to the end (`false`). The daemon's
+/// self-update pass sets it each pass (TASK-198).
+pub fn yield_measurements(on: bool) {
+    YIELD.store(on, Ordering::SeqCst);
+}
+
+/// Whether measurements are asked to yield ([`yield_measurements`]).
+pub fn measurements_yield() -> bool {
+    YIELD.load(Ordering::SeqCst)
+}
+
+/// The words a measurement stopped by [`yield_measurements`] fails with:
+/// "interrupted" makes it a transient failure the lane retries soon.
+pub const YIELD_ERROR: &str =
+    "measurement interrupted: it yields to a due hive build between two fixtures";
+
+/// The `meta` key prefix of a measurement's checkpoint rows.
+const CHECKPOINT_PREFIX: &str = "measure.checkpoint.";
+
+/// How long a checkpoint row is kept when no measurement takes it up.
+const CHECKPOINT_HOURS: i64 = 24;
+
+/// What a measurement has measured so far, kept in the store's `meta`
+/// table one row per scored run: a measurement cancelled by a restart, or
+/// yielding to a due build, carries on from the runs it had instead of
+/// from nothing (TASK-198: a 70-minute measurement and a restart every 90
+/// minutes chased each other for hours). A run is keyed by everything its
+/// score depends on - the project, the measured tree, the fixture as
+/// measured, the diff scope and the settings the cached baseline is keyed
+/// by (`baseline_fixture_hash`) - so a changed fixture, tree or model is
+/// measured again. The rows of a measurement are removed when it ends,
+/// whatever its outcome, unless it was cancelled or yielded.
+struct Checkpoint {
+    store: hive_store::Store,
+    /// The key's common part; empty when it could not be read (the
+    /// measurement then keeps no checkpoint).
+    base: String,
+}
+
+impl Checkpoint {
+    fn new(
+        s: &hive_store::Store,
+        project: &str,
+        tree: &str,
+        scope: Option<&crate::api::DiffScope>,
+    ) -> Self {
+        let base = crate::baseline_cache::baseline_fixture_hash(s, project)
+            .map(|settings| {
+                let scope = scope
+                    .map(|scope| serde_json::to_string(scope).unwrap_or_default())
+                    .unwrap_or_default();
+                format!("{project}\n{tree}\n{settings}\n{scope}")
+            })
+            .unwrap_or_default();
+        let checkpoint = Self {
+            store: s.clone(),
+            base,
+        };
+        checkpoint.prune();
+        checkpoint
+    }
+
+    fn key(&self, f: &MeasuredFixture, run: usize) -> Option<String> {
+        use sha2::{Digest, Sha256};
+        if self.base.is_empty() {
+            return None;
+        }
+        let fixture = serde_json::to_string(f).ok()?;
+        let digest = Sha256::digest(format!("{}\n{fixture}\n{run}", self.base).as_bytes());
+        let mut out = String::from(CHECKPOINT_PREFIX);
+        for byte in &digest[..16] {
+            let _ = write!(&mut out, "{byte:02x}");
+        }
+        Some(out)
+    }
+
+    /// The run's score, reason and scope when an earlier try measured it.
+    fn get(&self, f: &MeasuredFixture, run: usize) -> Option<(f64, String, bool)> {
+        let (raw, found) = self.store.meta(&self.key(f, run)?).ok()?;
+        if !found {
+            return None;
+        }
+        let row: CheckpointRow = serde_json::from_str(&raw).ok()?;
+        crate::fixtures::score_value(row.score).then_some((row.score, row.reason, row.scoped))
+    }
+
+    fn put(&self, f: &MeasuredFixture, run: usize, measured: &(f64, String, bool)) {
+        let Some(key) = self.key(f, run) else {
+            return;
+        };
+        let row = CheckpointRow {
+            at: self.store.now(),
+            score: measured.0,
+            reason: measured.1.clone(),
+            scoped: measured.2,
+        };
+        if let Ok(value) = serde_json::to_string(&row) {
+            let _ = self.store.set_meta(&key, &value);
+        }
+    }
+
+    /// Removes this measurement's rows: it ended and keeps its result.
+    fn clear(&self, matrix: &[MeasuredFixture]) {
+        let Ok(conn) = self.store.conn() else {
+            return;
+        };
+        for f in matrix {
+            for run in 0..fixture_runs(f) {
+                if let Some(key) = self.key(f, run) {
+                    let _ = conn.execute("DELETE FROM meta WHERE key = ?", [key]);
+                }
+            }
+        }
+    }
+
+    /// Removes the rows no measurement took up within [`CHECKPOINT_HOURS`].
+    fn prune(&self) {
+        let Ok(conn) = self.store.conn() else {
+            return;
+        };
+        let Ok(now) = chrono::DateTime::parse_from_rfc3339(&self.store.now()) else {
+            return;
+        };
+        let stale: Vec<String> = conn
+            .prepare("SELECT key, value FROM meta WHERE key LIKE 'measure.checkpoint.%'")
+            .and_then(|mut stmt| {
+                stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(_, value)| {
+                serde_json::from_str::<CheckpointRow>(value)
+                    .ok()
+                    .and_then(|row| chrono::DateTime::parse_from_rfc3339(&row.at).ok())
+                    .is_none_or(|at| now - at > chrono::Duration::hours(CHECKPOINT_HOURS))
+            })
+            .map(|(key, _)| key)
+            .collect();
+        for key in stale {
+            let _ = conn.execute("DELETE FROM meta WHERE key = ?", [key]);
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct CheckpointRow {
+    at: String,
+    score: f64,
+    #[serde(default)]
+    reason: String,
+    #[serde(default)]
+    scoped: bool,
+}
+
 pub(crate) static EXECUTABLE: LazyLock<RwLock<Option<ExecutableHook>>> =
     LazyLock::new(|| RwLock::new(None));
 
@@ -283,6 +446,20 @@ pub(crate) fn measure(
     let cleanup_store = s.clone();
     let cleanup_id = id.clone();
     let scope = opts.scope.as_ref();
+    // Keyed by the measured tree, not the commit: the lane measures a
+    // branch merged onto the default branch as a fresh commit each try
+    // (runner `measured_variant`), the same tree under a new id.
+    let tree = crate::process::git_output(
+        cancel,
+        &repo,
+        &[
+            "rev-parse".into(),
+            "--verify".into(),
+            format!("{commit}^{{tree}}"),
+        ],
+    )
+    .unwrap_or_else(|_| commit.clone());
+    let checkpoint = Checkpoint::new(s, project, &tree, scope);
     let mut scores = crate::api::Scores {
         project: project.to_string(),
         repo: repo.clone(),
@@ -348,6 +525,7 @@ pub(crate) fn measure(
                 let matrix = &matrix;
                 let units = &units;
                 let scope_env = scope_env.as_ref();
+                let checkpoint = &checkpoint;
                 handles.push(scope.spawn(move || {
                     let mut worker_results = Vec::new();
                     loop {
@@ -371,6 +549,7 @@ pub(crate) fn measure(
                             matrix,
                             unit,
                             scope_env,
+                            checkpoint,
                         );
                         if result.error.is_some() {
                             failed.store(true, Ordering::SeqCst);
@@ -460,6 +639,15 @@ pub(crate) fn measure(
         Ok(())
     })();
     let cleanup = crate::clones::remove_managed(&cleanup_store, &cleanup_id);
+    // A measurement cancelled (a restart) or yielding to a due build keeps
+    // the runs it scored for its next try; any other end removes them.
+    let interrupted = cancel.is_cancelled()
+        || result
+            .as_ref()
+            .is_err_and(|e| e.to_string().contains(YIELD_ERROR));
+    if !interrupted {
+        checkpoint.clear(&matrix);
+    }
     match (result, cleanup) {
         (Ok(()), Ok(())) => Ok(scores),
         (Err(e), Ok(())) => Err(e),
@@ -557,6 +745,7 @@ fn measure_unit(
     matrix: &[MeasuredFixture],
     unit: MeasureUnit,
     scope: Option<&ScopeEnv>,
+    checkpoint: &Checkpoint,
 ) -> UnitResult {
     let i = unit.fixture;
     let f = &matrix[i];
@@ -573,6 +762,24 @@ fn measure_unit(
     let mut measured: Vec<(f64, String, bool)> = Vec::with_capacity(unit.end_run - unit.first_run);
     let mut error = None;
     for run in unit.first_run..unit.end_run {
+        // A run an earlier try of this measurement scored (cancelled by a
+        // restart, or yielding to a build) is not measured again.
+        if let Some(kept) = checkpoint.get(f, run) {
+            let _ = writeln!(
+                &mut output,
+                "[{}/{}] {}: run {} kept from an interrupted measurement",
+                i + 1,
+                len,
+                label,
+                run + 1
+            );
+            measured.push(kept);
+            continue;
+        }
+        if YIELD.load(Ordering::SeqCst) {
+            error = Some(anyhow!(YIELD_ERROR));
+            break;
+        }
         if run > unit.first_run {
             if let Some(e) = cancel.err() {
                 error = Some(e.into());
@@ -625,7 +832,10 @@ fn measure_unit(
         })();
         let clone_cleanup = crate::clones::remove_measurement_clone(s, cleanup_id, slot);
         match (run_result, clone_cleanup) {
-            (Ok(value), Ok(())) => measured.push(value),
+            (Ok(value), Ok(())) => {
+                checkpoint.put(f, run, &value);
+                measured.push(value);
+            }
             (Err(e), Ok(())) => {
                 error = Some(e);
                 break;
@@ -1382,6 +1592,156 @@ printf 'score: 0.75\n'
             .find(|f| f.name == "starter-agree")
             .unwrap();
         assert_eq!(agree.runs, [1.0, 1.0, 0.0]);
+    }
+
+    fn checkpoint_rows(s: &hive_store::Store) -> i64 {
+        s.conn()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM meta WHERE key LIKE 'measure.checkpoint.%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    /// TASK-198: a restart cancelled a 70-minute measurement and the lane
+    /// began it again from nothing, every 90 minutes. A measurement cancelled
+    /// (or yielding to a due build) keeps the runs it scored; the next try
+    /// carries on from them and measures only the rest.
+    #[test]
+    fn a_measurement_cancelled_by_a_restart_carries_on_from_the_fixtures_it_had() {
+        let _serial = crate::test_helpers::serial();
+        let _guard = measure_test_lock();
+        super::yield_measurements(false);
+        let s = test_store();
+        let repo = test_project(&s, "demo");
+        s.set_setting("human", "evolve.measure_parallel", "1")
+            .unwrap();
+        let tmp = crate::test_helpers::temp_path();
+        let (first_calls, second_calls, second_started) = (
+            tmp.join("first"),
+            tmp.join("second"),
+            tmp.join("second-started"),
+        );
+        for (name, scorer) in [
+            ("m1-first", scripted_scorer(&first_calls, &["0.25"])),
+            (
+                "m2-second",
+                // The first call marks that it began and hangs until the
+                // restart cancels it; the second answers.
+                format!(
+                    "n=$(cat '{c}' 2>/dev/null || echo 0)\nn=$((n + 1))\nprintf '%s' \"$n\" > '{c}'\nif [ \"$n\" = 1 ]; then touch '{m}'; sleep 30; fi\nprintf 'score: 0.75\\n'\n",
+                    c = second_calls.display(),
+                    m = second_started.display()
+                ),
+            ),
+        ] {
+            crate::fixtures::add_fixture(
+                &s,
+                crate::fixtures::FixtureInput {
+                    project: "demo".into(),
+                    name: name.into(),
+                    scorer,
+                    metric: true,
+                    weight: 1.0,
+                    actor: "human".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        fake_harness(&s, "exit 9");
+        let calls = |path: &Path| std::fs::read_to_string(path).unwrap_or_default();
+        // The restart cancels the lane once the second fixture is under way.
+        let cancel = hive_bus::CancellationToken::new();
+        let restart = {
+            let cancel = cancel.clone();
+            let started = second_started.clone();
+            std::thread::spawn(move || {
+                for _ in 0..600 {
+                    if started.exists() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                cancel.cancel();
+            })
+        };
+        let err = super::measure(
+            &cancel,
+            &s,
+            "demo",
+            &repo,
+            "HEAD",
+            crate::api::MeasureOptions::default(),
+        )
+        .expect_err("a cancelled measurement reported success");
+        restart.join().unwrap();
+        assert!(err.to_string().contains("context canceled"), "{err}");
+        assert_eq!(calls(&first_calls), "1");
+        assert_eq!(checkpoint_rows(&s), 1, "the scored fixture was not kept");
+        assert_no_clones(&s);
+        // A due build asks the next try to yield: it takes the kept run and
+        // stops before it measures anything more.
+        super::yield_measurements(true);
+        let mut out = Vec::new();
+        let err = super::measure(
+            &hive_bus::CancellationToken::new(),
+            &s,
+            "demo",
+            &repo,
+            "HEAD",
+            crate::api::MeasureOptions {
+                out: Some(&mut out),
+                ..Default::default()
+            },
+        )
+        .expect_err("a yielding measurement reported success");
+        super::yield_measurements(false);
+        assert!(err.to_string().contains(super::YIELD_ERROR), "{err}");
+        assert_eq!(calls(&first_calls), "1");
+        assert_eq!(calls(&second_calls), "1");
+        assert_eq!(checkpoint_rows(&s), 1);
+        // After the restart the measurement carries on: the first fixture
+        // is not measured again, the second is, and the total counts both.
+        let mut out = Vec::new();
+        let scores = super::measure(
+            &hive_bus::CancellationToken::new(),
+            &s,
+            "demo",
+            &repo,
+            "HEAD",
+            crate::api::MeasureOptions {
+                out: Some(&mut out),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert_eq!(calls(&first_calls), "1", "{out}");
+        assert_eq!(calls(&second_calls), "2", "{out}");
+        assert!(
+            out.contains("m1-first: run 1 kept from an interrupted measurement"),
+            "{out}"
+        );
+        let got: Vec<(String, f64)> = scores
+            .fixtures
+            .iter()
+            .map(|f| (f.name.clone(), f.score))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("m1-first".to_string(), 0.25),
+                ("m2-second".to_string(), 0.75)
+            ]
+        );
+        assert!((scores.total - 0.5).abs() < 1e-9, "{}", scores.total);
+        // The measurement ended: its checkpoint is gone, so the next
+        // measurement of the same tree measures afresh.
+        assert_eq!(checkpoint_rows(&s), 0);
+        assert_no_clones(&s);
     }
 
     #[test]
