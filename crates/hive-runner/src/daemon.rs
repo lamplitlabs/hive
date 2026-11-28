@@ -503,6 +503,11 @@ pub(crate) fn daemon_heartbeat(
     if let Some(tick) = tick {
         beat["tick"] = tick;
     }
+    // What the self-update's due build waits for and since when, so `hive
+    // status` says it (TASK-198); absent while no build is due.
+    if let Some(update) = crate::selfupdate::beat() {
+        beat["self_update"] = update;
+    }
     // The keep-awake hold and the last sleep noticed (awake.rs), once the
     // loop has ticked; the console reads both from here.
     let awake = crate::awake::beat();

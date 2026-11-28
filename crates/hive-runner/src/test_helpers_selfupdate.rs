@@ -29,6 +29,8 @@ pub(crate) fn reset_self_update() {
     *SELF_UPDATE_STATE
         .write()
         .expect("self-update state poisoned") = SelfUpdateState::default();
+    crate::selfupdate::reset_beat();
+    hive_evolve::measure::yield_measurements(false);
 }
 
 pub(crate) struct ResetSelfUpdateGuard;
@@ -142,6 +144,7 @@ pub(crate) fn self_update_fixture() -> (
             refused_queued: String::new(),
             restart_armed: String::new(),
             restart_max_minutes: 0,
+            lane_minutes: 0,
             version: String::new(),
             target: String::new(),
         },
