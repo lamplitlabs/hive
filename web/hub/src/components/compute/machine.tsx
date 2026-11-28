@@ -14,10 +14,12 @@ import { StatusBadge } from "@/components/hive/status-badge";
 import { When } from "@/components/hive/who";
 import { cn } from "@/lib/utils";
 import { num, plural, rel, statusTone, type Tone } from "@/lib/format";
-import { statusWord } from "@/lib/words";
+import { agentName, statusWord } from "@/lib/words";
 import { hrefs } from "@/lib/nav";
 import { useNow } from "@/lib/use-api";
-import { writes, type Executor, type HandDevice, type LandingHold, type Runner } from "@/lib/api";
+import { writes, type Executor, type HandDevice, type HarnessSession, type LandingHold, type Runner } from "@/lib/api";
+import { JobStopButton } from "@/components/hive/job-stop";
+import { machineJobMeta, machineJobs, machineJobsHeading, machineJobsLabel, moreJobsLabel, shownJobs } from "./machine-jobs-state";
 import { machineLabels, machineLogoKey, machineProjects, slotsMeter, thisMachineOs } from "./compute-state";
 import { Meter } from "./meter";
 
@@ -274,8 +276,10 @@ function cardTip(e: Executor): string {
 // name, so the local card wears the same mark as the "This machine" card.
 // `action` holds a Remove menu. `device` is the key a dial machine enrolled
 // with (ADR-070 step 2): the card says when it last called and, while the
-// key is live, offers Revoke.
-export function MachineCard({ e, provider, host, action, device, className }: { e: Executor; provider?: string | null; host?: string | null; action?: React.ReactNode; device?: HandDevice; className?: string }) {
+// key is live, offers Revoke. `runs` are the runs in flight on every
+// machine (GET harness/sessions?status=running); the card lists the jobs
+// running on this one, each with the console's Stop.
+export function MachineCard({ e, provider, host, action, device, runs, onStopped, className }: { e: Executor; provider?: string | null; host?: string | null; action?: React.ReactNode; device?: HandDevice; runs?: HarnessSession[] | null; onStopped?: () => unknown; className?: string }) {
   const local = e.kind === "local" || e.name === "local";
   const localOs = local ? thisMachineOs(e, host, typeof navigator !== "undefined" ? navigator.userAgent : "") : null;
   const logoKey = machineLogoKey(e, provider) ?? (localOs === "macos" || localOs === "linux" ? localOs : null);
@@ -321,6 +325,7 @@ export function MachineCard({ e, provider, host, action, device, className }: { 
         </div>
       </div>
       <Meter label="Slots" pct={slots.pct} text={slots.text} title={slots.total ? plural(slots.used, "slot") + " in use of " + slots.total : "This machine has no agent slots"} />
+      <MachineJobs name={e.name} kind={e.kind} runs={runs} onStopped={onStopped} />
       {labels.length || reserved ? (
         <ul className="flex min-w-0 flex-wrap gap-1" aria-label="Offers" title="What this machine offers; a project asks for these words in its .hive/hive.yaml needs:">
           {labels.map((l) => (
@@ -368,6 +373,46 @@ export function MachineCard({ e, provider, host, action, device, className }: { 
       </div>
       {why ? <p className={cn("text-[13px] leading-snug anywhere", statusTone(e.status) === "bad" ? "text-bad" : "text-muted-foreground")}>{"Why: " + why}</p> : null}
     </article>
+  );
+}
+
+// The jobs running on the machine now, longest-running first: each row
+// opens its run and carries the console's Stop (JobStopButton, the same
+// confirm and POST jobs/{id}/stop the Runs page uses), which names this
+// machine and can requeue the job. Nothing running, nothing shown.
+function MachineJobs({ name, kind, runs, onStopped }: { name: string; kind: string; runs?: HarnessSession[] | null; onStopped?: () => unknown }) {
+  const jobs = machineJobs(runs, { name, kind });
+  if (!jobs.length) return null;
+  const { shown, more } = shownJobs(jobs);
+  return (
+    <div className="min-w-0">
+      <p className="mb-1 text-[13px] font-medium text-muted-foreground">{machineJobsHeading(jobs.length)}</p>
+      <ul className="grid min-w-0 divide-y rounded-md border" aria-label={machineJobsLabel(name)}>
+        {shown.map((j) => {
+          const meta = machineJobMeta(j, (a) => agentName(a));
+          return (
+            <li key={j.job} className="flex min-w-0 items-center gap-2 py-1.5 pl-2.5 pr-1">
+              <div className="min-w-0 flex-1">
+                <Link href={hrefs.harness({ id: j.session })} className="block min-w-0 truncate text-[13px] font-medium leading-5 text-foreground underline-offset-2 hover:underline" title={j.title}>
+                  {j.title}
+                </Link>
+                <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+                  {meta ? <span className="min-w-0 truncate">{meta}</span> : null}
+                  {meta && j.since ? <span aria-hidden>·</span> : null}
+                  {j.stopping ? <span className="shrink-0 text-warn">Stopping</span> : j.since ? <When d={j.since} className="shrink-0" /> : null}
+                </div>
+              </div>
+              <JobStopButton job={j.job} status="running" executor={j.executor} title={j.title} onDone={onStopped} iconOnly className="shrink-0" />
+            </li>
+          );
+        })}
+      </ul>
+      {more ? (
+        <Link href={hrefs.harness({ status: "running" })} className="mt-1 inline-block text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline">
+          {moreJobsLabel(more)}
+        </Link>
+      ) : null}
+    </div>
   );
 }
 
