@@ -1203,6 +1203,19 @@ mod tests {
             Duration::from_secs(2 * 60),
             "a measurement the governor held retries with the load, not the long retry"
         );
+        // A measurement that yielded to a due build (TASK-198) carries on
+        // soon after the restart, not twenty minutes later.
+        assert_eq!(
+            experiment_retry(
+                &s,
+                "deferred",
+                &format!(
+                    "measuring main failed: {}",
+                    hive_evolve::measure::YIELD_ERROR
+                )
+            ),
+            Duration::from_secs(2 * 60)
+        );
         set_retry_setting(&s, "lane.retry_minutes", "7");
         set_retry_setting(&s, "lane.short_retry_minutes", "3");
         assert_eq!(
