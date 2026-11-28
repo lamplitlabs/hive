@@ -5293,6 +5293,18 @@ fn the_brains_own_manifest_says_its_work_needs_macos() {
     assert_eq!(needs, "macos", "{path:?}");
     let linux = hive_store::needs::caps_of("linux", "amd64", "");
     assert!(!hive_store::needs::met(&needs, &linux));
+    // The way back says to write the empty list: a file without the key
+    // leaves the stored needs alone (`sync_needs`), so dropping the line
+    // would keep the brain on macOS (review of PR 295, item 1).
+    assert!(text.contains("`needs: []`"), "{text}");
+    assert!(!text.contains("Drop it"), "{text}");
+    assert_eq!(
+        manifest::parse(&text.replace("needs: macos", "needs: []"))
+            .unwrap()
+            .needs,
+        Some(Vec::new()),
+        "the comment's own words parse as the empty list"
+    );
 }
 
 #[test]
