@@ -7,6 +7,7 @@ import { MachineCard, RevokeDeviceButton } from "@/components/compute/machine";
 import { ThisMachineCard } from "@/components/compute/this-machine";
 import { CapsPanel, ComputeRequestCard, ComputeRequestListRow, ComputeRequestRow } from "@/components/compute/compute";
 import { requestState, waitingNote } from "@/components/compute/compute-state";
+import { MACHINE_JOBS_PATH } from "@/components/compute/machine-jobs-state";
 import { HygienePanel } from "@/components/hive/hygiene";
 import { RunnersAskedElsewhere, RunnersQuestion, runnersAsking } from "@/components/hive/runners";
 import { Button } from "@/components/ui/button";
@@ -16,7 +17,7 @@ import { Disclosure, EmptyState, ErrorNotice, SkeletonPage } from "@/components/
 import { SectionHeading } from "@/components/hive/section-heading";
 import { RemoveMenuButton } from "@/components/project/project-dialogs";
 import { plural } from "@/lib/format";
-import type { Compute, ComputeRequest, Executor, Hygiene, Org, Runner } from "@/lib/api";
+import type { Compute, ComputeRequest, Executor, HarnessSessionsResponse, Hygiene, Org, Runner } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 
 const SUB = "Where your agents run";
@@ -38,6 +39,8 @@ export default function ComputePage() {
   const org = useApi<Org>("org");
   // The cleanup panel's own answer (same path, same cache), for its question about the other agent programs.
   const hygiene = useApi<Hygiene>("hygiene?limit=30", { refresh: 60000 });
+  // The runs in flight on every machine; each card lists its own with a Stop.
+  const running = useApi<HarnessSessionsResponse>(MACHINE_JOBS_PATH, { refresh: 10000 });
   const [allPast, setAllPast] = useState(false);
   if (q.error && !q.data)
     return (
@@ -139,7 +142,7 @@ export default function ComputePage() {
                     const device = e.kind === "dial" ? c.devices?.find((d) => d.executor === e.name) : undefined;
                     // The local executor is this machine and a removed row is already gone: neither gets Remove.
                     const action = device && !device.revoked_at ? <RevokeDeviceButton device={device} name={e.name} /> : e.name !== "local" ? <RemoveMenuButton kind="executor" name={e.name} compact /> : undefined;
-                    return <MachineCard key={e.name} e={e} provider={c.caps.provider} host={org.data?.host} device={device} action={action} />;
+                    return <MachineCard key={e.name} e={e} provider={c.caps.provider} host={org.data?.host} device={device} action={action} runs={running.data?.sessions} onStopped={running.reload} />;
                   })}
                 </CardGrid>
               ) : null}
