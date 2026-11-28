@@ -118,6 +118,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useFollowEnd } from "@/lib/follow-end";
 import { logoFor } from "@/lib/logos";
 import { pendingChoices } from "@/lib/pending-question";
 import { BackButton, Pane, Split } from "@/components/chat/split";
@@ -431,7 +432,27 @@ function SessionRow({
       data-lockdown={sealed || undefined}
     >
       <SessionStateIcon state={state} />
-      {project ? (
+      {/* A lockdown marks the avatar, not a word beside the title: the row
+          is 218 px wide and a 95 px "Lockdown" pill left the title 1 px
+          (TASK-171). The row's surface and the header keep the word. */}
+      {sealed ? (
+        <span className="relative shrink-0" title={LOCKDOWN_BADGE}>
+          {project ? (
+            <ProjectAvatar slug={project} name={project} size={20} />
+          ) : (
+            <span className="inline-flex size-5 items-center justify-center rounded-[5px] border border-dashed border-border text-muted-foreground">
+              <SparklesIcon className="size-3" aria-hidden />
+            </span>
+          )}
+          <span
+            className="absolute -right-1.5 -bottom-1 inline-flex size-3.5 items-center justify-center rounded-full border border-lock bg-card text-lock"
+            data-lockdown-mark
+          >
+            <LockIcon className="lockdown-mark size-2.5" aria-hidden />
+            <span className="sr-only">{LOCKDOWN_BADGE}</span>
+          </span>
+        </span>
+      ) : project ? (
         <ProjectAvatar slug={project} name={project} size={20} />
       ) : (
         <span
@@ -1418,7 +1439,7 @@ export function ChatPageClient() {
       className={cn(
         "grid min-w-0 gap-4",
         opened
-          ? "lg:flex lg:h-[calc(100dvh-1rem)] lg:min-h-[34rem] lg:flex-col"
+          ? "lg:flex lg:h-[calc(100dvh-var(--topbar-h)-1rem)] lg:min-h-[34rem] lg:flex-col"
           : "lg:mx-auto lg:w-full lg:max-w-[1192px] lg:px-4 lg:pb-10",
       )}
     >
@@ -1898,15 +1919,6 @@ function ConversationItem({
             (c.status === "closed" && c.note
               ? c.note
               : c.project || "no project yet")
-          }
-          marks={
-            sealed ? (
-              <span className="lockdown-badge" title={LOCKDOWN_BADGE}>
-                <LockIcon className="size-3" aria-hidden />
-                <span className="sr-only">{LOCKDOWN_BADGE}</span>
-                <span aria-hidden>Lockdown</span>
-              </span>
-            ) : undefined
           }
         />
         {subs.length ? (
@@ -2646,8 +2658,6 @@ function ConversationBody({
   const [busy, setBusy] = useState("");
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(c.title);
-  const [stick, setStick] = useState(true);
-  const scroller = useRef<HTMLDivElement | null>(null);
   const models = useApi<HarnessModelsResponse>("harness/models", {
     refresh: 60000,
   });
@@ -2724,12 +2734,11 @@ function ConversationBody({
     (live.pending?.id ?? 0) +
     ":" +
     (d.steps[d.sessionId]?.length ?? 0);
-  useEffect(() => {
-    // The transcript's own box scrolls, not the page: scrollIntoView on
-    // an end marker would also pull every overflowing ancestor along.
-    const el = scroller.current;
-    if (stick && el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-  }, [lastKey, stick]);
+  // The transcript's own box scrolls, not the page: scrollIntoView on an
+  // end marker would also pull every overflowing ancestor along. It also
+  // follows the box resizing and the lines rewrapping (the canvas opening
+  // beside it), so the session opens at its newest message (TASK-171).
+  const { box: followBox, content: followContent, away, onScroll: onFollowScroll, jump } = useFollowEnd(lastKey);
 
   const act = async (
     what: string,
@@ -2963,7 +2972,7 @@ function ConversationBody({
                   {c.title || "Untitled"}
                 </span>
                 {sealed ? (
-                  <span className="lockdown-badge" title={LOCKDOWN_BADGE}>
+                  <span className="lockdown-badge shrink-0" title={LOCKDOWN_BADGE}>
                     <LockIcon className="size-3" aria-hidden />
                     <span className="sr-only">{LOCKDOWN_BADGE}</span>
                     <span aria-hidden>Lockdown</span>
@@ -3204,11 +3213,8 @@ function ConversationBody({
           className="pointer-events-none absolute inset-x-0 top-0 z-10 h-8 bg-gradient-to-b from-card to-transparent"
         />
         <div
-          ref={scroller}
-          onScroll={(e) => {
-            const el = e.currentTarget;
-            setStick(el.scrollHeight - el.scrollTop - el.clientHeight < 80);
-          }}
+          ref={followBox}
+          onScroll={onFollowScroll}
           className={cn(
             "relative max-h-[calc(100dvh-24rem)] min-h-[20rem] min-w-0 flex-1 overflow-y-auto px-3 py-5 sm:px-6 sm:py-6 lg:max-h-none lg:min-h-0",
             sealed && "lockdown-field",
@@ -3217,6 +3223,7 @@ function ConversationBody({
           aria-live="polite"
           aria-label="Transcript"
         >
+          <div ref={followContent} className="min-w-0">
           <Transcript d={d} loadSession={loadSession} />
           {running || live.status === "waiting" ? (
             <LiveTurn d={d} waiting={waiting} />
@@ -3267,11 +3274,12 @@ function ConversationBody({
               ))}
             </ul>
           ) : null}
+          </div>
         </div>
-        {!stick ? (
+        {away ? (
           <button
             type="button"
-            onClick={() => setStick(true)}
+            onClick={jump}
             className="pop absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full border bg-card px-3 py-1 text-xs font-medium shadow-pop hover:bg-muted/60"
           >
             <ChevronDownIcon className="mr-1 inline size-3" aria-hidden /> Jump

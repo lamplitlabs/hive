@@ -118,3 +118,22 @@ test("revealIn never asks the box for a negative scroll on either axis", () => {
     { left: 0, behavior: "auto" },
   ]);
 });
+
+test("following the end: near it follows, a move up lets go, a move down keeps", async () => {
+  const { endGap, followAfterScroll, FOLLOW_SLACK } = await import("./scroll.ts");
+  const at = (scrollTop, scrollHeight = 2000, clientHeight = 500) => ({ scrollTop, scrollHeight, clientHeight });
+  assert.equal(endGap(at(1500)), 0);
+  assert.equal(endGap(at(1271)), 229);
+  assert.equal(endGap(at(1900)), 0, "never negative");
+  // At or near the end it always follows.
+  assert.equal(followAfterScroll(false, 0, at(1500)), true);
+  assert.equal(followAfterScroll(false, 0, at(1500 - FOLLOW_SLACK + 1)), true);
+  // The reader scrolling up to read lets go.
+  assert.equal(followAfterScroll(true, 1500, at(1200)), false);
+  // A smooth scroll on its way down, or content grown under a pinned
+  // reader (TASK-171: 229 px short on open), keeps following.
+  assert.equal(followAfterScroll(true, 300, at(600)), true);
+  assert.equal(followAfterScroll(true, 1271, at(1271)), true);
+  // Scrolling down short of the end does not catch on again by itself.
+  assert.equal(followAfterScroll(false, 300, at(600)), false);
+});
