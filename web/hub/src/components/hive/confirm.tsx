@@ -23,7 +23,9 @@ export interface ConfirmProps {
   destructive?: boolean;
   words?: { label: string; placeholder?: string; required?: boolean; initial?: string };
   onConfirm: (words: string) => Promise<unknown>;
-  success: string;
+  // The toast once the write succeeded; a function reads the write's answer
+  // (the Stop names the run and machine the hub stopped).
+  success: string | ((result: unknown) => string);
   invalidates?: string | RegExp | ((p: string) => boolean);
   // The button that closes without doing anything. "Cancel" by default; say
   // "Keep the task" when the action itself is a cancel, so the two can't be confused.
@@ -47,8 +49,8 @@ export function ConfirmDialog({ open, onOpenChange, title, description, action, 
     setBusy(true);
     const id = toast.loading(action + "…");
     try {
-      await onConfirm(text.trim());
-      toast.success(success, { id });
+      const result = await onConfirm(text.trim());
+      toast.success(typeof success === "function" ? success(result) : success, { id });
       if (invalidates === undefined) invalidate();
       else invalidate(invalidates);
       onOpenChange(false);
