@@ -250,6 +250,7 @@ pub(crate) fn yield_lanes_if_admitted(
         }
     };
     let mut machines = Machines::new(s, now);
+    let kept_share = crate::jobs::kept_share(s);
     let mut seen = std::collections::BTreeSet::new();
     for owner in waiting {
         let slug = owner.str("project");
@@ -313,12 +314,14 @@ pub(crate) fn yield_lanes_if_admitted(
         // free slot (jobs.rs keep_slot, counting the project's owner work
         // jobs on the machine): a run freeing that slot is not asked to
         // hold for it. The kept slot is this machine's alone
-        // (OwnerAdmission::refusal), so the count is of its own runs.
+        // (OwnerAdmission::refusal), so the count is of its own runs, and
+        // the share is the one the keep clause binds to this machine's
+        // slots less one (jobs.rs kept_share, review of TASK-186 item a).
         let owner_held = here
             .iter()
             .filter(|k| is_work(k) && crate::jobs::is_owner_driven(k))
             .count() as i32;
-        let past_share = owner_held >= crate::jobs::parallel_per_project(s);
+        let past_share = owner_held >= kept_share;
         // A lane open here is room for the owner's job only when this
         // machine would admit it: with the load governor refusing it here,
         // a lane held on a paired machine is still in its way. Nor is it
@@ -719,6 +722,50 @@ mod tests {
         assert_eq!(pass.asked.len(), 1, "{pass:?}");
         assert!(pass.asked[0].contains(&fleet), "{pass:?}");
         assert!(hold_requested(&s, &fleet));
+    }
+
+    #[test]
+    fn the_kept_slot_counts_the_share_bound_by_this_machines_slots() {
+        // Review of TASK-186, item a, in the yield: at a share of five on a
+        // two-slot machine the keep clause binds the share to one (the
+        // machine's slots less one), so with the owner's first task running
+        // here the second is past it and the freed slot, the machine's
+        // last, would not start it: nothing is asked. Before, the yield
+        // counted the unbound share of five and asked the fleet run to hold
+        // for a lease the kept slot then refused.
+        let _serial = crate::test_helpers::serial();
+        let s = crate::test_helpers::new_store();
+        crate::test_helpers::new_bare_repo(&s);
+        s.set_setting(hive_store::HUMAN_AGENT, "capacity", "2")
+            .unwrap();
+        crate::capacity::pin_per_project(&s, 5);
+        assert_eq!(crate::jobs::kept_share(&s), 1);
+        for name in ["aurora", "borealis"] {
+            join(&s, name);
+        }
+        let fleet = queue(&s, "improve", "suggestion:abc");
+        assert_eq!(lease(&s, "aurora", Vec::new()).str("id"), fleet);
+        let _run = running(&s, &fleet, "aurora", "2026-09-01T01:00:00Z");
+        let first = queue(&s, "task", "task:TASK-001");
+        assert_eq!(lease(&s, "borealis", Vec::new()).str("id"), first);
+        let _first_run = running(&s, &first, "borealis", "2026-09-01T01:10:00Z");
+        let second = queue(&s, "task", "task:TASK-002");
+        let pass = yield_lanes_if_admitted(
+            &s,
+            crate::test_helpers::TEST_NOW,
+            "daemon",
+            &OwnerAdmission {
+                free_slots: Some(Vec::new()),
+                local_kept: true,
+                ..Default::default()
+            },
+        );
+        assert!(pass.asked.is_empty(), "{pass:?}");
+        assert!(
+            pass.refused.len() == 1 && pass.refused[0].contains(&second),
+            "{pass:?}"
+        );
+        assert!(!hold_requested(&s, &fleet));
     }
 
     #[test]
