@@ -177,9 +177,10 @@ function firstSentence(t: string | null | undefined): string {
 
 const squash = (s: string) => (s || "").replace(/\s+/g, " ").trim();
 
-// "Edit then use": the owner's yes on the proposal (the decide route sets the
-// goal to the proposed text and records the decision), then - when the owner
-// changed the words - the edited text saved as the owner's goal. Unchanged
+// "Edit then use": when the owner changed the words, the edited text is saved
+// as the owner's goal first, then the yes on the proposal records the
+// decision (the hub sees the goal is newer than the draft and keeps the
+// owner's words). An edit the server refuses writes nothing else. Unchanged
 // words need only the yes. Too long or empty text is refused before any write.
 export type EditPlan =
   | { ok: true; text: string; edited: boolean; words: string }
@@ -192,6 +193,34 @@ export function editThenUse(proposed: string, edited: string, max = MAX_GOAL_CHA
   if (n > max) return { ok: false, error: "The goal is " + n.toLocaleString("en-US") + " characters; keep it to " + max.toLocaleString("en-US") + "." };
   const changed = squash(text) !== squash(proposed);
   return { ok: true, text, edited: changed, words: changed ? "Used with my edits." : "Used as proposed." };
+}
+
+// The writes "Edit then use" makes, in order (the console passes `writes`).
+export type EditWrites = {
+  setProjectGoal: (slug: string, text: string) => Promise<unknown>;
+  decide: (id: string, answer: "yes" | "no", words: string) => Promise<unknown>;
+};
+
+// What came of "Edit then use": `goalSet` says whether the goal in force
+// changed, `error` (with its title) what went wrong.
+export type EditOutcome = { ok: true } | { ok: false; goalSet: boolean; title: string; error: unknown };
+
+export async function applyEdit(plan: Extract<EditPlan, { ok: true }>, slug: string, post: string, w: EditWrites): Promise<EditOutcome> {
+  if (plan.edited) {
+    try {
+      await w.setProjectGoal(slug, plan.text);
+    } catch (error) {
+      return { ok: false, goalSet: false, title: "Your goal wasn't saved; the proposal still waits", error };
+    }
+  }
+  try {
+    await w.decide(post, "yes", plan.words);
+  } catch (error) {
+    return plan.edited
+      ? { ok: false, goalSet: true, title: "Your goal is set, but the proposal wasn't marked as used", error }
+      : { ok: false, goalSet: false, title: "The goal wasn't set", error };
+  }
+  return { ok: true };
 }
 
 // The Overview shows the goal proposal as its own panel; its "Needs you"

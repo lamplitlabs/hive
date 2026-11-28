@@ -2160,7 +2160,9 @@ async function handle(req, res) {
       if (goalOf) {
         const [slug, g] = goalOf;
         state.goalProposals.delete(slug);
-        if (body.answer === "yes")
+        // A yes on a draft older than the goal in force (the owner saved their own words first) keeps the newer goal, as the hub does.
+        const current = state.goals.get(slug);
+        if (body.answer === "yes" && !(current && g.date && current.updated_at > g.date))
           state.goals.set(slug, { text: g.text, source: "owner", updated_at: now(), updated_by: "human" });
         emit("human", "decide", g.post, { project: slug, answer: body.answer, words: body.words || "" });
         return send(res, 200, { ok: true, decided: { post_id: g.post, project: slug, answer: body.answer, words: body.words || "", decided_at: now(), decided_by: "human" } });
