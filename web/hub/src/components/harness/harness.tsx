@@ -54,6 +54,7 @@ import { ConfirmDialog } from "@/components/hive/confirm";
 import { DataTable, type Column } from "@/components/hive/data-table";
 import { FilterChip } from "@/components/hive/filter-chip";
 import { FailedJobsSection } from "@/components/hive/job-repair-section";
+import { JobStopButton } from "@/components/hive/job-stop";
 import { ListRow, ListRows } from "@/components/hive/list-row";
 import { BrandLogo, logoFor } from "@/components/hive/logo";
 import { Markdown } from "@/components/hive/markdown";
@@ -672,7 +673,13 @@ function LiveRuns({ rows, models, selected, onOpen, onDone }: { rows: HarnessSes
                     if (e.key === "Enter" || e.key === " ") e.stopPropagation();
                   }}
                 >
-                  <CancelRunButton session={r} onDone={onDone} iconOnly />
+                  {/* A run on a paired or rented machine: the Stop names
+                      that machine and can requeue the job. */}
+                  {remoteExecutor(r.executor) && r.job_id ? (
+                    <JobStopButton job={r.job_id} status={r.status} executor={r.executor} title={r.job_title || r.job_id} onDone={onDone} iconOnly />
+                  ) : (
+                    <CancelRunButton session={r} onDone={onDone} iconOnly />
+                  )}
                 </span>
               </>
             }
@@ -989,6 +996,7 @@ function RunPanel({ id, models, projects, onClose }: { id: string | null; models
               <PlayIcon /> {follow ? "Following new steps" : "Follow new steps"}
             </Button>
             <CancelRunButton session={s} onDone={q.reload} />
+            {s.job_id ? <JobStopButton job={s.job_id} status={s.status} executor={s.executor} title={s.job_title || s.job_id} onDone={q.reload} /> : null}
           </div>
         ) : null}
         <section aria-labelledby="run-steps" className="min-w-0">
