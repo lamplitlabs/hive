@@ -159,6 +159,9 @@ pub enum Prepared {
     Busy,
     /// Building into this lane.
     Lane(PathBuf),
+    /// A run on a hand: building into this dir of its own, inside the job's
+    /// folder on the hand, removed with it (`prepare_hand`).
+    HandRun(String),
 }
 
 impl Prepared {
@@ -173,6 +176,9 @@ impl Prepared {
                 "build cache: all {MAX_LANES} lanes busy; this clone builds into its own target/"
             ),
             Prepared::Lane(dir) => format!("build cache: CARGO_TARGET_DIR={}", dir.display()),
+            Prepared::HandRun(dir) => {
+                format!("build dir: this run's own CARGO_TARGET_DIR={dir} on the hand")
+            }
         }
     }
 }
@@ -205,6 +211,35 @@ pub fn prepare(
     env.insert("CARGO_TARGET_DIR".into(), lane.dir.display().to_string());
     link_target(clone, &lane.dir);
     (Prepared::Lane(lane.dir.clone()), Some(lane))
+}
+
+/// Points a run on a hand at a Cargo target dir of its own,
+/// `<job dir>/target`, unless the recipe set `CARGO_TARGET_DIR` already.
+///
+/// The hands hold no lanes, so without this every run's worker and commit
+/// gate on one hand built into the one dir the verify command names
+/// (`${CARGO_TARGET_DIR:-$HOME/.pulse/cache/cargo-target-land/<slug>}`):
+/// two clones side by side rebuilt over each other's test binaries, and a
+/// build script that ran for the first clone was taken as fresh for the
+/// second (2026-11-27, hive-hub's console export missing on hands-cr-11123).
+/// The dir sits inside the job's folder - not beside it, where the hand's
+/// probe would list it as a job - and goes when the hand cleans the job up.
+/// The commit gate inherits it from the worker the way a local run's gate
+/// inherits its lane.
+pub fn prepare_hand(cargo: bool, job_dir: &str, env: &mut BTreeMap<String, String>) -> Prepared {
+    if !cargo {
+        return Prepared::NotCargo;
+    }
+    if let Some(dir) = env.get("CARGO_TARGET_DIR").filter(|d| !d.is_empty()) {
+        return Prepared::RecipeOwns(dir.clone());
+    }
+    let job_dir = job_dir.trim_end_matches('/');
+    if job_dir.is_empty() {
+        return Prepared::NotCargo;
+    }
+    let dir = format!("{job_dir}/target");
+    env.insert("CARGO_TARGET_DIR".into(), dir.clone());
+    Prepared::HandRun(dir)
 }
 
 #[cfg(unix)]
@@ -316,6 +351,38 @@ mod tests {
         );
         assert!(env3.is_empty());
         drop(lane);
+    }
+
+    #[test]
+    fn a_run_on_a_hand_builds_into_its_own_target_dir() {
+        let mut env = BTreeMap::new();
+        let got = prepare_hand(true, "/srv/hive/job-a/", &mut env);
+        assert_eq!(got, Prepared::HandRun("/srv/hive/job-a/target".into()));
+        assert_eq!(env["CARGO_TARGET_DIR"], "/srv/hive/job-a/target");
+        assert!(
+            got.line().contains("/srv/hive/job-a/target"),
+            "{}",
+            got.line()
+        );
+        // A second run on the same hand gets another dir, not the first's.
+        let mut env_b = BTreeMap::new();
+        prepare_hand(true, "/srv/hive/job-b", &mut env_b);
+        assert_ne!(env_b["CARGO_TARGET_DIR"], env["CARGO_TARGET_DIR"]);
+
+        // The recipe's own dir wins; a project without Cargo gets nothing.
+        let mut recipe_env = BTreeMap::from([("CARGO_TARGET_DIR".to_string(), "/x".to_string())]);
+        assert_eq!(
+            prepare_hand(true, "/srv/hive/job-c", &mut recipe_env),
+            Prepared::RecipeOwns("/x".into())
+        );
+        assert_eq!(recipe_env["CARGO_TARGET_DIR"], "/x");
+        let mut none = BTreeMap::new();
+        assert_eq!(
+            prepare_hand(false, "/srv/hive/job-d", &mut none),
+            Prepared::NotCargo
+        );
+        assert_eq!(prepare_hand(true, "", &mut none), Prepared::NotCargo);
+        assert!(none.is_empty());
     }
 
     #[test]
