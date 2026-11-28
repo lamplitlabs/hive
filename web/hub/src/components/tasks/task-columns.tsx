@@ -20,7 +20,10 @@ export const TASK_COLUMNS = (showProject: boolean): Column<Task>[] => [
     sort: (t) => t.title,
     render: (t) => (
       <span className="block min-w-40">
-        <span className="block text-sm font-medium leading-5 break-words">{t.title}</span>
+        {/* Two lines at most, broken anywhere: a long title (or one long word) never widens the table. */}
+        <span className="line-clamp-2 text-sm font-medium leading-5 anywhere" title={t.title}>
+          {t.title}
+        </span>
         <span className="block font-mono text-xs text-muted-foreground">{t.id}</span>
       </span>
     ),

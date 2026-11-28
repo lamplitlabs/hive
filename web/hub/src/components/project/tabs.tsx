@@ -201,11 +201,10 @@ type Expand = { expanded: string | null; onExpand: (key: string | null) => void 
 
 const TWO_LINES = "min-h-[calc(var(--row-h)+0.75rem)]";
 
-// The second line: who or what, the age, then as much of the text as fits
-// (the text goes last, so it is what the ellipsis cuts), without its
-// Markdown ticks and stars.
+// The second line: who or what, the age, then the text (it goes last, so it
+// is what the ellipsis cuts), without its Markdown ticks and stars.
 function SecondLine({ who, at, text }: { who: string; at?: string | null; text?: string | null }) {
-  return (
+  const line = (
     <>
       {who}
       {at ? (
@@ -216,6 +215,15 @@ function SecondLine({ who, at, text }: { who: string; at?: string | null; text?:
       ) : null}
       {text ? " · " + text.replace(/`|\*\*/g, "") : null}
     </>
+  );
+  // The row's second line is one line that ends in an ellipsis; the reason is
+  // what the owner answers on, so it gets three lines on a phone, two on a
+  // wider screen, and its whole text as the tooltip.
+  const plain = text ? text.replace(/`|\*\*/g, "") : "";
+  return (
+    <span className="line-clamp-3 whitespace-normal sm:line-clamp-2" title={plain || undefined}>
+      {line}
+    </span>
   );
 }
 
