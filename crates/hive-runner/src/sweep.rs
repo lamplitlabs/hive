@@ -5307,7 +5307,7 @@ mod tests {
         let locks = Path::new(&s.home).join("locks");
         std::fs::create_dir_all(&locks).unwrap();
         let lock = locks.join("verify-proj.lock");
-        std::os::unix::fs::symlink(std::process::id().to_string(), &lock).unwrap();
+        symlink_lock(&std::process::id().to_string(), &lock).unwrap();
         let rep = sweep(&s, project_rows(&s), TEST_NOW.into(), SweepOpts::default()).unwrap();
         assert!(unit.exists());
         assert!(
