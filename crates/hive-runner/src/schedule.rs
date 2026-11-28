@@ -1,10 +1,12 @@
 //! The daemon's side of `hive schedule`: once per loop, every active
 //! schedule whose time has come queues its job - or, for a check or a watch,
-//! runs its script (see `schedule_script`) and queues a job only if the
-//! script asks for one.
+//! starts its script off the loop (see `schedule_script::Scripts`) and
+//! queues a job only if the script asks for one.
 
 /// Queues the jobs of the due schedules of `slugs`, runs the due check and
-/// watch scripts, and says what happened.
+/// watch scripts to their end, and says what happened. The daemon starts
+/// the scripts off its loop instead (`tend_schedules_off_loop`).
+#[cfg(test)]
 pub(crate) fn tend_schedules(
     s: &hive_store::Store,
     now: String,
@@ -13,6 +15,21 @@ pub(crate) fn tend_schedules(
 ) -> Vec<String> {
     let mut lines = fire_jobs(s, &now, &actor, slugs);
     lines.extend(crate::schedule_script::run_due(s, &now, &actor, slugs));
+    lines
+}
+
+/// Queues the jobs of the due schedules of `slugs` and starts the due check
+/// and watch scripts on `scripts`, off the daemon's loop (TASK-199): the
+/// lines of a script's run come from `Scripts::drain` once it ends.
+pub(crate) fn tend_schedules_off_loop(
+    s: &hive_store::Store,
+    now: String,
+    actor: String,
+    slugs: &[String],
+    scripts: &crate::schedule_script::Scripts,
+) -> Vec<String> {
+    let mut lines = fire_jobs(s, &now, &actor, slugs);
+    lines.extend(scripts.start_due(s, &now, &actor, slugs));
     lines
 }
 

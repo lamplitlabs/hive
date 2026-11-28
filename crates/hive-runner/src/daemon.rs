@@ -465,6 +465,14 @@ impl TickTiming {
     }
 }
 
+/// The optional parts of a heartbeat row (see `daemon_heartbeat`).
+#[derive(Default)]
+pub(crate) struct BeatParts {
+    pub restart: Option<serde_json::Value>,
+    pub tick: Option<serde_json::Value>,
+    pub scripts: Option<serde_json::Value>,
+}
+
 /// Writes the daemon's heartbeat row.
 /// `passes` counts the planning passes among the `loops`
 /// (`daemon.pass_seconds`); the rest were ticks that only reaped, refilled
@@ -474,15 +482,21 @@ impl TickTiming {
 /// the daemon waits for instead of a bare "restarting".
 /// `tick` is the loop body's timing (`TickTiming::beat`), absent before
 /// the first body ends and in the watchdog's stalled note.
+/// `scripts` names the schedules' check and watch scripts running off the
+/// loop (`Scripts::beat`), so the status says what runs and for how long.
 pub(crate) fn daemon_heartbeat(
     s: &hive_store::Store,
     loops: i32,
     passes: i32,
     interval: i32,
     note: String,
-    restart: Option<serde_json::Value>,
-    tick: Option<serde_json::Value>,
+    parts: BeatParts,
 ) {
+    let BeatParts {
+        restart,
+        tick,
+        scripts,
+    } = parts;
     let b = hive_bus::default();
     let mut beat = serde_json::json!({
         "pid": std::process::id(),
@@ -502,6 +516,9 @@ pub(crate) fn daemon_heartbeat(
     }
     if let Some(tick) = tick {
         beat["tick"] = tick;
+    }
+    if let Some(scripts) = scripts {
+        beat["scripts"] = scripts;
     }
     // The keep-awake hold and the last sleep noticed (awake.rs), once the
     // loop has ticked; the console reads both from here.
@@ -1831,7 +1848,14 @@ pub(crate) fn daemon(
             Some(Arc::new(move |note: String, dump: String| {
                 let loops = loops_note.load(std::sync::atomic::Ordering::SeqCst);
                 let passes = passes_note.load(std::sync::atomic::Ordering::SeqCst);
-                daemon_heartbeat(&s_note, loops, passes, interval, note.clone(), None, None);
+                daemon_heartbeat(
+                    &s_note,
+                    loops,
+                    passes,
+                    interval,
+                    note.clone(),
+                    BeatParts::default(),
+                );
                 if let Ok(conn) = s_note.conn() {
                     crate::util::event_at(
                         &conn,
@@ -1855,13 +1879,28 @@ pub(crate) fn daemon(
             .expect("spawn daemon watchdog");
         dog
     });
+    // The schedules' check and watch scripts run off the loop (TASK-199): a
+    // planning pass starts the due ones, every tick takes the lines of those
+    // that ended, the heartbeat names those still running.
+    let scripts = crate::schedule_script::Scripts::default();
     // The heartbeat row plus the watchdog's beat.
     let heartbeat = |loops: i32,
                      passes: i32,
                      note: &str,
                      restart: Option<serde_json::Value>,
                      tick: Option<serde_json::Value>| {
-        daemon_heartbeat(s, loops, passes, interval, note.to_string(), restart, tick);
+        daemon_heartbeat(
+            s,
+            loops,
+            passes,
+            interval,
+            note.to_string(),
+            BeatParts {
+                restart,
+                tick,
+                scripts: scripts.beat(),
+            },
+        );
         if let Some(dog) = &dog {
             dog.beat();
         }
@@ -2564,11 +2603,12 @@ pub(crate) fn daemon(
                                 say(&o, line);
                             }
                         } else {
-                            for line in crate::schedule::tend_schedules(
+                            for line in crate::schedule::tend_schedules_off_loop(
                                 s,
                                 now.clone(),
                                 actor.clone(),
                                 &slugs,
+                                &scripts,
                             ) {
                                 // A hold on the check and watch scripts stands for
                                 // as long as the machine is saturated; it logs
@@ -3750,6 +3790,9 @@ pub(crate) fn daemon(
         for line in chores.drain() {
             say(&o, line);
         }
+        for line in scripts.drain() {
+            say(&o, line);
+        }
         for line in compute.drain() {
             say(&o, line);
         }
@@ -4149,6 +4192,28 @@ pub(crate) fn daemon(
     }) {
         say(&o, line);
     }
+    // A bounded daemon whose loops are done lets the scripts it started run
+    // to their end (within their limit and lock wait). A daemon that stops,
+    // is interrupted or restarts kills them - a restart is never held for a
+    // check - and their schedules stay due for the next daemon.
+    let finish_scripts = result == "done";
+    if scripts.busy() > 0 {
+        let finish = finish_scripts;
+        let waiting = format!(
+            "{note}: {} {} check/watch script(s) running off the loop",
+            if finish { "waiting for" } else { "stopping" },
+            scripts.busy()
+        );
+        say(&o, &waiting);
+        enter(waiting);
+    }
+    for line in scripts.close(
+        finish_scripts,
+        crate::schedule_script::run_bound(s, ""),
+        &|| enter(format!("{note}: waiting for the check/watch scripts")),
+    ) {
+        say(&o, line);
+    }
     if compute.busy() > 0 {
         say(
             &o,
@@ -4187,8 +4252,10 @@ pub(crate) fn daemon(
         passes,
         interval,
         beat.to_string(),
-        None,
-        tick_timing.beat(),
+        BeatParts {
+            tick: tick_timing.beat(),
+            ..BeatParts::default()
+        },
     );
     // The wake subscription outlives the heartbeat, which therefore counts
     // it among the bus subscribers.
@@ -4207,7 +4274,7 @@ impl Drop for CancelOnDrop {
     }
 }
 
-fn panic_message(panic: &Box<dyn std::any::Any + Send>) -> String {
+pub(crate) fn panic_message(panic: &Box<dyn std::any::Any + Send>) -> String {
     panic
         .downcast_ref::<&str>()
         .map(|s| (*s).to_string())

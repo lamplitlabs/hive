@@ -307,13 +307,23 @@ will see the changes. The board gets one finding per change of state on the
 thread `SCHED-NNN` of area `schedule` (red, green again, broken, works again),
 not one per run.
 
-The daemon runs due scripts on its tick, at most `schedule.scripts_per_tick`
-(default `2`) per tick with the longest overdue first; the rest wait for the
-next tick. While the load governor reports the machine saturated it runs none
-and says so once (`schedules: 2 check/watch scripts due, held - machine
-saturated: ...`); the schedules are not moved on, so they run on the first
-tick with room. After a run the schedule moves on one cadence like a standing
-job, and the log has one line per run:
+The daemon starts due scripts on its planning pass and runs them off its
+loop, on threads of their own, at most `schedule.scripts_per_tick` (default
+`2`) at once with the longest overdue first; the rest wait until one ends.
+The loop keeps its cadence while a script runs - jobs are leased, landed and
+merged as usual - and takes each script's line once it ends; `hive status`
+names a script that is running and for how long (`...; check SCHED-015
+(my-app) scripts/verify-check.sh running 12m4s`). A check is a verification:
+with `verify.lock` on it takes its turn on the project's lock like a commit
+hook's or a landing's check, waiting up to `minutes_per_job` for it on top of
+its own limit. A check that gave up waiting did not run and changes nothing.
+A daemon that stops or is interrupted kills its scripts; a killed run is not
+recorded, so the schedule stays due for the next daemon. While the load
+governor reports the machine saturated it starts none and says so once
+(`schedules: 2 check/watch scripts due, held - machine saturated: ...`); the
+schedules are not moved on, so they run on the first pass with room. After a
+run the schedule moves on one cadence like a standing job, and the log has
+one line per run:
 
 ```text
 schedule SCHED-004 (my-app): check .hive/automations/store-tests.sh red (exit 101, 48.3s); queued job-20260906T020000Z-1f3a; posted 20260906T020000Z-daemon; next at 2026-09-07T02:00:00Z
