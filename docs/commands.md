@@ -1292,16 +1292,16 @@ Flags:
 
 ### review
 
-Review the pull requests Hive opened: list and read them, check one out in the job's clone, then merge it, ask for changes, or hand it to the owner.
+Review the pull requests Hive opened: list and read them, check one out in the job's clone and run its check there, then merge it, ask for changes, or hand it to the owner.
 
 ```text
-hive review  review the pull requests Hive opened: list and read them, check one out in the job's clone, then merge it, ask for changes, or hand it to the owner
+hive review  review the pull requests Hive opened: list and read them, check one out in the job's clone and run its check there, then merge it, ask for changes, or hand it to the owner
 
-Usage: hive review list [--project SLUG] | show N | diff N | checkout N | merge N [--by owner] | changes N --note TEXT | owner N --note TEXT
+Usage: hive review list [--project SLUG] | show N | diff N | checkout N | check N | merge N [--by owner] | changes N --note TEXT | owner N --note TEXT
 
 Flags:
   -by owner
-        merge: owner merges for the owner, past the complexity rule
+        merge|changes: owner gives the owner's verdict (a merge past the complexity rule; changes after a hand-over); a command run outside a job is the owner's
   -note string
         changes|owner: the review's findings (the follow-up job's brief, or what the owner reads)
 ```

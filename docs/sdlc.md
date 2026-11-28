@@ -408,13 +408,27 @@ Read more: [The verify command](landing.md#the-verify-command),
 | owner | a person should decide | the findings go on the pull request, and it waits for the owner |
 
 Some pull requests go to the owner whatever the reviewer thinks. The
-runner works four reasons out from the pull request before the review
+runner works five reasons out from the pull request before the review
 starts: `review.merge` is `ask`; the pull request touches a guarded path
 (the owner's paths, a workflow file, an `.env` file, a file named like a
 secret or a key); the branch is not named `hive/...` or `evolve/...`; a
-change to a screen came without its before/after report. A fifth reason
-comes from the attempts: two review jobs ended without a verdict. Size
-alone hands nothing over: a large pull request is read file by file.
+change to a screen came without its before/after report; the pull
+request builds a Tier 2 decision record the owner has not accepted. That
+last one reads the task the pull request delivers: when the task's title
+or brief names a Tier 2 ADR, or the ADR's body names the task, and the
+ADR is Proposed or Deferred, the reason is "builds ADR-N, which the
+owner has not accepted" ("which the owner declined" once it is
+Rejected), and the reviewer reads the pull request and hands it over
+instead of merging it. Another reason comes from the attempts: two
+review jobs ended without a verdict. Size alone hands nothing over: a
+large pull request is read file by file.
+
+When the owner declines a record whose work was merged before the
+decline, the decline dialog says so before the owner picks, naming the
+merged pull requests. After the decline, the next maintenance pass
+queues one job, *Take out the merged work of ADR-N*, which reverts those
+merges on a new pull request; it is queued once per record, and work
+merged after the decline is left alone.
 
 The pull requests of one project form a stack. While one of Hive's is
 open, the next is built on it and targets its branch. The reviewer takes
