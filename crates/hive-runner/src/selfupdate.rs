@@ -91,6 +91,27 @@ pub(crate) struct SelfUpdateState {
     /// queue that empties for a pass and fills again does not start the
     /// bound (`daemon.restart_max_minutes`) over.
     pub(crate) refused_since: String,
+    /// When (store clock) the settle and refused-work waits let the due
+    /// build go: their end while the gate waits on one of them, the pass
+    /// that passed them once it has. Cleared when HEAD is no longer due and
+    /// when the build starts. A restart whose bound is up while this is past
+    /// lets the build go first ([`build_goes_first`]): on 2026-11-28 the
+    /// bound and the build fell together and the daemon restarted onto the
+    /// older installed build, the newer HEAD waiting a whole second cycle.
+    pub(crate) due_at: String,
+    /// The due build has waited for the experiment lane longer than
+    /// `daemon.self_update_lane_minutes`: the measurement yields between
+    /// two fixture runs ([`hive_evolve::measure::yield_measurements`]),
+    /// keeping the runs it measured for its next try.
+    pub(crate) lane_yield: bool,
+    /// Since when (store clock) the due build has waited for the
+    /// experiment lane; `lane_yield` is set once that is older than
+    /// `daemon.self_update_lane_minutes`.
+    pub(crate) lane_since: String,
+    /// What the due build waits for this pass (the gate's reason), or that
+    /// it builds; empty while none is due. [`tend_binary`] hands it to the
+    /// heartbeat ([`beat`]).
+    pub(crate) waiting: String,
     /// The brain HEAD last found to differ from the running binary only
     /// outside [`BINARY_INPUTS`]: it is not built, and the pass does not
     /// diff it again. The next HEAD is diffed against the running revision,
@@ -123,8 +144,72 @@ pub(crate) fn refused_wait_minutes(restart_max_minutes: i64) -> f64 {
     }
 }
 
+/// How long a due build waits for the experiment lane's measurement
+/// before the measurement yields between two fixtures (`gate`).
+pub(crate) const LANE_MINUTES_SETTING: &str = "daemon.self_update_lane_minutes";
+
 pub(crate) static SELF_UPDATE_STATE: LazyLock<RwLock<SelfUpdateState>> =
     LazyLock::new(|| RwLock::new(SelfUpdateState::default()));
+
+/// What the self-update waits for, or builds, and since when (store
+/// clock), as the heartbeat carries it so `hive status` says it on its
+/// daemon line (TASK-198: on 2026-11-28 the build's waits were only in the
+/// log). Kept apart from [`SELF_UPDATE_STATE`], whose lock a pass holds
+/// while it reads the checkout, so the heartbeat never waits on git.
+static SELF_UPDATE_BEAT: LazyLock<RwLock<Option<(String, String)>>> =
+    LazyLock::new(|| RwLock::new(None));
+
+/// Records what the self-update waits for (`Some(reason)`) or that it
+/// waits for nothing (`None`); the since is kept while the reason holds.
+fn note_wait(now: &str, reason: Option<&str>) {
+    let mut beat = SELF_UPDATE_BEAT.write().expect("self-update beat poisoned");
+    match reason {
+        None => *beat = None,
+        Some(reason) => {
+            if beat.as_ref().is_none_or(|(said, _)| said != reason) {
+                *beat = Some((reason.to_string(), now.to_string()));
+            }
+        }
+    }
+}
+
+/// The heartbeat's `self_update` record: what the due build waits for (or
+/// that it builds) and since when; None while no build is due.
+pub(crate) fn beat() -> Option<serde_json::Value> {
+    let beat = SELF_UPDATE_BEAT.read().expect("self-update beat poisoned");
+    beat.as_ref()
+        .map(|(waits, since)| serde_json::json!({"waits": waits, "since": since}))
+}
+
+/// Whether a restart whose bound is up leaves the build that is due go
+/// first (TASK-198): the build runs, or every wait it had is over at `now`
+/// (store clock) and only a pass stands between it and its start. On
+/// 2026-11-28 the bound (04:36:30Z) and the build's end of waiting fell
+/// together; the daemon restarted onto the older installed build and the
+/// newer HEAD waited a whole second cycle. The restart waits for the
+/// build's own restart instead - the binary it installs is the one to run.
+pub(crate) fn build_goes_first(now: &str) -> bool {
+    let st = SELF_UPDATE_STATE
+        .read()
+        .expect("self-update state poisoned");
+    if st.inflight {
+        return true;
+    }
+    !st.due_at.is_empty()
+        && !st.lane_wait
+        && !st.build_wait
+        && st.last_failure_at.is_empty()
+        && crate::util::parse_iso(now)
+            .ok()
+            .zip(crate::util::parse_iso(&st.due_at).ok())
+            .is_some_and(|(now, due)| now >= due)
+}
+
+/// Clears the beat (tests reset the state between them).
+#[cfg(test)]
+pub(crate) fn reset_beat() {
+    note_wait("", None);
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct SelfUpdateEnv {
@@ -157,6 +242,11 @@ pub(crate) struct SelfUpdateEnv {
     /// the most the build waits for `refused_queued` (`refused_wait_minutes`).
     #[serde(default)]
     pub restart_max_minutes: i64,
+    /// `daemon.self_update_lane_minutes`, read by each pass of
+    /// `tend_binary`: how long the due build waits for the experiment
+    /// lane's measurement before it yields between two fixtures; 0 never.
+    #[serde(default)]
+    pub lane_minutes: i64,
     /// The running build's version, for `daemon.self_update release`;
     /// empty means this process's (`hive_cli::version`).
     #[serde(default)]
@@ -396,6 +486,21 @@ fn install_release(
 /// says the wait once, or starts the build on a thread. The lines that
 /// thread left are returned first.
 pub(crate) fn tend_binary(s: &hive_store::Store, now: String, env: SelfUpdateEnv) -> Vec<String> {
+    let lines = tend_binary_pass(s, now.clone(), env);
+    let st = SELF_UPDATE_STATE
+        .read()
+        .expect("self-update state poisoned");
+    // The experiment lane's measurement yields between two fixtures while
+    // the due build has waited for it past the bound (`gate`).
+    hive_evolve::measure::yield_measurements(st.lane_yield);
+    note_wait(
+        &now,
+        (!st.waiting.is_empty()).then_some(st.waiting.as_str()),
+    );
+    lines
+}
+
+fn tend_binary_pass(s: &hive_store::Store, now: String, env: SelfUpdateEnv) -> Vec<String> {
     let mut st = SELF_UPDATE_STATE
         .write()
         .expect("self-update state poisoned");
@@ -404,9 +509,11 @@ pub(crate) fn tend_binary(s: &hive_store::Store, now: String, env: SelfUpdateEnv
         return lines;
     }
     // Each pass decides afresh whether a due build waits for the lane or
-    // for the machine.
+    // for the machine, and what it waits for.
     st.lane_wait = false;
     st.build_wait = false;
+    st.lane_yield = false;
+    st.waiting.clear();
     let say = |st: &mut SelfUpdateState, lines: &mut Vec<String>, reason: String| {
         if reason != st.last_skip {
             st.last_skip = reason.clone();
@@ -497,6 +604,7 @@ pub(crate) fn tend_binary(s: &hive_store::Store, now: String, env: SelfUpdateEnv
     if !co.due(&st, &env) {
         st.refused_since.clear();
         st.ahead_since.clear();
+        st.due_at.clear();
         return lines;
     }
     // The binary the daemon runs next is the installed one when a build or a
@@ -517,12 +625,17 @@ pub(crate) fn tend_binary(s: &hive_store::Store, now: String, env: SelfUpdateEnv
     // Held to the cap as the handover's own read is: a value stored before
     // the setting refused more would overflow the settle clock it is added to.
     env.restart_max_minutes = crate::restart::restart_max_minutes(s);
+    env.lane_minutes = s.setting_int(LANE_MINUTES_SETTING).max(0);
     match gate(&mut st, settle, &now, &env, &co, &bench) {
         Gate::Quiet => {}
-        Gate::Wait(reason) => say(&mut st, &mut lines, reason),
+        Gate::Wait(reason) => {
+            st.waiting = reason.clone();
+            say(&mut st, &mut lines, reason);
+        }
         Gate::Build(past) => {
             st.last_skip.clear();
             st.inflight = true;
+            st.waiting = format!("building brain HEAD {}", short_rev(co.rev.clone()));
             lines.push(format!(
                 "self-update: brain HEAD {} differs from the running {}; building{past}",
                 short_rev(co.rev.clone()),
@@ -536,6 +649,8 @@ pub(crate) fn tend_binary(s: &hive_store::Store, now: String, env: SelfUpdateEnv
                     .write()
                     .expect("self-update state poisoned");
                 st.inflight = false;
+                st.waiting.clear();
+                st.due_at.clear();
                 st.lines.push(outcome.line);
                 if outcome.installed {
                     st.installed = rev;
@@ -689,8 +804,13 @@ pub(crate) fn gate(
     if !co.due(st, env) {
         st.refused_since.clear();
         st.ahead_since.clear();
+        st.due_at.clear();
+        st.lane_since.clear();
         return Gate::Quiet;
     }
+    // Set again below by the rung that waits on the clock; any other rung
+    // that waits leaves it empty (`build_goes_first`).
+    st.due_at.clear();
     let rev = co.rev.clone();
     // A human may have built and installed HEAD by hand while this process
     // still runs the old binary; the file watcher restarts onto it, so a
@@ -754,6 +874,7 @@ pub(crate) fn gate(
         );
         let now_at = crate::util::must_iso(now);
         if now_at < crate::util::must_iso(&due) && now_at < crate::util::must_iso(&bound) {
+            st.due_at = due.min(bound);
             return Gate::Wait(format!(
                 "brain HEAD {} differs from the running {}; building once it has stood for {settle} min (daemon.self_update_settle_minutes), so a burst of landings builds once",
                 short_rev(rev.clone()),
@@ -793,6 +914,7 @@ pub(crate) fn gate(
         }
         let until = crate::util::plus_minutes(&crate::util::format_iso(from), minutes);
         if crate::util::must_iso(now) < crate::util::must_iso(&until) {
+            st.due_at = until.clone();
             return Gate::Wait(format!(
                 "brain HEAD {} differs from the running {}; building once the queued {} have started, as the restart the build ends in would refuse them while the runs in flight finish, or at {until} (daemon.restart_max_minutes) whatever is queued",
                 short_rev(rev.clone()),
@@ -818,14 +940,39 @@ pub(crate) fn gate(
     if bench.bulk_missing {
         return Gate::Wait("bulk storage away; building once the disk is back".into());
     }
+    // The lane's measurement takes an hour and more; the build waits for it
+    // up to daemon.self_update_lane_minutes, then the measurement yields
+    // between two fixtures and keeps those it measured for its next try
+    // (hive-evolve `yield_measurements`, the measurement checkpoint), so a
+    // measurement and the restarts it would be cancelled by do not chase
+    // each other for hours (TASK-198).
     if env.measuring {
         st.lane_wait = true;
+        if st.lane_since.is_empty() {
+            st.lane_since = now.to_string();
+        }
+        let mut until = String::new();
+        if env.lane_minutes > 0 {
+            until = crate::util::plus_minutes(&st.lane_since, env.lane_minutes as f64);
+            st.lane_yield = crate::util::must_iso(now) >= crate::util::must_iso(&until);
+        }
+        let more = if st.lane_yield {
+            format!(
+                "; its measurement yields between two fixtures, as the build has waited since {} (daemon.self_update_lane_minutes)",
+                st.lane_since
+            )
+        } else if until.is_empty() {
+            String::new()
+        } else {
+            format!(", or its measurement yields at {until} (daemon.self_update_lane_minutes)")
+        };
         return Gate::Wait(format!(
-            "brain HEAD {} differs from the running {}; building once the experiment lane is idle",
+            "brain HEAD {} differs from the running {}; building once the experiment lane is idle{more}",
             short_rev(rev.clone()),
             short_rev(env.revision.clone())
         ));
     }
+    st.lane_since.clear();
     // The build is a full release compile; on a saturated laptop it would
     // fight the runs for the machine, so it waits for room (daemon_load.rs).
     if let Some(hold) = bench.hold.as_ref() {
@@ -1899,6 +2046,171 @@ mod tests {
             lines.len() == 1 && lines[0].contains(&format!("hive rebuilt from {}", &rev[..12])),
             "built past the queued task: {lines:?}"
         );
+    }
+
+    /// TASK-198: from 04:42Z the build waited for the experiment lane's
+    /// 70-minute measurement. Past daemon.self_update_lane_minutes the
+    /// measurement yields between two fixtures (it keeps what it measured),
+    /// and the gate says so; the time the build is due is known to the
+    /// restart (`build_goes_first`) only while nothing but the clock holds it.
+    #[test]
+    fn a_build_waits_for_a_measurement_only_so_long() {
+        let env = SelfUpdateEnv {
+            binary: "/nonexistent/hive".into(),
+            cargo_cmd: "cargo".into(),
+            revision: "a".repeat(40),
+            measuring: true,
+            lane_minutes: 30,
+            ..Default::default()
+        };
+        let bench = Bench {
+            cargo_on_path: true,
+            ..Default::default()
+        };
+        let co = Checkout {
+            repo: "/nonexistent".into(),
+            rev: "b".repeat(40),
+            branch: "main".into(),
+            default_branch: "main".into(),
+            changed: Some(vec!["crates/hive-runner/src/daemon.rs".into()]),
+            base: "a".repeat(40),
+            ..Default::default()
+        };
+        let at = |minutes: f64| crate::util::plus_minutes(TEST_NOW, minutes);
+        let mut st = SelfUpdateState::default();
+        match gate(&mut st, 0, &at(0.0), &env, &co, &bench) {
+            Gate::Wait(why) => assert!(
+                why.ends_with(&format!(
+                    "building once the experiment lane is idle, or its measurement yields at {} (daemon.self_update_lane_minutes)",
+                    at(30.0)
+                )),
+                "{why}"
+            ),
+            other => panic!("{other:?}"),
+        }
+        assert!(st.lane_wait && !st.lane_yield);
+        assert!(
+            st.due_at.is_empty(),
+            "the lane is not a clock the restart may count on"
+        );
+        assert!(!matches!(
+            gate(&mut st, 0, &at(29.0), &env, &co, &bench),
+            Gate::Build(_)
+        ));
+        assert!(!st.lane_yield);
+        match gate(&mut st, 0, &at(30.0), &env, &co, &bench) {
+            Gate::Wait(why) => assert!(
+                why.contains(&format!(
+                    "its measurement yields between two fixtures, as the build has waited since {} (daemon.self_update_lane_minutes)",
+                    at(0.0)
+                )),
+                "{why}"
+            ),
+            other => panic!("{other:?}"),
+        }
+        assert!(st.lane_yield, "the measurement was not asked to yield");
+        // The lane yielded: the build goes, and the yield is over.
+        let idle = SelfUpdateEnv {
+            measuring: false,
+            ..env.clone()
+        };
+        assert!(matches!(
+            gate(&mut st, 0, &at(31.0), &idle, &co, &bench),
+            Gate::Build(_)
+        ));
+        assert!(st.lane_since.is_empty());
+        // 0 waits for the measurement to end, as before.
+        let patient = SelfUpdateEnv {
+            lane_minutes: 0,
+            ..env.clone()
+        };
+        let mut st = SelfUpdateState::default();
+        match gate(&mut st, 0, &at(0.0), &patient, &co, &bench) {
+            Gate::Wait(why) => assert!(
+                why.ends_with("building once the experiment lane is idle"),
+                "{why}"
+            ),
+            other => panic!("{other:?}"),
+        }
+        gate(&mut st, 0, &at(600.0), &patient, &co, &bench);
+        assert!(!st.lane_yield);
+        // A wait on the clock (the settle wait, the queued work) records when
+        // it ends; the rung after it is passed, nothing is due on a clock.
+        let mut st = SelfUpdateState::default();
+        let settled = SelfUpdateEnv {
+            measuring: false,
+            restart_max_minutes: 90,
+            ..env.clone()
+        };
+        assert!(matches!(
+            gate(&mut st, 15, &at(0.0), &settled, &co, &bench),
+            Gate::Wait(_)
+        ));
+        assert_eq!(st.due_at, at(15.0));
+        let queued = SelfUpdateEnv {
+            refused_queued: "task runs on brain".into(),
+            ..settled.clone()
+        };
+        assert!(matches!(
+            gate(&mut st, 15, &at(16.0), &queued, &co, &bench),
+            Gate::Wait(_)
+        ));
+        assert_eq!(st.due_at, at(90.0));
+    }
+
+    /// TASK-198: at 04:36:30Z the restart's bound and the newer HEAD's build
+    /// fell due together, and the daemon restarted onto the older installed
+    /// build. Once the build's waits are over the restart lets it go first,
+    /// and `hive status` reads what it waits for from the heartbeat.
+    #[test]
+    fn a_bound_that_falls_together_with_a_due_build_builds_first() {
+        let _serial = serial();
+        let _reset = crate::test_helpers_selfupdate::reset_guard();
+        let at = |minutes: f64| crate::util::plus_minutes(TEST_NOW, minutes);
+        assert!(!build_goes_first(&at(0.0)), "no build is due");
+        assert!(beat().is_none());
+        {
+            let mut st = SELF_UPDATE_STATE.write().unwrap();
+            st.due_at = at(90.0);
+            st.waiting = "brain HEAD bbbbbbbbbbbb differs from the running aaaaaaaaaaaa; building once the queued task runs on brain have started".into();
+        }
+        note_wait(
+            &at(0.0),
+            Some(&SELF_UPDATE_STATE.read().unwrap().waiting.clone()),
+        );
+        assert!(!build_goes_first(&at(89.0)), "the build still waits");
+        assert!(
+            build_goes_first(&at(90.0)),
+            "the bound and the build fell together"
+        );
+        let record = beat().unwrap();
+        assert_eq!(record["since"], at(0.0));
+        assert!(
+            record["waits"]
+                .as_str()
+                .unwrap()
+                .contains("queued task runs on brain")
+        );
+        // The same wait said again keeps its since; a new one starts its own.
+        note_wait(&at(5.0), Some(record["waits"].as_str().unwrap()));
+        assert_eq!(beat().unwrap()["since"], at(0.0));
+        note_wait(&at(6.0), Some("building brain HEAD bbbbbbbbbbbb"));
+        assert_eq!(beat().unwrap()["since"], at(6.0));
+        // The build runs: the restart waits for what it installs.
+        SELF_UPDATE_STATE.write().unwrap().inflight = true;
+        assert!(build_goes_first(&at(0.0)));
+        SELF_UPDATE_STATE.write().unwrap().inflight = false;
+        // A wait for the lane or the machine is no clock: the restart goes.
+        SELF_UPDATE_STATE.write().unwrap().lane_wait = true;
+        assert!(!build_goes_first(&at(120.0)));
+        SELF_UPDATE_STATE.write().unwrap().lane_wait = false;
+        SELF_UPDATE_STATE.write().unwrap().last_failure_at = at(1.0);
+        assert!(
+            !build_goes_first(&at(120.0)),
+            "a failed build is retried later"
+        );
+        note_wait("", None);
+        assert!(beat().is_none());
     }
 
     #[test]

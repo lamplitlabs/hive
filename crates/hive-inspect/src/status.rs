@@ -356,6 +356,11 @@ pub struct DaemonBeat {
     /// when none runs and in heartbeats older than TASK-199.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub scripts: Vec<ScriptBeat>,
+    /// What the self-update's due build waits for, or that it builds, and
+    /// since when (runner selfupdate.rs `beat`); absent while no build is
+    /// due and from older daemons.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub self_update: Option<SelfUpdateBeat>,
 }
 
 /// A check or watch script the daemon runs off its loop.
@@ -400,6 +405,35 @@ fn scripts_clause(scripts: &[ScriptBeat], now: chrono::DateTime<chrono::Utc>) ->
     } else {
         format!("; {}", named.join(", "))
     }
+}
+
+/// The self-update's wait as the heartbeat records it: the gate's reason
+/// and since when (store clock) it has held.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SelfUpdateBeat {
+    pub waits: String,
+    pub since: String,
+}
+
+/// The daemon line's self-update clause: what the build waits for and for
+/// how long (TASK-198: on 2026-11-28 a merged fix waited two hours behind
+/// four waits only the log named).
+fn self_update_clause(u: &SelfUpdateBeat, now: chrono::DateTime<chrono::Utc>) -> String {
+    if u.waits.is_empty() {
+        return String::new();
+    }
+    let since = match parse_utc(&u.since) {
+        Ok(t) => format!(
+            " (since {}, {})",
+            u.since,
+            hive_cli::format_duration(std::time::Duration::from_secs(
+                (now - t).num_seconds().max(0) as u64,
+            ))
+        ),
+        Err(_) => String::new(),
+    };
+    format!(", self-update: {}{since}", u.waits)
 }
 
 /// A pending restart as the heartbeat records it.
@@ -660,8 +694,14 @@ pub fn daemon_status(s: &hive_store::Store) -> Result<String> {
     // whole-suite check runs for many minutes, and the line says so instead
     // of leaving the owner to guess what the daemon is doing.
     let scripts = scripts_clause(&beat.scripts, now);
+    let update = beat
+        .self_update
+        .as_ref()
+        .filter(|_| state == "alive")
+        .map(|u| self_update_clause(u, now))
+        .unwrap_or_default();
     Ok(format!(
-        "{state} pid {pid}, last loop {age}s ago, {} loop(s), interval {interval_text}s{tick}{restart}{scripts}",
+        "{state} pid {pid}, last loop {age}s ago, {} loop(s), interval {interval_text}s{tick}{restart}{update}{scripts}",
         beat.loops
     ))
 }
@@ -1554,6 +1594,17 @@ mod tests {
             (
                 r#"{"pid":7,"at":"2026-09-06T19:00:00Z","loops":9,"interval":300,"tick":{"ms":80,"max_ms":31000,"slow":7,"longest":[{"stage":"plan","ms":14000},{"stage":"pipeline","ms":9000}]}}"#,
                 "alive pid 7, last loop 0s ago, 9 loop(s), interval 300s, last tick 80ms (slowest 31000ms: plan 14000ms, pipeline 9000ms, 7 over the cadence)",
+            ),
+            // TASK-198: the daemon line says what the due build waits for
+            // and since when, not only the log.
+            (
+                r#"{"pid":7,"at":"2026-09-06T19:00:00Z","loops":9,"interval":300,"self_update":{"waits":"brain HEAD 0123456789ab differs from the running ff67b19f0000; building once the experiment lane is idle","since":"2026-09-06T18:18:00Z"}}"#,
+                "alive pid 7, last loop 0s ago, 9 loop(s), interval 300s, self-update: brain HEAD 0123456789ab differs from the running ff67b19f0000; building once the experiment lane is idle (since 2026-09-06T18:18:00Z, 42m0s)",
+            ),
+            // A daemon that stopped says nothing of a build it no longer tends.
+            (
+                r#"{"pid":7,"at":"2026-09-06T18:00:00Z","loops":9,"interval":300,"self_update":{"waits":"building brain HEAD 0123456789ab","since":"2026-09-06T17:58:00Z"}}"#,
+                "silent pid 7, last loop 3600s ago, 9 loop(s), interval 300s",
             ),
         ] {
             s.conn().unwrap().execute("INSERT INTO meta(key,value) VALUES ('daemon',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [raw]).unwrap();
