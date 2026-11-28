@@ -1026,20 +1026,45 @@ fn carried_elsewhere(
         .collect()
 }
 
-/// Whether `rev` merges onto `start` alone without a conflict, read from
-/// objects only (`git merge-tree --write-tree`: exit 0 clean, 1 conflicts).
-/// False when git cannot say, so a branch is taken for one at odds with
-/// its base, as before. No `--quiet`: git learned it in 2.46, and the
-/// git of a rented Ubuntu 24.04 machine (2.43) refused it, so every branch
-/// read as at odds with its base there and two delivery tests were red on
-/// Linux only (TASK-156 item 1). The tree it prints is not read.
-fn merges_alone(dir: &str, start: &str, rev: &str) -> bool {
+/// Whether `rev` merges onto `start` alone, read from objects only (`git
+/// merge-tree --write-tree`: exit 0 clean, 1 conflicts, the merged tree's
+/// id first on stdout either way). Any other end - a git that cannot read
+/// the repository or does not know the usage (128, 129), a revision it
+/// cannot merge (git 2.43 exits 1 for that too, with no tree), a timeout -
+/// is git saying nothing about the merge, and is told apart from a conflict
+/// (review of PR 295, item 5): taken for one, it queued a rebase job for a
+/// branch whose base was never the trouble. No `--quiet`:
+/// git learned it in 2.46, and the git of a rented Ubuntu 24.04 machine
+/// (2.43) refused it, so every branch read as at odds with its base there
+/// and two delivery tests were red on Linux only (TASK-156 item 1). The
+/// tree it prints is not read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Alone {
+    Clean,
+    Conflicts,
+    /// Git could not say: its exit code or error, and what it printed.
+    Unknown(String),
+}
+
+fn merges_alone(dir: &str, start: &str, rev: &str) -> Alone {
     let out = crate::util::git_timeout(
         dir,
         Duration::from_secs(120),
         &["merge-tree", "--write-tree", start, rev],
     );
-    out.err.is_none() && out.code == 0
+    let tree = out.stdout.lines().next().is_some_and(|l| {
+        let l = l.trim();
+        matches!(l.len(), 40 | 64) && l.bytes().all(|b| b.is_ascii_hexdigit())
+    });
+    match (&out.err, out.code) {
+        (None, 0) => Alone::Clean,
+        (None, 1) if tree => Alone::Conflicts,
+        (Some(err), _) => Alone::Unknown(crate::run::squeeze(err, 200)),
+        (None, code) => Alone::Unknown(format!(
+            "git merge-tree exited {code}: {}",
+            crate::run::squeeze(out.stderr.trim(), 200)
+        )),
+    }
 }
 
 /// The commits `sha` has past `start`, merges left out; empty when git
@@ -1095,8 +1120,9 @@ struct Conflict {
     base: Base,
     /// Whether the branch merges cleanly onto the base alone: then what it
     /// conflicts with is the task's other branches, and one job joins them
-    /// all (`join_or_hold`).
-    siblings: bool,
+    /// all (`join_or_hold`). When git could not say, the task is held with
+    /// git's words rather than guessed at.
+    alone: Alone,
     /// The task's job branches the build merges, as indices into its
     /// branches: the ones another side carries already are passed over
     /// (`carried_elsewhere`), and a join merges these alone.
@@ -2718,7 +2744,7 @@ fn deliver_task(
                     sha: rev.clone(),
                     files: unmerged,
                     base: base.clone(),
-                    siblings: merges_alone(&wt_path, &start, rev),
+                    alone: merges_alone(&wt_path, &start, rev),
                     sides: merges.iter().filter_map(|m| m.2).collect(),
                 })),
                 _ => format!(
@@ -2825,8 +2851,16 @@ fn rebase_or_hold(
         "{} (job {}) does not merge cleanly onto {onto} with the task's other branches: conflicts in {files}",
         c.branch, c.job
     );
-    if c.siblings {
-        return join_or_hold(s, project, rt, key, &c, &note, now);
+    match &c.alone {
+        Alone::Clean => return join_or_hold(s, project, rt, key, &c, &note, now),
+        Alone::Unknown(git) => {
+            let note = format!(
+                "{note}; git could not tell whether it merges onto {onto} alone ({git}), so no job is queued to rebase or join it"
+            );
+            hold(s, now, &slug, json!({"task": task, "work": key}), &note);
+            return format!("task pr {slug} {task}: held: {note}");
+        }
+        Alone::Conflicts => {}
     }
     let Ok(conn) = s.conn() else {
         return format!("task pr {slug} {task}: {note}");
@@ -5451,6 +5485,52 @@ mod tests {
     use super::*;
     use crate::test_helpers::*;
     use crate::test_helpers_daemon::*;
+
+    /// Review of PR 295, item 5: `merges_alone` tells a conflict (git's
+    /// exit 1) from git saying nothing about the merge (128 for a revision
+    /// it cannot read, 129 for a usage it does not know). Before, both read
+    /// as "conflicts with its base" and the task queued a rebase job for a
+    /// branch whose base was never the trouble.
+    #[test]
+    fn merges_alone_tells_a_git_error_from_a_conflict() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        let (_proj, repo) = new_repo(&s);
+        let commit = |branch: &str, file: &str, text: &str| {
+            run(&repo, &["git", "checkout", "-q", branch]);
+            std::fs::write(std::path::Path::new(&repo).join(file), text).unwrap();
+            run(&repo, &["git", "add", "-A"]);
+            run(
+                &repo,
+                &["git", "commit", "-q", "-m", &format!("{branch} {file}")],
+            );
+            ref_of(&repo, "HEAD")
+        };
+        run(&repo, &["git", "branch", "side", "main"]);
+        run(&repo, &["git", "branch", "apart", "main"]);
+        let on_main = commit("main", "shared.txt", "main\n");
+        let side = commit("side", "shared.txt", "side\n");
+        let apart = commit("apart", "apart.txt", "apart\n");
+        run(&repo, &["git", "checkout", "-q", "main"]);
+        assert_eq!(merges_alone(&repo, &on_main, &apart), Alone::Clean);
+        assert_eq!(merges_alone(&repo, &on_main, &side), Alone::Conflicts);
+        let missing = merges_alone(&repo, &on_main, &"0".repeat(40));
+        let Alone::Unknown(why) = &missing else {
+            panic!("a revision git cannot read is no conflict: {missing:?}");
+        };
+        assert!(why.contains("not something we can merge"), "{why}");
+        let elsewhere = tempfile::tempdir().unwrap();
+        let outside = merges_alone(&elsewhere.path().display().to_string(), &on_main, &side);
+        let Alone::Unknown(why) = &outside else {
+            panic!("a directory that is no repository is no conflict: {outside:?}");
+        };
+        assert!(why.starts_with("git merge-tree exited 128"), "{why}");
+        let usage = merges_alone(&repo, "--no-such-option", &side);
+        let Alone::Unknown(why) = &usage else {
+            panic!("a usage git does not know is no conflict: {usage:?}");
+        };
+        assert!(why.starts_with("git merge-tree exited 129"), "{why}");
+    }
 
     #[test]
     fn the_pass_clears_the_hold_note_the_land_lane_left_and_says_so_once() {
