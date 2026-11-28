@@ -112,7 +112,10 @@ export function Split({
           "grid min-w-0 gap-4",
           three
             ? wide
-              ? "lg:grid-cols-[14rem_minmax(24rem,1fr)_minmax(0,1.25fr)]"
+              ? // Proposal (TASK-171 item 6): with a file in front the
+                // transcript and the canvas share the room evenly; at
+                // 1:1.25 a task's conversation was 388 px beside 484.
+                "lg:grid-cols-[14rem_minmax(24rem,1fr)_minmax(0,1fr)]"
               : width >= ROOMY_AT
                 ? "lg:grid-cols-[15rem_minmax(0,1fr)_22rem]"
                 : "lg:grid-cols-[14rem_minmax(0,1fr)_19rem]"
@@ -199,6 +202,12 @@ export function Pane({
     </>
   );
 }
+
+// Proposal (TASK-171 item 5): on a phone the box to type in stays in view,
+// docked over the bottom bar (h-16 plus the safe area) while the
+// transcript scrolls under it, instead of starting under the fold.
+export const PHONE_DOCK =
+  "max-lg:sticky max-lg:bottom-[calc(4rem+env(safe-area-inset-bottom))] max-lg:z-30 max-lg:-mx-4 max-lg:border-t max-lg:bg-background/95 max-lg:px-4 max-lg:py-2 sm:max-lg:-mx-6 sm:max-lg:px-6 max-lg:backdrop-blur";
 
 // On a phone the open conversation takes the list's place; this goes back.
 export function BackButton({ onBack }: { onBack: () => void }) {
