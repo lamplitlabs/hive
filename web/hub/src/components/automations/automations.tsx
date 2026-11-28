@@ -1821,7 +1821,9 @@ function AutomationForm({
           </Disclosure>
         </aside>
       </div>
-      <DialogFooter className="items-center gap-2 sm:justify-between">
+      {/* The footer stays in sight while the form scrolls under it (the dialog
+          is the scroller), like every other dialog's closing buttons. */}
+      <DialogFooter className="sticky bottom-0 z-10 items-center gap-2 bg-[color-mix(in_oklab,var(--muted)_50%,var(--popover))] sm:justify-between">
         <Button variant="ghost" onClick={close} disabled={!!busy}>
           Cancel
         </Button>
