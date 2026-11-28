@@ -6,8 +6,9 @@ import { num } from "@/lib/format";
 // A filter chip with its count (spec "Components" - Filter bar: search,
 // chips with counts, "More filters"). A 28 px control with 6 px corners;
 // the count is the one count chip: 18 px, tabular numbers, marigold only
-// for the things that wait on the owner. An empty chip is dimmed, never
-// hidden, so the owner sees what the filter would show.
+// for the things that wait on the owner. An empty chip is marked by a
+// dashed edge and its 0, never hidden or faded, so the owner sees what the
+// filter would show and can read it.
 export function FilterChip({
   active,
   count,
@@ -34,7 +35,9 @@ export function FilterChip({
       className={cn(
         "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium whitespace-nowrap transition-colors duration-120 ease-out-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none",
         active ? "border-foreground/20 bg-accent text-foreground" : "border-border bg-card text-muted-foreground hover:bg-muted hover:text-foreground",
-        !active && count === 0 && "opacity-60",
+        // Empty: a dashed edge, never a fade - it is an enabled button and its
+        // words must read (TASK-173: opacity-60 left it at 2.68:1).
+        !active && count === 0 && "border-dashed",
         className,
       )}
     >

@@ -37,7 +37,7 @@ export function Meter({ label, pct, text, className, title }: { label: string; p
         </span>
       </div>
       <div
-        className="h-1 w-full overflow-hidden rounded-full bg-muted"
+        className="h-1.5 w-full overflow-hidden rounded-full bg-muted ring-1 ring-input ring-inset"
         {...(has ? { role: "meter", "aria-label": label, "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": value, "aria-valuetext": word } : { "aria-hidden": true })}
         data-tone={has ? tone : "none"}
       >

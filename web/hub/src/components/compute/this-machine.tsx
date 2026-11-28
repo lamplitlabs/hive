@@ -46,7 +46,7 @@ export function ThisMachineCard({ runner, host, local, className }: { runner: Ru
   const os = thisMachineOs(local, host, typeof navigator !== "undefined" ? navigator.userAgent : "");
   const logo = os === "macos" ? "apple" : logoFor(os);
   const name = (host || "").trim() || local?.name || "This machine";
-  const slots = local ? slotsMeter(local) : r ? { pct: r.hands.slots ? Math.round(((r.hands.slots - r.hands.free) / r.hands.slots) * 100) : null, text: r.hands.slots ? num(r.hands.free) + " of " + num(r.hands.slots) + " free" : "—" } : { pct: null, text: "—" };
+  const slots = local ? slotsMeter(local) : r ? { pct: r.hands.slots ? Math.round(((r.hands.slots - r.hands.free) / r.hands.slots) * 100) : null, text: r.hands.slots ? num(r.hands.slots - r.hands.free) + " of " + num(r.hands.slots) + " in use" : "—" } : { pct: null, text: "—" };
   const disk = diskMeter(r?.daemon?.disk);
   const awake = awakeView(r ?? undefined);
   const awakeOn = keepAwakeOn(awakeSetting?.value);

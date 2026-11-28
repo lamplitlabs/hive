@@ -139,13 +139,14 @@ export function machineProjects(projects: string | null | undefined): string[] {
     .filter(Boolean);
 }
 
-// The slots meter: how many of the machine's agent slots are free, and the
-// words "4 of 4 free". Used slots fill the bar.
+// The slots meter: how many of the machine's agent slots are in use, and the
+// words "1 of 4 in use". Used slots fill the bar, so the words count the same
+// thing the bar shows (TASK-173: it said "4 of 4 free" beside an empty bar).
 export function slotsMeter(e: { workers: number; running?: number; free?: number }): { used: number; total: number; pct: number | null; text: string } {
   const total = Math.max(0, e.workers || 0);
   const free = e.free === undefined || e.free === null ? Math.max(0, total - (e.running ?? 0)) : Math.max(0, Math.min(total, e.free));
   const used = Math.max(0, total - free);
-  return { used, total, pct: meterPercent(used, total), text: total ? free + " of " + total + " free" : "No slots" };
+  return { used, total, pct: meterPercent(used, total), text: total ? used + " of " + total + " in use" : "No slots" };
 }
 
 // The daemon's "disk: 252 MB free, needs 1024; 6 projects waiting" line as

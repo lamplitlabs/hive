@@ -753,7 +753,7 @@ function Terminal({ entries }: { entries: TerminalEntry[] }) {
       aria-live="polite"
     >
       {!entries.length ? (
-        <p className="text-zinc-500">
+        <p className="text-zinc-400">
           No commands yet. Each command the agent runs shows here with what it
           printed.
         </p>
@@ -763,7 +763,7 @@ function Terminal({ entries }: { entries: TerminalEntry[] }) {
         return (
           <div key={e.n} className="mb-3 min-w-0 last:mb-0">
             {e.title ? (
-              <p className="text-zinc-500 anywhere"># {e.title}</p>
+              <p className="text-zinc-400 anywhere"># {e.title}</p>
             ) : null}
             <p className="flex min-w-0 gap-2">
               <span
@@ -781,14 +781,14 @@ function Terminal({ entries }: { entries: TerminalEntry[] }) {
                 {e.output}
               </pre>
             ) : null}
-            <p className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 text-xs text-zinc-500">
+            <p className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 text-xs text-zinc-400">
               {e.running ? (
                 <span className="inline-flex items-center gap-1 text-primary">
                   <LoaderCircleIcon className="size-3 animate-spin" /> running
                 </span>
               ) : exit ? (
                 <span
-                  className={cn(exit.bad ? "text-red-400" : "text-zinc-500")}
+                  className={cn(exit.bad ? "text-red-400" : "text-zinc-400")}
                 >
                   {exit.text}
                 </span>
@@ -987,7 +987,7 @@ function FileTab({
                       data-mark={hit || undefined}
                       className={cn(hit && "bg-ok/[0.1]")}
                     >
-                      <td className="w-[1%] min-w-[3ch] pr-2 pl-2.5 text-right align-top text-muted-foreground/60 select-none tnum">
+                      <td className="w-[1%] min-w-[3ch] pr-2 pl-2.5 text-right align-top text-muted-foreground select-none tnum">
                         {n}
                       </td>
                       <td
