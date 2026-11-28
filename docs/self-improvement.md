@@ -680,6 +680,27 @@ compile scored `0.0020`. A diff with no crate source prints 1 on both trees.
 Without a scope it lints the whole workspace: raw 623 in a read-only copy
 of `a70f62d4` (47 s warm, about 5 minutes cold), and `hive evolve measure
 --ref HEAD` scored it `0.5016` (raw 632, scale 636).
+The test fixtures above run a changed module's tests once, so they cannot
+tell a flaky test from a fixed one. A card that makes a timing-dependent
+test pass every time scores the same as its base when the base happened to
+pass. In the week before sitting 38, three jobs landed nothing because a
+hive-runner test failed once in the commit hook's verify and passed when
+run alone: `job-20261125T092139Z-437842`, `job-20261126T130803Z-cf469f` and
+`job-20261127T043246Z-9ba715`. `behaviour-crate-tests-repeat-failures` (RSI
+sitting 38, metric, weight 2, lower is better) builds the changed crate's
+tests once (`cargo test -p CRATE --lib --no-run` after `cargo clean -p`, in a
+writable copy under `HIVE_MEASURE_SCRATCH` with its own target dir
+`$CARGO_TARGET_DIR/crate-tests-repeat`). It then runs the changed modules'
+tests (`-- MODULE::`) three times and adds up the failed tests of every run.
+A run that exits non-zero with no failed test counted (a crash) counts 1. A
+build that fails adds 1000. A diff with no crate source prints 1 on both
+trees. In the toy pair, the base ran `crates/hive-tasks/src/leads.rs`'s tests
+three times with no failure (raw 1, 42 s cold). Adding a test that asserts on
+the clock's microsecond parity failed 2 of 3 runs (raw 3, `0.2500`), and a
+variant that did not compile printed 1001. Three runs of `daemon::` in
+hive-runner took 23 minutes on a loaded host, so a card that touches
+`daemon.rs` pays that once per tree. `hive evolve measure --ref HEAD` (no
+diff scope) scored it `0.5000` (raw 1).
 A diff made of lock files alone (`Cargo.lock`, `pnpm-lock.yaml`,
 `package-lock.json`, `yarn.lock`) is not measured: the variant takes the base's
 numbers, is archived `neutral` with the reason `lockfile-only`, and still
