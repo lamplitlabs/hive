@@ -189,6 +189,15 @@ a failed job on a planning pass
                    lead re-plans
 ```
 
+A run renews its job's lease from the store's clock at each renewal (before
+its check, before landing), so a run longer than the lease keeps it; a
+renewal from the run's start once set the lease in the past and the next
+lease anywhere requeued the job under the running run (TASK-179). A run whose
+lease lapsed all the same, but which ends done with its check passed and its
+commits fetched to the checkout, gives the job its result (a `job.adopt`
+event) instead of leaving it to start again from nothing - unless another
+run has leased the job since, in which case the run stays `stale`.
+
 Worker selection and leasing agree on occupied capacity: one current lease
 per agent, and a provisional completion does not free the worker or project
 slot until its controller run ends. Workers are not kept idle: a dispatch
