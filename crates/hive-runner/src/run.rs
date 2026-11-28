@@ -34,6 +34,10 @@ const STEP_BUDGET_HELD_SUMMARY: &str = "stopped at the step budget";
 struct HeldResume {
     session: hive_store::HarnessSession,
     base: String,
+    /// What the owner did to the job's task since the held run started
+    /// (amended it, wrote on it), as the line the continuation opens with
+    /// after its own words; empty when nothing changed.
+    owner_changes: String,
 }
 
 /// The held session the run of `job` by `agent` can carry on, when one is
@@ -96,15 +100,79 @@ fn resumable_held_run(
         );
         return None;
     }
+    let owner_changes = owner_changes_since_run(s, job_id, &held.run_id);
     Some(HeldResume {
         session: held,
         base,
+        owner_changes,
     })
+}
+
+/// The line a carried-on run reads when the owner amended the task of
+/// `job_id` or wrote on it after run `held_run` started: the brief in the
+/// carried conversation is the old revision, and a queued job's brief note
+/// (`hive_tasks::amend`) never reaches a conversation already under way.
+/// Empty when the job is not a task's or nothing changed.
+fn owner_changes_since_run(s: &hive_store::Store, job_id: &str, held_run: &str) -> String {
+    let Ok(c) = s.conn() else {
+        return String::new();
+    };
+    let source =
+        crate::util::must_one(&c, "SELECT source FROM jobs WHERE id = ?", &[&job_id]).str("source");
+    let task = crate::compute::task_of_source(&source).to_string();
+    if task.is_empty() {
+        return String::new();
+    }
+    // From the held run's own start event; a run that wrote none (an older
+    // store) counts from its recorded start time.
+    let mut since = crate::util::must_one(
+        &c,
+        "SELECT COALESCE(MAX(seq), 0) AS seq FROM events WHERE action = 'run.start' AND subject = ?",
+        &[&held_run],
+    )
+    .int("seq") as i64;
+    if since == 0 {
+        let started =
+            crate::util::must_one(&c, "SELECT started_at FROM runs WHERE id = ?", &[&held_run])
+                .str("started_at");
+        if started.is_empty() {
+            return String::new();
+        }
+        since = crate::util::must_one(
+            &c,
+            "SELECT COALESCE(MAX(seq), 0) AS seq FROM events WHERE at < ?",
+            &[&started],
+        )
+        .int("seq") as i64;
+    }
+    let (revs, msgs) = crate::lead::owner_changes_after(&*c, &task, since, "");
+    owner_changes_line(&task, &revs, &msgs)
+}
+
+/// The words of [`owner_changes_since_run`]: `revs` as `rev N (note)`,
+/// `msgs` the owner's message ids.
+fn owner_changes_line(task: &str, revs: &[String], msgs: &[String]) -> String {
+    if revs.is_empty() && msgs.is_empty() {
+        return String::new();
+    }
+    format!(
+        "Meanwhile, on task {task}, {}: the brief above is no longer the whole story. Run `hive task show {task}` before going on and work to its newest revision and messages; when they take back what you did, change it, and when they ask for more than this job can hold, say so in your report.",
+        crate::lead::changes_said(revs, msgs)
+    )
 }
 
 /// The opening message of a run that carries a held run on; the brief is
 /// already in the carried conversation, so this is what changed since.
 fn continuation_message(run_id: &str, held: &HeldResume, clone: &str) -> String {
+    let opening = continuation_opening(run_id, held, clone);
+    if held.owner_changes.is_empty() {
+        opening
+    } else {
+        format!("{opening}\n\n{}", held.owner_changes)
+    }
+}
+
+fn continuation_opening(run_id: &str, held: &HeldResume, clone: &str) -> String {
     if held.session.error.starts_with(STEP_BUDGET_HELD_REASON) {
         return format!(
             "Your earlier session {} ({} steps), whose conversation is above, stopped at the step budget before the task was finished; this is run {run_id}, carrying it on with a fresh step budget - the only continuation this job gets. The checkout at {clone} is the same one, with the commits you made and your uncommitted edits; a command that was running when you stopped did not finish, so run it again. Read a file again before relying on what you saw of it, do not start over and do not widen the scope: finish the task from where it stands with the same report rules - the targeted check, the commit, the SUMMARY line - and commit what passes before the budget notice comes, so finished work lands even if the rest does not.",
@@ -8443,6 +8511,7 @@ mod tests {
                 ..Default::default()
             },
             base: "abc".into(),
+            owner_changes: String::new(),
         };
         let opening = continuation_message("run-next", &held, "/work/job-x");
         assert!(
@@ -8465,10 +8534,100 @@ mod tests {
                 ..Default::default()
             },
             base: "abc".into(),
+            owner_changes: String::new(),
         };
         let opening = continuation_message("run-next", &restart, "/work/job-x");
         assert!(opening.contains("restarted for an update"), "{opening}");
         assert!(!opening.contains("step budget before"), "{opening}");
+    }
+
+    #[test]
+    fn a_continuation_names_the_owners_amendment_and_words_since_the_held_run() {
+        let _serial = crate::test_helpers::serial();
+        let s = new_store();
+        new_repo(&s);
+        let c = s.conn().unwrap();
+        let t = hive_tasks::new(&s, "proj", "Rename", "rename it", 50, "human").unwrap();
+        hive_tasks::amend(&s, &t.id, "", "rename it twice", "before the run", "human").unwrap();
+        let (job, _) = crate::jobs::add_job(
+            &s,
+            "proj".into(),
+            "task".into(),
+            "Rename it".into(),
+            "do it".into(),
+            1,
+            50,
+            format!("task:{}", t.id),
+            "proj-lead".into(),
+            false,
+        )
+        .unwrap();
+        let job_id = job.str("id");
+        crate::util::exec1(
+            &c,
+            "INSERT INTO runs (id, job_id, agent, project, started_at, status) VALUES ('run-held', ?, 'aurora', 'proj', ?, 'held')",
+            &[&job_id, &TEST_NOW],
+        );
+        crate::util::event_at(
+            &c,
+            TEST_NOW,
+            "aurora",
+            "run.start",
+            "run-held",
+            json!({"job": job_id}),
+        );
+        let held = |owner_changes: String| HeldResume {
+            session: hive_store::HarnessSession {
+                id: "h-r".into(),
+                steps: 12,
+                error: "held: the runner restarts and the next run carries on from here".into(),
+                ..Default::default()
+            },
+            base: "abc".into(),
+            owner_changes,
+        };
+        // Nothing since the run started: the opening says nothing of it.
+        let quiet = owner_changes_since_run(&s, &job_id, "run-held");
+        assert_eq!(quiet, "");
+        let opening = continuation_message("run-next", &held(quiet), "/work/job-x");
+        assert!(!opening.contains("Meanwhile"), "{opening}");
+
+        // The owner amends the task and writes on it while the run is held.
+        hive_tasks::amend(
+            &s,
+            &t.id,
+            "",
+            "rename it and the menu",
+            "and the menu",
+            "human",
+        )
+        .unwrap();
+        let m = hive_tasks::send_message(&s, "proj", &t.id, "human", "menu first").unwrap();
+        let changes = owner_changes_since_run(&s, &job_id, "run-held");
+        let opening = continuation_message("run-next", &held(changes), "/work/job-x");
+        assert!(opening.contains("restarted for an update"), "{opening}");
+        assert!(
+            opening.contains(&format!(
+                "on task {}, the task was amended (rev 3 (and the menu))",
+                t.id
+            )),
+            "{opening}"
+        );
+        assert!(!opening.contains("rev 2"), "{opening}");
+        assert!(opening.contains(&m.id), "{opening}");
+        assert!(
+            opening.contains(&format!("hive task show {}", t.id)),
+            "{opening}"
+        );
+
+        // A job that is no task's has nothing to say.
+        assert_eq!(owner_changes_since_run(&s, "job-none", "run-held"), "");
+        // A word alone names the task it was written on.
+        let line = owner_changes_line("TASK-9", &[], &["msg-1".into()]);
+        assert!(
+            line.contains("on task TASK-9, the owner wrote on it (message msg-1)"),
+            "{line}"
+        );
     }
 
     /// A held session of `job` by `agent` from run `run`, with the
