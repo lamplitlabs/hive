@@ -265,7 +265,7 @@ Each section below is one family: the settings that share the part of their name
 | Setting | Default | What it does |
 | --- | --- | --- |
 | `hygiene.cargo_target` | `on` | on: the daemon sweep prunes dead or idle workspace-crate units, stale incremental caches and debug objects no binary's debug map names from shared Cargo target directories named by active projects' CARGO_TARGET_DIR verify commands, only under the project checkout or HIVE_HOME and only while verify/cargo locks are free; off: leave Cargo target directories alone |
-| `hygiene.cargo_target_hours` | `24` | hours an incremental cache directory, or a workspace crate's compiled unit, must sit unmodified before the hygiene sweep removes it from a shared Cargo target; registry and git dependencies are never pruned for idleness |
+| `hygiene.cargo_target_hours` | `24` | hours an incremental cache directory, or a workspace crate's compiled unit, must sit unmodified before the hygiene sweep removes it from a shared Cargo target (its sub-targets such as verify-check/ included); under the disk floor at most one hour, and a unit of a crate no checkout or clone holds any more goes at once; registry and git dependencies are never pruned for idleness |
 
 ## inbox
 

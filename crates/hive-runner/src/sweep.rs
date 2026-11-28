@@ -178,6 +178,11 @@ pub(crate) struct Sweeper {
     pub(crate) checkouts: Vec<String>,
     pub(crate) prune: BTreeMap<String, bool>,
     pub(crate) running: BTreeMap<String, bool>,
+    /// What a Cargo prune of this pass knows, measured at its first use.
+    cargo_prune: Option<CargoPrune>,
+    /// How long this pass may still wait for a project's verify lock: zero
+    /// tries once; under the disk floor `PRESSURE_VERIFY_LOCK_WAIT`.
+    verify_wait_left: Duration,
 }
 
 pub(crate) fn sweep(
@@ -241,6 +246,8 @@ impl Sweeper {
             checkouts,
             prune: BTreeMap::new(),
             running: BTreeMap::new(),
+            cargo_prune: None,
+            verify_wait_left: Duration::ZERO,
         };
         if w.o.pressure {
             // Zero transcript days is the owner saying "keep every
@@ -253,6 +260,7 @@ impl Sweeper {
             // disposable leftover - the same reasoning as runner sessions.
             w.logs_keep = w.logs_keep.min(PRESSURE_KEEP);
             w.cache_keep = w.cache_keep.min(PRESSURE_CACHE_KEEP);
+            w.verify_wait_left = PRESSURE_VERIFY_LOCK_WAIT;
             if w.vacuum_free > 0 {
                 w.vacuum_free = w.vacuum_free.min(PRESSURE_VACUUM_FREE);
             }
@@ -896,11 +904,86 @@ impl Sweeper {
         });
     }
 
+    /// The pass's knowledge for pruning one Cargo profile, measured once:
+    /// the live trees and the executables in use.
+    fn cargo_prune(&mut self) -> CargoPrune {
+        if self.cargo_prune.is_none() {
+            let mut trees: Vec<PathBuf> = self.checkouts.iter().map(PathBuf::from).collect();
+            trees.extend(runner_trees(Path::new(&self.home)));
+            let mut p = CargoPrune::new(self.cargo_min_age(), self.clock.into(), self.o.dry_run);
+            p.trees = trees;
+            p.in_use = ExecutablesInUse::scan();
+            self.cargo_prune = Some(p);
+        }
+        self.cargo_prune.clone().unwrap_or_else(|| {
+            CargoPrune::new(self.cargo_min_age(), self.clock.into(), self.o.dry_run)
+        })
+    }
+
+    /// The project's verify lock; under the disk floor the pass waits its
+    /// turn like a verification does, out of one budget for the whole pass
+    /// (`PRESSURE_VERIFY_LOCK_WAIT`), so a busy day cannot keep it out and
+    /// many busy projects cannot hold the pass for long.
+    fn take_verify_lock(&mut self, slug: &str) -> Result<VerifyLockGuard, String> {
+        let started = std::time::Instant::now();
+        let got = acquire_project_verify_lock_waiting(&self.s, slug, self.verify_wait_left);
+        self.verify_wait_left = self.verify_wait_left.saturating_sub(started.elapsed());
+        got
+    }
+
+    /// Prunes every profile of `target` (its own and its sub-targets') that
+    /// no build holds, each under its own `.cargo-lock`. A profile whose lock
+    /// is held is skipped: listed as held with `held_why` when given, else
+    /// as a skipped target.
+    fn prune_cargo_cache(
+        &mut self,
+        slug: &str,
+        target: &Path,
+        held_why: Option<&str>,
+    ) -> CargoTargetSweep {
+        let prune = self.cargo_prune();
+        let mut total = CargoTargetSweep {
+            project: slug.to_string(),
+            target: target.display().to_string(),
+            ..Default::default()
+        };
+        for profile in cargo_profile_dirs(target) {
+            let Some(_cargo_lock) = (match acquire_cargo_profile_lock(&profile) {
+                Ok(lock) => Some(lock),
+                Err(reason) => {
+                    let path = profile.display().to_string();
+                    match held_why {
+                        Some(why) => {
+                            self.held("cache".into(), path, slug.to_string(), why.to_string())
+                        }
+                        None => self.cargo_target_skip(slug, &path, reason),
+                    }
+                    None
+                }
+            }) else {
+                continue;
+            };
+            match prune_cargo_profile_with(&profile, &prune) {
+                Ok(stats) => {
+                    total.units += stats.units;
+                    total.incremental += stats.incremental;
+                    total.objects += stats.objects;
+                    total.bytes += stats.bytes;
+                }
+                Err(err) => self.failed(
+                    format!("cannot prune cargo target {}: {err}", profile.display()),
+                    vec![],
+                ),
+            }
+        }
+        total
+    }
+
     fn sweep_cargo_targets(&mut self) {
         if self.s.setting("hygiene.cargo_target", "on") == "off" {
             return;
         }
-        let min_age = self.cargo_min_age();
+        let mut targets: Vec<(String, String, PathBuf)> = Vec::new();
         for proj in self.projects.clone() {
             let slug = proj.str("slug");
             let verify = proj.str("verify_cmd");
@@ -913,7 +996,17 @@ impl Sweeper {
                 self.cargo_target_skip(&slug, &target, "target outside project and HIVE_HOME");
                 continue;
             }
-            let Some(_verify_lock) = (match acquire_project_verify_lock(&self.s, &slug) {
+            targets.push((slug, target, target_path));
+        }
+        // Under the floor the largest cache goes first: the pass may run
+        // out of its verify-lock budget before it reaches the last one.
+        if self.o.pressure {
+            targets.sort_by_cached_key(|(_, _, path)| {
+                std::cmp::Reverse(disk_usage(path.display().to_string()))
+            });
+        }
+        for (slug, target, target_path) in targets {
+            let Some(_verify_lock) = (match self.take_verify_lock(&slug) {
                 Ok(lock) => Some(lock),
                 Err(reason) => {
                     self.cargo_target_skip(&slug, &target, reason);
@@ -922,34 +1015,8 @@ impl Sweeper {
             }) else {
                 continue;
             };
-            let mut total = CargoTargetSweep {
-                project: slug.clone(),
-                target: target.clone(),
-                ..Default::default()
-            };
-            for profile in cargo_profile_dirs(&target_path) {
-                let Some(_cargo_lock) = (match acquire_cargo_profile_lock(&profile) {
-                    Ok(lock) => Some(lock),
-                    Err(reason) => {
-                        self.cargo_target_skip(&slug, &profile.display().to_string(), reason);
-                        None
-                    }
-                }) else {
-                    continue;
-                };
-                match prune_cargo_profile(&profile, min_age, self.clock.into(), self.o.dry_run) {
-                    Ok(stats) => {
-                        total.units += stats.units;
-                        total.incremental += stats.incremental;
-                        total.objects += stats.objects;
-                        total.bytes += stats.bytes;
-                    }
-                    Err(err) => self.failed(
-                        format!("cannot prune cargo target {}: {err}", profile.display()),
-                        vec![],
-                    ),
-                }
-            }
+            let mut total = self.prune_cargo_cache(&slug, &target_path, None);
+            total.target = target;
             self.rep.cargo_target.push(total);
         }
     }
@@ -1758,21 +1825,56 @@ impl Sweeper {
     /// project's own shared Cargo target.
     pub(crate) fn sweep_build_cache(&mut self) {
         let home = PathBuf::from(&self.home);
-        let known: BTreeSet<String> = self
+        // The lane folder of each project, back to the slug its verify lock
+        // is named after.
+        let known: BTreeMap<String, String> = self
             .projects
             .iter()
-            .map(|p| crate::buildcache::lane_slug(&p.str("slug")))
+            .map(|p| (crate::buildcache::lane_slug(&p.str("slug")), p.str("slug")))
             .collect();
-        let min_age = self.cargo_min_age();
         let now: std::time::SystemTime = self.clock.into();
-        for (slug, lane) in crate::buildcache::lanes(&home) {
+        let mut lanes = crate::buildcache::lanes(&home);
+        if self.o.pressure {
+            lanes.sort_by_cached_key(|(_, lane)| {
+                std::cmp::Reverse(disk_usage(lane.display().to_string()))
+            });
+        }
+        for (slug, lane) in lanes {
             let path = lane.display().to_string();
-            if crate::buildcache::lane_busy(&lane) {
-                self.held("cache".into(), path, slug, "run in flight".into());
+            let busy = crate::buildcache::lane_busy(&lane);
+            let Some(project) = known.get(&slug).cloned() else {
+                if busy {
+                    self.held("cache".into(), path, slug, "run in flight".into());
+                } else {
+                    self.remove("cache".into(), path, slug, "no such project".into());
+                }
                 continue;
-            }
-            if !known.contains(&slug) {
-                self.remove("cache".into(), path, slug, "no such project".into());
+            };
+            if busy {
+                // A run holds the lane, but most of the time it is not
+                // building: each profile whose `.cargo-lock` is free is
+                // pruned while no verification of the project runs (the
+                // pass holds its verify lock), and the executables a check
+                // or test still needs stay (`ExecutablesInUse`).
+                let Some(_verify_lock) = (match self.take_verify_lock(&project) {
+                    Ok(lock) => Some(lock),
+                    Err(reason) => {
+                        self.held(
+                            "cache".into(),
+                            path,
+                            slug.clone(),
+                            format!("run in flight; {reason}"),
+                        );
+                        None
+                    }
+                }) else {
+                    continue;
+                };
+                let total =
+                    self.prune_cargo_cache(&slug, &lane, Some("run in flight: cargo lock held"));
+                if total.pruned() {
+                    self.rep.cargo_target.push(total);
+                }
                 continue;
             }
             let idle = crate::buildcache::lane_last_used(&lane)
@@ -1787,34 +1889,7 @@ impl Sweeper {
                 );
                 continue;
             }
-            let mut total = CargoTargetSweep {
-                project: slug.clone(),
-                target: path.clone(),
-                ..Default::default()
-            };
-            for profile in cargo_profile_dirs(&lane) {
-                let Some(_cargo_lock) = (match acquire_cargo_profile_lock(&profile) {
-                    Ok(lock) => Some(lock),
-                    Err(reason) => {
-                        self.cargo_target_skip(&slug, &profile.display().to_string(), reason);
-                        None
-                    }
-                }) else {
-                    continue;
-                };
-                match prune_cargo_profile(&profile, min_age, now, self.o.dry_run) {
-                    Ok(stats) => {
-                        total.units += stats.units;
-                        total.incremental += stats.incremental;
-                        total.objects += stats.objects;
-                        total.bytes += stats.bytes;
-                    }
-                    Err(err) => self.failed(
-                        format!("cannot prune build cache {}: {err}", profile.display()),
-                        vec![],
-                    ),
-                }
-            }
+            let total = self.prune_cargo_cache(&slug, &lane, None);
             if total.pruned() {
                 self.rep.cargo_target.push(total);
             }
@@ -3042,7 +3117,7 @@ fn expand_home(value: &str) -> String {
     value.to_string()
 }
 
-fn cargo_target_allowed(target: &Path, project: &Path, home: &Path) -> bool {
+pub(crate) fn cargo_target_allowed(target: &Path, project: &Path, home: &Path) -> bool {
     target.is_absolute() && (path_is_under(target, project) || path_is_under(target, home))
 }
 
@@ -3085,6 +3160,193 @@ fn acquire_project_verify_lock(
     }
 }
 
+/// The project's verify lock, waiting up to `wait` for a live holder the
+/// way a verification waits its turn (a zero wait tries once). Under the
+/// disk floor the sweep waits, so a day of back-to-back verifications
+/// cannot keep it out of the caches they fill.
+fn acquire_project_verify_lock_waiting(
+    s: &hive_store::Store,
+    slug: &str,
+    wait: Duration,
+) -> Result<VerifyLockGuard, String> {
+    let start = std::time::Instant::now();
+    loop {
+        match acquire_project_verify_lock(s, slug) {
+            Ok(lock) => return Ok(lock),
+            Err(reason) if reason == "busy: verify lock held" && start.elapsed() < wait => {
+                std::thread::sleep(VERIFY_LOCK_POLL.min(wait.saturating_sub(start.elapsed())));
+            }
+            Err(reason) if reason == "busy: verify lock held" && !wait.is_zero() => {
+                return Err(format!(
+                    "busy: verify lock held after waiting {}",
+                    round_duration(wait)
+                ));
+            }
+            Err(reason) => return Err(reason),
+        }
+    }
+}
+
+/// How often a waiting sweep looks at the verify lock again.
+const VERIFY_LOCK_POLL: Duration = Duration::from_secs(2);
+
+/// How long a sweep under the disk floor waits for a project's verify lock
+/// before it leaves that cache for the next ladder.
+pub(crate) const PRESSURE_VERIFY_LOCK_WAIT: Duration = Duration::from_secs(10 * 60);
+
+/// Where `scripts/verify-check.sh` keeps a check's work while it runs
+/// (`/tmp/hive-vc.XXXXXX`): its `binaries` list names the test executables
+/// it built and is about to run, and `pid` the script itself.
+fn check_work_roots() -> Vec<PathBuf> {
+    #[cfg(test)]
+    if let Some(roots) = CHECK_WORK_ROOTS
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+    {
+        return roots;
+    }
+    let mut roots = vec![PathBuf::from("/tmp")];
+    let tmp = std::env::temp_dir();
+    if !roots.contains(&tmp) {
+        roots.push(tmp);
+    }
+    roots
+}
+
+#[cfg(test)]
+static CHECK_WORK_ROOTS: std::sync::RwLock<Option<Vec<PathBuf>>> = std::sync::RwLock::new(None);
+
+/// Points `check_work_roots` at `roots` until the guard drops; tests that
+/// take it hold `serial()` first, since the swap is process-wide.
+#[cfg(test)]
+#[must_use = "the swap holds only while its guard lives"]
+pub(crate) fn swap_check_work_roots(roots: Vec<PathBuf>) -> CheckWorkRootsSwap {
+    let was = CHECK_WORK_ROOTS
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .replace(roots);
+    CheckWorkRootsSwap { was }
+}
+
+#[cfg(test)]
+pub(crate) struct CheckWorkRootsSwap {
+    was: Option<Vec<PathBuf>>,
+}
+
+#[cfg(test)]
+impl Drop for CheckWorkRootsSwap {
+    fn drop(&mut self) {
+        *CHECK_WORK_ROOTS.write().unwrap_or_else(|e| e.into_inner()) = self.was.take();
+    }
+}
+
+/// A check's work dir still belongs to a running check: its script's pid is
+/// alive, or - a script from before the pid file - something wrote to it
+/// within the hour.
+fn check_work_live(dir: &Path) -> bool {
+    match std::fs::read_to_string(dir.join("pid")) {
+        Ok(text) => text
+            .trim()
+            .parse::<i32>()
+            .is_ok_and(|pid| pid > 0 && process_alive(pid)),
+        Err(_) => {
+            dir_tree_recently_modified(dir, std::time::SystemTime::now(), Duration::from_secs(3600))
+        }
+    }
+}
+
+/// The executables a Cargo profile must keep this minute, whatever their
+/// age: the test binaries a running check built and has yet to run (an
+/// up-to-date test binary can be older than any idle time, and deleting it
+/// between a check's build and its tests makes the check report "the test
+/// binary changed during the run"), and every program running out of a
+/// `deps/` folder. Canonical paths, so a target reached through a link
+/// (`~/.pulse` -> `~/.hive`) matches.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct ExecutablesInUse {
+    paths: Vec<PathBuf>,
+}
+
+impl ExecutablesInUse {
+    pub(crate) fn scan() -> ExecutablesInUse {
+        let mut paths = Vec::new();
+        for root in check_work_roots() {
+            let Ok(entries) = std::fs::read_dir(&root) else {
+                continue;
+            };
+            for e in entries.flatten() {
+                if !e.file_name().to_string_lossy().starts_with("hive-vc.") {
+                    continue;
+                }
+                let dir = e.path();
+                if !check_work_live(&dir) {
+                    continue;
+                }
+                let listed = std::fs::read_to_string(dir.join("binaries")).unwrap_or_default();
+                // A check still building has no list yet; its `.cargo-lock`
+                // keeps the sweep out of the profile it builds.
+                for line in listed.lines() {
+                    if let Some((_, bin)) = line.split_once('\t') {
+                        paths.push(PathBuf::from(bin));
+                    }
+                }
+            }
+        }
+        paths.extend(running_deps_executables());
+        let paths = paths
+            .into_iter()
+            .map(|p| std::fs::canonicalize(&p).unwrap_or(p))
+            .collect();
+        ExecutablesInUse { paths }
+    }
+
+    /// The first executable of `profile` in use, if any.
+    fn in_profile(&self, profile: &Path) -> Option<&Path> {
+        let canon = std::fs::canonicalize(profile).unwrap_or_else(|_| profile.to_path_buf());
+        self.paths
+            .iter()
+            .find(|p| p.starts_with(&canon) || p.starts_with(profile))
+            .map(PathBuf::as_path)
+    }
+
+    /// Whether `path` is one of the executables in use.
+    fn is(&self, path: &Path) -> bool {
+        if self.paths.is_empty() {
+            return false;
+        }
+        let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        self.paths.iter().any(|p| *p == canon || p == path)
+    }
+}
+
+/// The programs running out of a Cargo `deps/` folder (test binaries a
+/// `cargo test` or a reviewer's own check runs), from `ps`.
+fn running_deps_executables() -> Vec<PathBuf> {
+    #[cfg(test)]
+    if CHECK_WORK_ROOTS
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_some()
+    {
+        return Vec::new();
+    }
+    let Ok(out) = std::process::Command::new("ps")
+        .args(["-axww", "-o", "args="])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+    else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.split_whitespace().next())
+        .filter(|w| w.starts_with('/') && w.contains("/deps/"))
+        .map(PathBuf::from)
+        .collect()
+}
+
 #[cfg(unix)]
 fn symlink_lock(pid: &str, path: &Path) -> std::io::Result<()> {
     unix_fs::symlink(pid, path)
@@ -3122,16 +3384,35 @@ fn verify_lock_safe_slug(slug: &str) -> String {
     }
 }
 
+/// Every Cargo profile directory (one that holds `deps/`) of a target: its
+/// own (`<target>/debug`, `<target>/release`) and those of the sub-targets
+/// one level down, where scripts build with `CARGO_TARGET_DIR` set to
+/// `<target>/<name>` (`verify-check`, `not-unix`, `crate-panic-sites`, and
+/// whatever a later script adds) - `scripts/verify-check.sh` builds there,
+/// so that is where nearly all of a shared target's bytes are.
 fn cargo_profile_dirs(target: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(target) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if entry.file_type().is_ok_and(|t| t.is_dir()) && path.join("deps").is_dir() {
-            out.push(path);
+    fn profiles_of(dir: &Path, out: &mut Vec<PathBuf>, subtargets: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            // A link may point anywhere; only real folders are walked.
+            if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+                continue;
+            }
+            let path = entry.path();
+            if path.join("deps").is_dir() {
+                out.push(path);
+            } else {
+                subtargets.push(path);
+            }
         }
+    }
+    let mut out = Vec::new();
+    let mut subtargets = Vec::new();
+    profiles_of(target, &mut out, &mut subtargets);
+    for sub in subtargets {
+        profiles_of(&sub, &mut out, &mut Vec::new());
     }
     out.sort();
     out
@@ -3167,14 +3448,20 @@ struct CargoPruneStats {
     bytes: i64,
 }
 
+#[cfg(test)]
 fn prune_cargo_profile(
     profile: &Path,
     incremental_age: Duration,
     now: std::time::SystemTime,
     dry_run: bool,
 ) -> std::io::Result<CargoPruneStats> {
+    prune_cargo_profile_with(profile, &CargoPrune::new(incremental_age, now, dry_run))
+}
+
+fn prune_cargo_profile_with(profile: &Path, p: &CargoPrune) -> std::io::Result<CargoPruneStats> {
+    let (incremental_age, now, dry_run) = (p.idle, p.now, p.dry_run);
     let mut stats = CargoPruneStats::default();
-    for unit in dead_cargo_units(profile, now, incremental_age)? {
+    for unit in dead_cargo_units_with(profile, p)? {
         let bytes: i64 = unit
             .paths
             .iter()
@@ -3369,6 +3656,71 @@ struct DeadCargoUnit {
     paths: Vec<PathBuf>,
 }
 
+/// What one pass knows when it prunes a Cargo profile.
+#[derive(Debug, Clone)]
+struct CargoPrune {
+    /// A workspace unit nothing wrote to for this long is dead; a stale
+    /// incremental dir or debug object goes after it too.
+    idle: Duration,
+    now: std::time::SystemTime,
+    dry_run: bool,
+    /// The trees a workspace crate may live in: every project checkout and
+    /// every clone or worktree of the runner's. A workspace unit whose
+    /// sources are in none of them belongs to a crate that left the
+    /// workspace (a rename, a removed crate) and is dead at once. Empty
+    /// turns that rule off.
+    trees: Vec<PathBuf>,
+    /// Executables a running check or test still needs.
+    in_use: ExecutablesInUse,
+}
+
+impl CargoPrune {
+    fn new(idle: Duration, now: std::time::SystemTime, dry_run: bool) -> CargoPrune {
+        CargoPrune {
+            idle,
+            now,
+            dry_run,
+            trees: Vec::new(),
+            in_use: ExecutablesInUse::default(),
+        }
+    }
+}
+
+/// The folders under `home` a workspace may be checked out in: `work/`
+/// (job clones, landing and base worktrees, chat worktrees one level
+/// deeper), `worktrees/` and `fleet/`, walked down to the first folder that
+/// holds a `Cargo.toml`, at most four levels.
+fn runner_trees(home: &Path) -> Vec<PathBuf> {
+    fn walk(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+        if dir.join("Cargo.toml").is_file() {
+            out.push(dir.to_path_buf());
+            return;
+        }
+        if depth == 0 {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let name = e.file_name();
+            if matches!(
+                name.to_string_lossy().as_ref(),
+                ".git" | "target" | "node_modules" | "artifacts" | "attachments"
+            ) || !e.file_type().is_ok_and(|t| t.is_dir())
+            {
+                continue;
+            }
+            walk(&e.path(), depth - 1, out);
+        }
+    }
+    let mut out = Vec::new();
+    for sub in ["work", "worktrees", "fleet"] {
+        walk(&home.join(sub), 4, &mut out);
+    }
+    out
+}
+
 /// A unit is dead when its dep-info points into a clone that is gone, or
 /// when it belongs to a workspace crate and nothing has written to it for
 /// `idle`. The second rule is what catches a job's build: Cargo names a
@@ -3380,11 +3732,24 @@ struct DeadCargoUnit {
 /// shared target would keep every workspace unit for good. Registry and
 /// git dependencies are never touched by the idle rule: their sources are
 /// absolute and their units are the part of the cache worth keeping.
+#[cfg(test)]
 fn dead_cargo_units(
     profile: &Path,
     now: std::time::SystemTime,
     idle: Duration,
 ) -> std::io::Result<Vec<DeadCargoUnit>> {
+    dead_cargo_units_with(profile, &CargoPrune::new(idle, now, false))
+}
+
+/// `dead_cargo_units` with the pass's knowledge: a workspace unit whose
+/// sources are in none of `p.trees` is dead whatever its age, and while an
+/// executable of the profile is in use (a check between its build and its
+/// tests, a `cargo test` running its binaries one after the other) the idle
+/// rule is off for the profile and the units in use stay.
+fn dead_cargo_units_with(profile: &Path, p: &CargoPrune) -> std::io::Result<Vec<DeadCargoUnit>> {
+    let (now, idle) = (p.now, p.idle);
+    let profile_in_use = p.in_use.in_profile(profile).is_some();
+    let mut tree_has: BTreeMap<String, bool> = BTreeMap::new();
     let deps = profile.join("deps");
     let mut out = Vec::new();
     let names: BTreeSet<String> = match std::fs::read_dir(&deps) {
@@ -3414,14 +3779,51 @@ fn dead_cargo_units(
         }
         let dead = dep_info_points_at_dead_clone(&text)
             || (dep_info_is_workspace_unit(&text)
-                && !paths
-                    .iter()
-                    .any(|p| dir_tree_recently_modified(p, now, idle)));
+                && ((!profile_in_use
+                    && !paths
+                        .iter()
+                        .any(|p| dir_tree_recently_modified(p, now, idle)))
+                    || workspace_unit_left_every_tree(&text, &p.trees, &mut tree_has)));
+        if dead && paths.iter().any(|path| p.in_use.is(path)) {
+            continue;
+        }
         if dead {
             out.push(DeadCargoUnit { paths });
         }
     }
     Ok(out)
+}
+
+/// Whether a workspace unit's crate is in none of `trees`: no tree holds
+/// the folder of its first source (`crates/<name>/src/lib.rs`). `tree_has`
+/// caches the answer per folder across one profile. An empty `trees` (a
+/// caller that does not know them) never says so.
+fn workspace_unit_left_every_tree(
+    text: &str,
+    trees: &[PathBuf],
+    tree_has: &mut BTreeMap<String, bool>,
+) -> bool {
+    if trees.is_empty() {
+        return false;
+    }
+    let line = text.lines().next().unwrap_or_default();
+    let Some((_, deps)) = line.split_once(':') else {
+        return false;
+    };
+    let Some(first) = split_dep_info_paths(deps).into_iter().next() else {
+        return false;
+    };
+    let Some(folder) = Path::new(&first).parent().map(|p| p.display().to_string()) else {
+        return false;
+    };
+    if folder.is_empty() {
+        // A source at the workspace root says nothing about which crate.
+        return false;
+    }
+    let present = *tree_has
+        .entry(folder.clone())
+        .or_insert_with(|| trees.iter().any(|t| t.join(&folder).is_dir()));
+    !present
 }
 
 /// Everything in `deps/` that belongs to the unit `stem`: the unit itself
@@ -4515,6 +4917,430 @@ mod tests {
             .join("\n");
         assert!(skipped.contains("busy: cargo lock held"), "{skipped}");
         lock.unlock().unwrap();
+    }
+
+    /// A unit in `profile` whose dep-info names a source in a clone that is
+    /// gone: dead to the prune rule on any pass. Returns its rlib.
+    fn dead_clone_unit(profile: &Path, root: &Path, name: &str, hash: &str) -> PathBuf {
+        let gone = root.join(format!("gone-clone-{name}/src/lib.rs"));
+        mkdir_file(
+            profile.join(format!("deps/{name}-{hash}.d")),
+            &format!("out: {}\n", gone.display()),
+        );
+        let rlib = profile.join(format!("deps/lib{name}-{hash}.rlib"));
+        mkdir_file(&rlib, "dead");
+        mkdir_file(
+            profile.join(format!(".fingerprint/{name}-{hash}/stamp")),
+            "dead",
+        );
+        rlib
+    }
+
+    fn point_project_at_target(s: &hive_store::Store, project: &Path, target: &Path) {
+        std::fs::create_dir_all(project).unwrap();
+        s.conn()
+            .unwrap()
+            .execute(
+                "UPDATE projects SET path = ?, verify_cmd = ? WHERE slug = 'proj'",
+                params![
+                    project.display().to_string(),
+                    format!(
+                        "env CARGO_TARGET_DIR={} sh scripts/verify-check.sh",
+                        target.display()
+                    )
+                ],
+            )
+            .unwrap();
+    }
+
+    /// `scripts/verify-check.sh` builds into `$CARGO_TARGET_DIR/verify-check`:
+    /// the sweep walks one level down and prunes the sub-targets' profiles
+    /// too, each under its own `.cargo-lock`.
+    #[test]
+    fn cargo_target_sweep_prunes_the_sub_targets_scripts_build_into() {
+        let _serial = crate::test_helpers::serial();
+        let s = sweep_store();
+        new_bare_repo(&s);
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        let target = project.join("target");
+        point_project_at_target(&s, &project, &target);
+        let own = dead_clone_unit(
+            &target.join("debug"),
+            root.path(),
+            "own",
+            "1111111111111111",
+        );
+        let check = dead_clone_unit(
+            &target.join("verify-check/debug"),
+            root.path(),
+            "check",
+            "2222222222222222",
+        );
+        let not_unix = dead_clone_unit(
+            &target.join("not-unix/debug"),
+            root.path(),
+            "nu",
+            "3333333333333333",
+        );
+        // Two levels down is not a sub-target the scripts make.
+        let deep = dead_clone_unit(
+            &target.join("a/b/debug"),
+            root.path(),
+            "deep",
+            "4444444444444444",
+        );
+        let rep = sweep(&s, project_rows(&s), TEST_NOW.into(), SweepOpts::default()).unwrap();
+        assert!(rep.errors.is_empty(), "{:?}", rep.errors);
+        assert!(!own.exists());
+        assert!(!check.exists(), "verify-check/debug was not pruned");
+        assert!(!not_unix.exists(), "not-unix/debug was not pruned");
+        assert!(deep.exists());
+        let ct = &rep.cargo_target[0];
+        assert!(ct.skipped.is_empty(), "{ct:?}");
+        assert_eq!(ct.units, 3, "{ct:?}");
+    }
+
+    /// Sets the mtime of `path` and everything under it `ago` in the past.
+    fn age_tree(path: &Path, ago: Duration) {
+        let when = FileTime::from_system_time(std::time::SystemTime::now() - ago);
+        if path.is_dir() {
+            for e in std::fs::read_dir(path).unwrap().flatten() {
+                age_tree(&e.path(), ago);
+            }
+        }
+        filetime::set_file_mtime(path, when).unwrap();
+    }
+
+    /// A unit of the workspace crate at `crate_dir` (relative sources, as
+    /// Cargo writes them for a member) in `profile`: its dep-info, its
+    /// rlib, its test executable and its fingerprint, `ago` old. Returns
+    /// the executable.
+    fn workspace_unit(
+        profile: &Path,
+        name: &str,
+        hash: &str,
+        crate_dir: &str,
+        ago: Duration,
+    ) -> PathBuf {
+        let deps = profile.join("deps");
+        mkdir_file(
+            deps.join(format!("{name}-{hash}.d")),
+            &format!(
+                "{}: {crate_dir}/src/lib.rs\n\n{crate_dir}/src/lib.rs:\n",
+                deps.join(format!("{name}-{hash}")).display()
+            ),
+        );
+        mkdir_file(deps.join(format!("lib{name}-{hash}.rlib")), "rlib");
+        let exe = deps.join(format!("{name}-{hash}"));
+        mkdir_file(&exe, "exe");
+        let fingerprint = profile.join(format!(".fingerprint/{name}-{hash}"));
+        mkdir_file(fingerprint.join("stamp"), "stamp");
+        for p in [
+            deps.join(format!("{name}-{hash}.d")),
+            deps.join(format!("lib{name}-{hash}.rlib")),
+            exe.clone(),
+            fingerprint,
+        ] {
+            age_tree(&p, ago);
+        }
+        exe
+    }
+
+    /// A registry dependency's unit (absolute sources that exist), `ago` old.
+    fn registry_unit(
+        profile: &Path,
+        root: &Path,
+        name: &str,
+        hash: &str,
+        ago: Duration,
+    ) -> PathBuf {
+        let src = root.join(format!("registry/{name}-1.0.0/src/lib.rs"));
+        mkdir_file(&src, "pub fn f() {}\n");
+        let deps = profile.join("deps");
+        mkdir_file(
+            deps.join(format!("{name}-{hash}.d")),
+            &format!("out: {}\n", src.display()),
+        );
+        let rlib = deps.join(format!("lib{name}-{hash}.rlib"));
+        mkdir_file(&rlib, "rlib");
+        age_tree(&deps.join(format!("{name}-{hash}.d")), ago);
+        age_tree(&rlib, ago);
+        rlib
+    }
+
+    const HOUR: Duration = Duration::from_secs(3600);
+
+    /// A unit of a crate no tree holds any more (the crates of before a
+    /// rename) is dead on the first pass, however fresh; a fresh unit of a
+    /// crate that is still there stays.
+    #[test]
+    fn cargo_target_sweep_drops_units_of_crates_that_left_the_workspace_at_once() {
+        let _serial = crate::test_helpers::serial();
+        let empty = tempfile::tempdir().unwrap();
+        let _roots = swap_check_work_roots(vec![empty.path().to_path_buf()]);
+        let s = sweep_store();
+        new_bare_repo(&s);
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        let target = project.join("target");
+        point_project_at_target(&s, &project, &target);
+        mkdir_file(project.join("crates/hive-x/src/lib.rs"), "");
+        // A crate that lives only in a job's clone is still a member.
+        mkdir_file(
+            Path::new(&s.home).join("work/job-1/Cargo.toml"),
+            "[workspace]\n",
+        );
+        mkdir_file(
+            Path::new(&s.home).join("work/job-1/crates/hive-new/src/lib.rs"),
+            "",
+        );
+        let profile = target.join("verify-check/debug");
+        let gone = workspace_unit(
+            &profile,
+            "pulse_x",
+            "1111111111111111",
+            "crates/pulse-x",
+            Duration::ZERO,
+        );
+        let live = workspace_unit(
+            &profile,
+            "hive_x",
+            "2222222222222222",
+            "crates/hive-x",
+            Duration::ZERO,
+        );
+        let job = workspace_unit(
+            &profile,
+            "hive_new",
+            "3333333333333333",
+            "crates/hive-new",
+            Duration::ZERO,
+        );
+        let dep = registry_unit(
+            &profile,
+            root.path(),
+            "serde",
+            "4444444444444444",
+            Duration::ZERO,
+        );
+        let rep = sweep(&s, project_rows(&s), TEST_NOW.into(), SweepOpts::default()).unwrap();
+        assert!(rep.errors.is_empty(), "{:?}", rep.errors);
+        assert!(
+            !gone.exists(),
+            "a unit of a crate that left the workspace stayed"
+        );
+        assert!(
+            !profile
+                .join("deps/libpulse_x-1111111111111111.rlib")
+                .exists()
+        );
+        assert!(
+            !profile
+                .join(".fingerprint/pulse_x-1111111111111111")
+                .exists()
+        );
+        assert!(live.exists());
+        assert!(job.exists());
+        assert!(dep.exists());
+        assert_eq!(rep.cargo_target[0].units, 1, "{:?}", rep.cargo_target);
+    }
+
+    /// Under the floor the idle time of a workspace unit drops to hours: one
+    /// idle for three hours goes, a registry dependency as old stays; out
+    /// of pressure both stay.
+    #[test]
+    fn cargo_target_sweep_under_the_floor_drops_workspace_units_idle_for_hours() {
+        let _serial = crate::test_helpers::serial();
+        let empty = tempfile::tempdir().unwrap();
+        let _roots = swap_check_work_roots(vec![empty.path().to_path_buf()]);
+        let s = sweep_store();
+        new_bare_repo(&s);
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        let target = project.join("target");
+        point_project_at_target(&s, &project, &target);
+        mkdir_file(project.join("crates/hive-x/src/lib.rs"), "");
+        let profile = target.join("verify-check/debug");
+        let idle = workspace_unit(
+            &profile,
+            "hive_x",
+            "1111111111111111",
+            "crates/hive-x",
+            3 * HOUR,
+        );
+        let dep = registry_unit(&profile, root.path(), "serde", "2222222222222222", 3 * HOUR);
+        sweep(&s, project_rows(&s), TEST_NOW.into(), SweepOpts::default()).unwrap();
+        assert!(idle.exists(), "out of pressure a unit idle 3h stays");
+        let rep = sweep(
+            &s,
+            project_rows(&s),
+            TEST_NOW.into(),
+            SweepOpts {
+                pressure: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(rep.errors.is_empty(), "{:?}", rep.errors);
+        assert!(!idle.exists(), "under the floor a unit idle 3h stays");
+        assert!(dep.exists(), "a registry dependency went");
+    }
+
+    /// A check between its build and its tests keeps the test binaries it
+    /// listed, however old; once its script is gone they go.
+    #[test]
+    fn cargo_target_sweep_keeps_the_test_binaries_a_running_check_listed() {
+        let _serial = crate::test_helpers::serial();
+        let checks = tempfile::tempdir().unwrap();
+        let _roots = swap_check_work_roots(vec![checks.path().to_path_buf()]);
+        let s = sweep_store();
+        new_bare_repo(&s);
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        let target = project.join("target");
+        point_project_at_target(&s, &project, &target);
+        mkdir_file(project.join("crates/hive-x/src/lib.rs"), "");
+        let profile = target.join("verify-check/debug");
+        let exe = workspace_unit(
+            &profile,
+            "hive_x",
+            "1111111111111111",
+            "crates/hive-x",
+            48 * HOUR,
+        );
+        let other = workspace_unit(
+            &profile,
+            "hive_y",
+            "2222222222222222",
+            "crates/hive-x",
+            48 * HOUR,
+        );
+        let work = checks.path().join("hive-vc.AbC123");
+        mkdir_file(
+            work.join("binaries"),
+            &format!("{}/Cargo.toml\t{}\n", project.display(), exe.display()),
+        );
+        mkdir_file(work.join("pid"), &format!("{}\n", std::process::id()));
+        let rep = sweep(&s, project_rows(&s), TEST_NOW.into(), SweepOpts::default()).unwrap();
+        assert!(rep.errors.is_empty(), "{:?}", rep.errors);
+        assert!(exe.exists(), "a listed test binary went mid-check");
+        assert!(
+            other.exists(),
+            "the idle rule pruned a profile a check is using"
+        );
+        // The check is over (its pid is gone): the next pass prunes.
+        mkdir_file(work.join("pid"), "999999999\n");
+        sweep(&s, project_rows(&s), TEST_NOW.into(), SweepOpts::default()).unwrap();
+        assert!(!exe.exists());
+        assert!(!other.exists());
+    }
+
+    /// A lane a run holds is not skipped whole: a profile whose
+    /// `.cargo-lock` is free is pruned, one whose lock is held is left and
+    /// listed as held.
+    #[test]
+    fn build_cache_lane_in_flight_prunes_the_profiles_no_build_holds() {
+        let _serial = crate::test_helpers::serial();
+        let empty = tempfile::tempdir().unwrap();
+        let _roots = swap_check_work_roots(vec![empty.path().to_path_buf()]);
+        let s = sweep_store();
+        new_bare_repo(&s);
+        let home = PathBuf::from(&s.home);
+        let lane = crate::buildcache::acquire(&home, "proj").unwrap().unwrap();
+        assert!(crate::buildcache::lane_busy(&lane.dir));
+        let root = tempfile::tempdir().unwrap();
+        let free = dead_clone_unit(
+            &lane.dir.join("verify-check/debug"),
+            root.path(),
+            "free",
+            "1111111111111111",
+        );
+        let building = lane.dir.join("debug");
+        let held = dead_clone_unit(&building, root.path(), "held", "2222222222222222");
+        let lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(building.join(".cargo-lock"))
+            .unwrap();
+        lock.lock_exclusive().unwrap();
+        let rep = sweep(&s, project_rows(&s), TEST_NOW.into(), SweepOpts::default()).unwrap();
+        assert!(rep.errors.is_empty(), "{:?}", rep.errors);
+        assert!(
+            !free.exists(),
+            "a free profile of a lane in flight was not pruned"
+        );
+        assert!(held.exists(), "a profile a build holds was pruned");
+        assert_eq!(
+            held_why(&rep.held, &building),
+            "run in flight: cargo lock held",
+            "{:?}",
+            rep.held
+        );
+        assert!(lane.dir.exists());
+        lock.unlock().unwrap();
+        drop(lane);
+    }
+
+    /// A pass that finds the verify lock held leaves the target out of
+    /// pressure; under the floor it waits its turn and prunes once the
+    /// lock is free.
+    #[test]
+    fn cargo_target_sweep_under_the_floor_waits_for_the_verify_lock() {
+        let _serial = crate::test_helpers::serial();
+        let empty = tempfile::tempdir().unwrap();
+        let _roots = swap_check_work_roots(vec![empty.path().to_path_buf()]);
+        let s = sweep_store();
+        new_bare_repo(&s);
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        let target = project.join("target");
+        point_project_at_target(&s, &project, &target);
+        let unit = dead_clone_unit(
+            &target.join("verify-check/debug"),
+            root.path(),
+            "dead",
+            "1111111111111111",
+        );
+        let locks = Path::new(&s.home).join("locks");
+        std::fs::create_dir_all(&locks).unwrap();
+        let lock = locks.join("verify-proj.lock");
+        std::os::unix::fs::symlink(std::process::id().to_string(), &lock).unwrap();
+        let rep = sweep(&s, project_rows(&s), TEST_NOW.into(), SweepOpts::default()).unwrap();
+        assert!(unit.exists());
+        assert!(
+            rep.cargo_target
+                .iter()
+                .any(|c| c.skipped == "busy: verify lock held"),
+            "{:?}",
+            rep.cargo_target
+        );
+        let release = {
+            let lock = lock.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_secs(3));
+                std::fs::remove_file(lock).unwrap();
+            })
+        };
+        let rep = sweep(
+            &s,
+            project_rows(&s),
+            TEST_NOW.into(),
+            SweepOpts {
+                pressure: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        release.join().unwrap();
+        assert!(rep.errors.is_empty(), "{:?}", rep.errors);
+        assert!(
+            !unit.exists(),
+            "the pass did not prune once the lock was free"
+        );
+        assert!(!lock.exists(), "the pass left its verify lock behind");
     }
 
     #[test]

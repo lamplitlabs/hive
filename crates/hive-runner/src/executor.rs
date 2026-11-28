@@ -2032,7 +2032,15 @@ pub(crate) fn disk_floor_hold(s: &hive_store::Store) -> Option<(i32, i32, String
 
 pub(crate) fn disk_floor_note(s: &hive_store::Store) -> Option<String> {
     disk_floor_hold(s).map(|(free, floor, path)| {
-        format!("disk under floor: {free} MB free on {path} (daemon.min_free_mb {floor})")
+        let could = crate::reclaim::last_could_free(s);
+        format!(
+            "disk under floor: {free} MB free on {path} (daemon.min_free_mb {floor}){}",
+            if could.is_empty() {
+                String::new()
+            } else {
+                format!("; {could}")
+            }
+        )
     })
 }
 

@@ -270,19 +270,102 @@ pub(crate) struct Entry {
     /// The walk stopped at `TEMP_WALK_CAP`; `bytes` is a floor.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub partial: bool,
+    /// A Cargo build cache of Hive's own (a lane, the landing cache, a
+    /// project's verify target): rebuilt on demand, so Hive's to free.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cargo: bool,
+}
+
+/// Every Cargo build cache Hive owns, each measured whole: the build-cache
+/// lanes (`cache/cargo-target/<slug>/<lane>`), each project folder of the
+/// other `cache/cargo-target*` caches (the landing and check caches), and
+/// the target a project's verify command names when it sits under the
+/// project or `HIVE_HOME`. Measured in full rather than to `TEMP_WALK_CAP`:
+/// a 20 GB cache of 100,000 files would otherwise read as a few hundred MB.
+pub(crate) fn cargo_caches(home: &Path, projects: &[Row]) -> Vec<Entry> {
+    let mut paths: Vec<PathBuf> = crate::buildcache::lanes(home)
+        .into_iter()
+        .map(|(_, lane)| lane)
+        .collect();
+    let lanes_root = crate::buildcache::cache_root(home);
+    if let Ok(caches) = std::fs::read_dir(home.join("cache")) {
+        for cache in caches.flatten() {
+            let name = cache.file_name().to_string_lossy().to_string();
+            if !name.starts_with("cargo-target")
+                || cache.path() == lanes_root
+                || !cache.file_type().is_ok_and(|t| t.is_dir())
+            {
+                continue;
+            }
+            for dir in std::fs::read_dir(cache.path())
+                .into_iter()
+                .flatten()
+                .flatten()
+            {
+                if dir.file_type().is_ok_and(|t| t.is_dir()) {
+                    paths.push(dir.path());
+                }
+            }
+        }
+    }
+    for p in projects {
+        let Some(target) = crate::sweep::cargo_target_dir_from_verify(&p.str("verify_cmd")) else {
+            continue;
+        };
+        let target = PathBuf::from(target);
+        if crate::sweep::cargo_target_allowed(&target, Path::new(&p.str("path")), home)
+            && target.is_dir()
+        {
+            paths.push(target);
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    // A target inside another listed one (a verify target pointing into a
+    // lane) is counted once, by the outer one.
+    let outer: Vec<PathBuf> = paths
+        .iter()
+        .filter(|p| !paths.iter().any(|o| o != *p && p.starts_with(o)))
+        .cloned()
+        .collect();
+    let mut out: Vec<Entry> = outer
+        .into_iter()
+        .filter_map(|p| {
+            let bytes = crate::sweep::disk_usage(p.display().to_string()).max(0) as u64;
+            (bytes > 0).then(|| Entry {
+                path: p.display().to_string(),
+                bytes,
+                partial: false,
+                cargo: true,
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| b.bytes.cmp(&a.bytes).then_with(|| a.path.cmp(&b.path)));
+    out
 }
 
 /// The `top` largest top-level entries across `roots`, each root scanned for
-/// at most `LARGEST_SCAN_CAP` entries. Measured once, after a ladder that
-/// did not clear the floor, so the owner is told what is left and where.
-pub(crate) fn largest_entries(roots: &[PathBuf], top: usize) -> Vec<Entry> {
-    let mut found: Vec<Entry> = Vec::new();
+/// at most `LARGEST_SCAN_CAP` entries, ranked together with `measured` (the
+/// cargo caches, measured whole). A top-level entry holding one of
+/// `measured` (`HIVE_HOME/cache`) is left out: its walk stops at
+/// `TEMP_WALK_CAP` and would name a fraction of what its parts hold.
+/// Measured once, after a ladder that did not clear the floor, so the owner
+/// is told what is left and where.
+pub(crate) fn largest_entries(roots: &[PathBuf], measured: &[Entry], top: usize) -> Vec<Entry> {
+    let mut found: Vec<Entry> = measured.to_vec();
     for root in roots {
         let Ok(entries) = std::fs::read_dir(root) else {
             continue;
         };
         for e in entries.flatten().take(LARGEST_SCAN_CAP) {
             if e.file_type().is_ok_and(|t| t.is_symlink()) {
+                continue;
+            }
+            let path = e.path();
+            if measured
+                .iter()
+                .any(|m| Path::new(&m.path).starts_with(&path))
+            {
                 continue;
             }
             let mut w = Walked::default();
@@ -294,6 +377,7 @@ pub(crate) fn largest_entries(roots: &[PathBuf], top: usize) -> Vec<Entry> {
                 path: e.path().display().to_string(),
                 bytes: w.bytes,
                 partial: w.capped,
+                cargo: false,
             });
         }
     }
@@ -327,13 +411,41 @@ pub(crate) struct Reclaim {
     /// What is left when the ladder could not clear the floor.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub largest: Vec<Entry>,
+    /// What Hive's own cargo caches held when the ladder ended under the
+    /// floor (`cargo_caches`), and the largest of them.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cargo_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cargo_largest: Option<Entry>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<String>,
     #[serde(skip)]
     pub lines: Vec<String>,
 }
 
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
 impl Reclaim {
+    /// What Hive itself could still free, for the line that tells the owner
+    /// why nothing starts: its cargo caches, rebuilt on demand. Empty when
+    /// the ladder measured none.
+    pub(crate) fn could_free(&self) -> String {
+        let Some(big) = &self.cargo_largest else {
+            return String::new();
+        };
+        if self.cargo_bytes == 0 {
+            return String::new();
+        }
+        format!(
+            "Hive's own cargo caches hold {} (the largest {} {}), rebuilt on demand; the sweep prunes what no build uses",
+            crate::sweep::size_text(self.cargo_bytes as i64),
+            big.path,
+            crate::sweep::size_text(big.bytes as i64),
+        )
+    }
+
     fn verb(&self) -> &'static str {
         if self.dry_run { "would free" } else { "freed" }
     }
@@ -355,11 +467,17 @@ impl Reclaim {
                     .join(", ")
             }
         );
-        if !self.largest.is_empty() {
+        let could = self.could_free();
+        if !could.is_empty() {
+            text.push(' ');
+            text.push_str(&could);
+            text.push('.');
+        }
+        let others: Vec<&Entry> = self.largest.iter().filter(|e| !e.cargo).collect();
+        if !others.is_empty() {
             text.push_str(" What remains is not Hive's to remove; the largest entries are ");
             text.push_str(
-                &self
-                    .largest
+                &others
                     .iter()
                     .map(|e| {
                         format!(
@@ -459,6 +577,7 @@ pub(crate) fn reclaim(
         return out;
     }
     // Rung 2: the sweep with its windows shortened.
+    let projects_seen = projects.clone();
     let rep = crate::sweep::sweep(
         s,
         projects,
@@ -533,7 +652,10 @@ pub(crate) fn reclaim(
             }
         }
     }
-    out.largest = largest_entries(&roots, LARGEST_REPORTED);
+    let caches = cargo_caches(&home, &projects_seen);
+    out.cargo_bytes = caches.iter().map(|e| e.bytes).sum();
+    out.cargo_largest = caches.first().cloned();
+    out.largest = largest_entries(&roots, &caches, LARGEST_REPORTED);
     out.lines.push(format!(
         "reclaim: still {free} MB free under daemon.min_free_mb {floor}; largest: {}",
         if out.largest.is_empty() {
@@ -543,10 +665,11 @@ pub(crate) fn reclaim(
                 .iter()
                 .map(|e| {
                     format!(
-                        "{} {}{}",
+                        "{} {}{}{}",
                         e.path,
                         crate::sweep::size_text(e.bytes as i64),
-                        if e.partial { "+" } else { "" }
+                        if e.partial { "+" } else { "" },
+                        if e.cargo { " (cargo cache)" } else { "" }
                     )
                 })
                 .collect::<Vec<_>>()
@@ -584,6 +707,7 @@ pub(crate) fn record_reclaim(s: &hive_store::Store, out: &Reclaim, actor: &str) 
             "dry_run": out.dry_run,
             "rungs": out.rungs,
             "largest": out.largest,
+            "cargo_bytes": out.cargo_bytes,
             "errors": out.errors,
         }),
     );
@@ -601,6 +725,20 @@ pub(crate) fn last_reclaim_since(s: &hive_store::Store, since: &str) -> Option<R
         return None;
     }
     Some(out)
+}
+
+/// What Hive could still free itself, from the last ladder that ended
+/// under the floor; empty when the last one cleared it or measured none.
+/// The disk-floor hold line carries it, so the owner reading why nothing
+/// starts sees what is Hive's before freeing anything by hand.
+pub(crate) fn last_could_free(s: &hive_store::Store) -> String {
+    let Ok((text, true)) = s.meta(RECLAIM_META_KEY) else {
+        return String::new();
+    };
+    match serde_json::from_str::<Reclaim>(&text) {
+        Ok(out) if !out.cleared => out.could_free(),
+        _ => String::new(),
+    }
 }
 
 /// The daemon's hook: runs the ladder the first pass after the floor is
@@ -788,7 +926,7 @@ mod tests {
         fill(a.path(), "big", 5000);
         fill(b.path(), "mid", 500);
         std::fs::create_dir(a.path().join("empty")).unwrap();
-        let got = largest_entries(&[a.path().to_path_buf(), b.path().to_path_buf()], 2);
+        let got = largest_entries(&[a.path().to_path_buf(), b.path().to_path_buf()], &[], 2);
         assert_eq!(got.len(), 2);
         assert!(
             got[0].path.ends_with("/big") && got[0].bytes >= 5000,
@@ -796,6 +934,68 @@ mod tests {
         );
         assert!(got[1].path.ends_with("/mid"), "{got:?}");
         assert!(!got[0].partial);
+    }
+
+    #[test]
+    fn cargo_caches_are_measured_whole_and_ranked_with_the_rest() {
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        let lane = fill(&h.join("cache/cargo-target/proj"), "0", 30_000);
+        // A lane's verify-check sub-target is part of the lane.
+        fill(&lane.join("verify-check/debug"), "deps", 20_000);
+        let land = fill(&h.join("cache/cargo-target-land"), "proj", 9_000);
+        // A project's own verify target under HIVE_HOME counts; one inside
+        // a lane already listed is counted once, by the lane.
+        let own = fill(h, "targets-own", 4_000);
+        let projects = vec![
+            Row(BTreeMap::from([
+                (
+                    "path".into(),
+                    serde_json::json!(h.join("p").display().to_string()),
+                ),
+                (
+                    "verify_cmd".into(),
+                    serde_json::json!(format!("env CARGO_TARGET_DIR={} sh -c x", own.display())),
+                ),
+            ])),
+            Row(BTreeMap::from([
+                (
+                    "path".into(),
+                    serde_json::json!(h.join("q").display().to_string()),
+                ),
+                (
+                    "verify_cmd".into(),
+                    serde_json::json!(format!(
+                        "CARGO_TARGET_DIR={}/sub cargo test",
+                        lane.display()
+                    )),
+                ),
+            ])),
+        ];
+        std::fs::create_dir_all(lane.join("sub")).unwrap();
+        let caches = cargo_caches(h, &projects);
+        let paths: Vec<&str> = caches.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            vec![
+                lane.display().to_string().as_str(),
+                land.display().to_string().as_str(),
+                own.display().to_string().as_str(),
+            ],
+            "{caches:?}"
+        );
+        assert!(caches[0].bytes >= 50_000 && caches.iter().all(|e| e.cargo));
+        // Ranked with the other entries of HIVE_HOME, the `cache` folder
+        // itself is not named a second time, and each cache keeps its size.
+        fill(h, "voice", 12_000);
+        let got = largest_entries(&[h.to_path_buf()], &caches, 3);
+        let named: Vec<String> = got
+            .iter()
+            .map(|e| e.path.rsplit('/').take(2).collect::<Vec<_>>().join("<"))
+            .collect();
+        assert_eq!(got[0].path, lane.display().to_string(), "{named:?}");
+        assert!(got[1].path.ends_with("/voice") && !got[1].cargo, "{got:?}");
+        assert!(!got.iter().any(|e| e.path.ends_with("/cache")), "{got:?}");
     }
 
     #[test]
@@ -847,6 +1047,13 @@ mod tests {
         let work = Path::new(&s.home).join("work");
         let clone = fill(&work, &id, 4096);
         let scratch = fill(&work, &format!("{id}.tmp"), 4096);
+        // A landing cache of Hive's own: rebuilt on demand, so the owner is
+        // told it is Hive's to free rather than asked to free it by hand.
+        let land = fill(
+            &Path::new(&s.home).join("cache/cargo-target-land"),
+            "proj",
+            8192,
+        );
         // An impossible floor: the ladder runs every rung and ends still under.
         s.set_setting(hive_store::HUMAN_AGENT, "daemon.min_free_mb", "999999999")
             .unwrap();
@@ -890,10 +1097,34 @@ mod tests {
         assert_eq!(rec.rungs[0].items, 1, "{rec:?}");
         assert!(rec.rungs[1].items >= 2, "{rec:?}");
         assert!(!rec.largest.is_empty(), "{rec:?}");
+        assert!(
+            land.exists(),
+            "the ladder measures a cache, it does not drop it"
+        );
+        assert!(rec.cargo_bytes >= 8192, "{rec:?}");
+        assert!(
+            rec.largest
+                .iter()
+                .any(|e| e.cargo && e.path == land.display().to_string()),
+            "the largest line counts the cargo caches: {rec:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("largest") && l.contains("(cargo cache)")),
+            "{lines:?}"
+        );
         let note = rec.note();
         assert!(
-            note.contains("already freed") && note.contains("not Hive's"),
+            note.contains("already freed") && note.contains("Hive's own cargo caches hold"),
             "{note}"
+        );
+        // The line that tells the owner why nothing starts names it too.
+        let hold = crate::executor::disk_floor_note(&s).expect("under the floor");
+        assert!(
+            hold.contains("Hive's own cargo caches hold")
+                && hold.contains("cargo-target-land/proj"),
+            "{hold}"
         );
         assert_eq!(
             count(
