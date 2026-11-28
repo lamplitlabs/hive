@@ -427,6 +427,10 @@ work=$(cd "$work" && pwd -P)
 trap 'exit 130' INT TERM HUP
 mkdir -p "$work/chunk" "$work/log" "$work/tmp" "$work/status"
 export VERIFY_CHECK_WORK="$work"
+# The sweep reads this dir while the check runs (sweep.rs ExecutablesInUse):
+# the test binaries listed in `binaries` stay until this pid is gone, so a
+# shared target is never pruned between the build and the tests.
+echo $$ > "$work/pid"
 
 cargo test "$@" --no-run --message-format=json-render-diagnostics > "$work/build.json"
 # One line per test binary: its package's manifest and the executable.
